@@ -1,0 +1,37 @@
+[package]
+name = "yalr"
+version = "0.1.0"
+edition = "2021"
+description = "Yet another LLM router - Load balancing and routing for LLM providers"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["macros"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+reqwest = { version = "0.11", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
+futures = "0.3"
+async-stream = "0.3"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+config = "0.14"
+clap = { version = "4", features = ["derive"] }
+rand = "0.8"
+async-openai = { version = "0.34.0", features = ["chat-completion", "responses", "realtime", "model-types", "_api", "model"] }
+
+[[bin]]
+name = "yalr-server"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "yalr-cli"
+path = "src/bin/cli.rs"
+
+[dev-dependencies]
+tokio-test = "0.4"
+wiremock = "0.5"
