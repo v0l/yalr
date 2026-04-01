@@ -53,10 +53,7 @@ src/
 │   ├── engine.rs        # Core routing logic
 │   └── strategies/
 │       ├── mod.rs
-│       ├── round_robin.rs
-│       ├── weighted.rs
-│       ├── cost_based.rs
-│       └── latency_based.rs
+│       └── round_robin.rs
 ├── providers/
 │   ├── mod.rs
 │   ├── trait.rs         # Provider trait definition
@@ -65,9 +62,13 @@ src/
 │   ├── mod.rs
 │   ├── server.rs        # HTTP server setup
 │   └── handlers.rs      # Request handlers
-└── metrics/
+├── metrics/
+│   ├── mod.rs
+│   └── collector.rs     # Latency, cost, health tracking
+└── quota/
     ├── mod.rs
-    └── collector.rs     # Latency, cost, health tracking
+    ├── tracker.rs       # Rate limit & quota tracking
+    └── limiter.rs       # Rate limiting middleware
 ```
 
 ## Key Dependencies
@@ -83,6 +84,7 @@ src/
 - `async-trait` - Async trait support
 - `sqlx` or `deadpool` + `r2d2` - Database connection pool
 - `sqlite` or `postgres` - Database driver
+- `tokio` + `parking_lot` - Rate limit token buckets
 
 ## Config Schema
 
@@ -94,6 +96,46 @@ CREATE TABLE providers (
     base_url TEXT NOT NULL,
     api_key_env TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Rate Limit Config
+```sql
+CREATE TABLE rate_limits (
+    id INTEGER PRIMARY KEY,
+    provider_id INTEGER REFERENCES providers(id),
+    requests_per_second INTEGER DEFAULT 10,
+    requests_per_minute INTEGER DEFAULT 100,
+    requests_per_hour INTEGER DEFAULT 1000,
+    tokens_per_minute INTEGER DEFAULT 10000,
+    tokens_per_hour INTEGER DEFAULT 100000,
+    UNIQUE(provider_id)
+);
+```
+
+### Quota Config
+```sql
+CREATE TABLE quotas (
+    id INTEGER PRIMARY KEY,
+    provider_id INTEGER REFERENCES providers(id),
+    daily_token_limit INTEGER,
+    monthly_token_limit INTEGER,
+    daily_request_limit INTEGER,
+    monthly_request_limit INTEGER,
+    UNIQUE(provider_id)
+);
+```
+
+### Quota Tracking
+```sql
+CREATE TABLE quota_usage (
+    id INTEGER PRIMARY KEY,
+    provider_id INTEGER REFERENCES providers(id),
+    usage_date DATE NOT NULL,
+    usage_month DATE NOT NULL,
+    tokens_used INTEGER DEFAULT 0,
+    requests_used INTEGER DEFAULT 0,
+    UNIQUE(provider_id, usage_date, usage_month)
 );
 ```
 
@@ -132,38 +174,48 @@ CREATE TABLE routing_config (
 ## Implementation Phases
 
 ### Phase 1: Foundation
-- [ ] Update Cargo.toml with dependencies
-- [ ] Set up database schema and migrations (`db/mod.rs`, `db/schema.rs`)
-- [ ] Implement Provider trait (`providers/trait.rs`)
-- [ ] Implement OpenAI provider (`providers/openai.rs`)
-- [ ] Set up config system with DB access (`config.rs`)
+- [x] Update Cargo.toml with dependencies
+- [x] Set up database schema and migrations (`db/mod.rs`, `db/schema.rs`)
+- [x] Implement Provider trait (`providers/trait.rs`)
+- [x] Implement OpenAI provider (`providers/openai.rs`)
+- [x] Set up config system with DB access (`config.rs`)
 
 ### Phase 2: Routing Engine
-- [ ] Create routing strategy trait (`router/strategies/mod.rs`)
-- [ ] Implement RoundRobin strategy
-- [ ] Implement Weighted strategy
-- [ ] Implement CostBased strategy
-- [ ] Implement LatencyBased strategy
+- [x] Create routing strategy trait (`router/strategies/mod.rs`)
+- [x] Implement RoundRobin strategy
 - [ ] Build routing engine (`router/engine.rs`)
 
 ### Phase 3: API Layer
-- [ ] Set up Axum server (`api/server.rs`)
-- [ ] Implement OpenAI-compatible handler (`api/handlers.rs`)
-- [ ] Add streaming support (SSE)
-- [ ] Add config management endpoints (CRUD for providers, models, routing)
-- [ ] Add health/metrics endpoints
+- [x] Set up Axum server (`api/server.rs`)
+- [x] Implement OpenAI-compatible handler (`api/handlers.rs`)
+- [x] Add streaming support (SSE)
+- [x] Add config management endpoints (CRUD for providers, models, routing)
+- [x] Add health/metrics endpoints
 
 ### Phase 4: Metrics & Health
-- [ ] Implement metrics collector (`metrics/collector.rs`)
-- [ ] Add latency tracking
-- [ ] Add cost tracking
+- [x] Implement metrics collector (`metrics.rs`)
+- [x] Add latency tracking
+- [x] Add cost tracking
 - [ ] Implement health check system
 
 ### Phase 5: Polish
-- [ ] Add comprehensive error handling
-- [ ] Add logging (tracing)
-- [ ] Add configuration hot-reload
+- [x] Add comprehensive error handling
+- [x] Add logging (tracing)
+- [x] Add configuration hot-reload
 - [ ] Integration testing
+
+### Phase 6: Quota & Rate Limiting
+- [ ] Implement rate limiter (`quota/limiter.rs`)
+- [ ] Token bucket algorithm per provider
+- [ ] Track requests per provider (per second/minute/hour)
+- [ ] Track tokens per provider (per minute/hour)
+- [ ] Track total usage per provider (daily/monthly quotas)
+- [ ] Store rate limit config in DB per provider
+- [ ] Check rate limits before routing in engine
+- [ ] Return 429 Too Many Requests when limit exceeded
+- [ ] Admin API to view provider usage stats
+- [ ] Admin API to configure/update rate limits
+- [ ] Admin API to reset quotas
 
 ## Future Enhancements
 

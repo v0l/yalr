@@ -17,6 +17,6 @@ pub use providers::{
     ChatCompletionRequestUserMessageContent,
     Model,
 };
-pub use router::engine::Router;
+pub use router::engine::{Router, RouterError};
 pub use providers::provider_trait::{Provider, ProviderError};
 pub use router::strategies::RoutingStrategy;

@@ -1,2 +1,4 @@
 pub mod engine;
 pub mod strategies;
+
+pub use engine::RouterError;

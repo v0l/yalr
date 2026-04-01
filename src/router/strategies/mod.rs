@@ -9,22 +9,6 @@ pub mod round_robin;
 
 pub type ProviderList = Vec<Arc<dyn Provider>>;
 
-pub enum RoutingStrategyType {
-    RoundRobin,
-    Weighted,
-    CostBased,
-    LatencyBased,
-}
-
-impl RoutingStrategyType {
-    pub fn create(&self) -> Box<dyn RoutingStrategy> {
-        match self {
-            RoutingStrategyType::RoundRobin => Box::new(round_robin::RoundRobinStrategy::new()),
-            _ => panic!("not implemented yet"),
-        }
-    }
-}
-
 #[async_trait]
 pub trait RoutingStrategy: Send + Sync {
     fn name(&self) -> &str;
