@@ -61,8 +61,8 @@ impl Router {
                 self.metrics.emit_success(&provider_name, &model);
                 
                 if let Some(tokens) = response.usage.as_ref() {
-                    let total_tokens = tokens.total_tokens as f32;
-                    let tokens_per_sec = total_tokens / (total_latency.as_secs_f64().max(0.001)) as f32;
+                    let output_tokens_per_sec = tokens.completion_tokens as f32 / (total_latency.as_secs_f64().max(0.001)) as f32;
+                    let input_tokens_per_sec = tokens.prompt_tokens as f32 / (total_latency.as_secs_f64().max(0.001)) as f32;
                     
                     tracing::info!(
                         provider = %provider_name,
@@ -71,12 +71,14 @@ impl Router {
                         completion_tokens = tokens.completion_tokens,
                         total_tokens = tokens.total_tokens,
                         total_latency_ms = latency_ms,
-                        tokens_per_second = tokens_per_sec,
+                        output_tokens_per_second = output_tokens_per_sec,
+                        input_tokens_per_second = input_tokens_per_sec,
                         "Emitting tokens metrics"
                     );
                     
                     self.metrics.emit_ttft(&provider_name, &model, (latency_ms as f32 * 0.1) as u32);
-                    self.metrics.emit_output_tokens_per_second(&provider_name, &model, tokens_per_sec);
+                    self.metrics.emit_output_tokens_per_second(&provider_name, &model, output_tokens_per_sec);
+                    self.metrics.emit_input_tokens_per_second(&provider_name, &model, input_tokens_per_sec);
                     self.metrics.emit_input_tokens(&provider_name, &model, tokens.prompt_tokens as u32);
                     self.metrics.emit_output_tokens(&provider_name, &model, tokens.completion_tokens as u32);
                 } else {
@@ -171,7 +173,8 @@ impl Router {
                 metrics.emit_total_latency(&provider_name, &model, total_latency_ms);
                 
                 if total_tokens > 0 {
-                    let tokens_per_sec = total_tokens as f32 / (start.elapsed().as_secs_f64().max(0.001)) as f32;
+                    let output_tokens_per_sec = completion_tokens as f32 / (start.elapsed().as_secs_f64().max(0.001)) as f32;
+                    let input_tokens_per_sec = prompt_tokens as f32 / (start.elapsed().as_secs_f64().max(0.001)) as f32;
                     
                     tracing::info!(
                         provider = %provider_name,
@@ -180,11 +183,13 @@ impl Router {
                         completion_tokens = completion_tokens,
                         total_tokens = total_tokens,
                         total_latency_ms = total_latency_ms,
-                        tokens_per_second = tokens_per_sec,
+                        output_tokens_per_second = output_tokens_per_sec,
+                        input_tokens_per_second = input_tokens_per_sec,
                         "Emitting tokens metrics"
                     );
                     
-                    metrics.emit_output_tokens_per_second(&provider_name, &model, tokens_per_sec);
+                    metrics.emit_output_tokens_per_second(&provider_name, &model, output_tokens_per_sec);
+                    metrics.emit_input_tokens_per_second(&provider_name, &model, input_tokens_per_sec);
                     metrics.emit_input_tokens(&provider_name, &model, prompt_tokens);
                     metrics.emit_output_tokens(&provider_name, &model, completion_tokens);
                 }
