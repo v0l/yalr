@@ -62,21 +62,69 @@ impl RoutingEngine {
 
     pub async fn route(&self, model: &str) -> Option<Arc<dyn Provider>> {
         let providers = self.get_providers().await;
+        let provider_count = providers.len();
 
         if let Some((slug_prefix, _)) = model.split_once('/') {
-            return self
+            let result = self
                 .strategy
                 .select_provider_by_slug(&providers, slug_prefix)
                 .await;
+            if let Some(ref provider) = result {
+                tracing::info!(
+                    model = model,
+                    slug_prefix = slug_prefix,
+                    selected_provider = provider.name(),
+                    strategy = self.strategy.name(),
+                    "Routed by slug"
+                );
+            } else {
+                tracing::warn!(
+                    model = model,
+                    slug_prefix = slug_prefix,
+                    "No provider found for slug prefix"
+                );
+            }
+            return result;
         }
 
-        self.strategy.select_provider(&providers, model).await
+        let result = self.strategy.select_provider(&providers, model).await;
+        if let Some(ref provider) = result {
+            tracing::info!(
+                model = model,
+                selected_provider = provider.name(),
+                strategy = self.strategy.name(),
+                provider_count = provider_count,
+                "Provider routed"
+            );
+        } else {
+            tracing::warn!(
+                model = model,
+                provider_count = provider_count,
+                "No provider found for model"
+            );
+        }
+        result
     }
 
     pub async fn route_by_slug(&self, slug_prefix: &str) -> Option<Arc<dyn Provider>> {
         let providers = self.get_providers().await;
-        self.strategy
+        let result = self.strategy
             .select_provider_by_slug(&providers, slug_prefix)
-            .await
+            .await;
+        
+        if let Some(ref provider) = result {
+            tracing::info!(
+                slug_prefix = slug_prefix,
+                selected_provider = provider.name(),
+                strategy = self.strategy.name(),
+                "Routed by slug"
+            );
+        } else {
+            tracing::warn!(
+                slug_prefix = slug_prefix,
+                "No provider found for slug prefix"
+            );
+        }
+        result
     }
 }

@@ -52,10 +52,16 @@ impl MetricsEmitter {
     fn emit(&self, provider: String, model: String, event: MetricsEvent) {
         let metrics = ProviderMetrics {
             timestamp: Utc::now(),
-            provider,
-            model,
-            event,
+            provider: provider.clone(),
+            model: model.clone(),
+            event: event.clone(),
         };
+        tracing::debug!(
+            provider = %provider,
+            model = %model,
+            event = ?event,
+            "Metrics event emitted"
+        );
         let _ = self.sender.send(metrics);
     }
 
@@ -151,11 +157,23 @@ impl MetricsStore {
 
     /// Record a metrics event
     pub async fn record(&self, event: ProviderMetrics) {
+        let provider = event.provider.clone();
+        let model = event.model.clone();
+        let event_type = format!("{:?}", event.event);
+        
         let mut events = self.events.write().await;
         events.push_back(event);
         if events.len() > self.max_events {
             events.pop_front();
         }
+        
+        tracing::debug!(
+            provider = %provider,
+            model = %model,
+            event_type = %event_type,
+            total_events = events.len(),
+            "Metrics event recorded"
+        );
     }
 
     /// Get all events for a specific provider and model (model optional)

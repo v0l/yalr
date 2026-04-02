@@ -37,6 +37,13 @@ impl Router {
         let start = Instant::now();
         
         let engine = self.engine.read().await;
+        let provider_name = request.model.clone();
+        tracing::info!(
+            model = &provider_name,
+            stream = false,
+            "Routing request"
+        );
+        
         let provider = self.select_provider(&engine, &request.model).await
             .ok_or(RouterError::NoAvailableProvider)?;
 
@@ -81,6 +88,13 @@ impl Router {
         &self,
         request: &ChatCompletionRequest,
     ) -> Result<BoxStream<'static, Result<ChatCompletionChunk, RouterError>>, RouterError> {
+        let model = request.model.clone();
+        tracing::info!(
+            model = &model,
+            stream = true,
+            "Routing streaming request"
+        );
+        
         let (provider_name, model, provider) = {
             let engine = self.engine.read().await;
             let provider = self.select_provider(&engine, &request.model)

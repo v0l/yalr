@@ -31,11 +31,20 @@ impl RoutingStrategy for RoundRobinStrategy {
         _model: &str,
     ) -> Option<Arc<dyn Provider>> {
         if providers.is_empty() {
+            tracing::warn!("RoundRobin: No providers available for routing");
             return None;
         }
 
         let idx = self.counter.fetch_add(1, Ordering::Relaxed) % providers.len();
-        Some(providers[idx].clone())
+        let selected = &providers[idx];
+        tracing::debug!(
+            strategy = "round_robin",
+            selected_provider = selected.name(),
+            provider_index = idx,
+            total_providers = providers.len(),
+            "Provider selected"
+        );
+        Some(selected.clone())
     }
 }
 

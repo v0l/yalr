@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
     let addr = format!("{}:{}", host, port);
 
-    tracing::info!("Starting YALR on {}", addr);
+    tracing::info!(addr = %addr, "Starting YALR");
 
     api::server::run(config, &addr, emitter, metrics_store).await?;
 

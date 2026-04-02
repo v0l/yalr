@@ -7,7 +7,6 @@ use axum::{
 use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
-use tracing::info;
 
 use crate::{ChatCompletionRequest, ChatCompletionResponse};
 
@@ -108,12 +107,28 @@ pub async fn chat_completions_handler(
     State(state): State<AppState>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Json<ChatCompletionResponse>, (axum::http::StatusCode, String)> {
-    info!("Received chat completion request for model: {}", request.model);
+    tracing::info!(
+        model = request.model,
+        stream = false,
+        messages_count = request.messages.len(),
+        "Received chat completion request"
+    );
 
     match state.config.router.chat_completions(&request).await {
-        Ok(response) => Ok(Json(response)),
+        Ok(response) => {
+            tracing::info!(
+                model = request.model,
+                completion_id = response.id,
+                "Request completed successfully"
+            );
+            Ok(Json(response))
+        },
         Err(e) => {
-            tracing::error!("Routing error: {}", e);
+            tracing::error!(
+                model = request.model,
+                error = %e,
+                "Routing failed"
+            );
             Ok(Json(ChatCompletionResponse {
                 id: "error".to_string(),
                 object: "error".to_string(),
@@ -133,7 +148,12 @@ pub async fn chat_completions_stream(
     State(state): State<AppState>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>> + Send + 'static>, (axum::http::StatusCode, String)> {
-    info!("Received streaming chat completion request for model: {}", request.model);
+    tracing::info!(
+        model = request.model,
+        stream = true,
+        messages_count = request.messages.len(),
+        "Received streaming chat completion request"
+    );
 
     let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send + 'static>> = 
         match state.config.router.chat_completions_stream(&request).await {
@@ -141,23 +161,42 @@ pub async fn chat_completions_stream(
                 let converted_stream = async_stream::stream! {
                     use futures::StreamExt;
                     let mut stream = stream;
+                    let mut chunk_count = 0;
                     while let Some(result) = stream.next().await {
                         match result {
                             Ok(chunk) => {
+                                chunk_count += 1;
                                 yield Ok(Event::default().json_data(&chunk).unwrap_or_else(|_| Event::default()));
                             }
                             Err(e) => {
+                                tracing::error!(
+                                    model = request.model,
+                                    error = %e,
+                                    chunks_sent = chunk_count,
+                                    "Streaming request failed"
+                                );
                                 yield Ok(Event::default()
                                     .json_data(serde_json::json!({ "error": e.to_string() }))
                                     .unwrap_or_else(|_| Event::default()));
                             }
                         }
                     }
+                    if chunk_count > 0 {
+                        tracing::info!(
+                            model = request.model,
+                            chunks_sent = chunk_count,
+                            "Streaming request completed"
+                        );
+                    }
                 };
                 Box::pin(converted_stream)
             }
             Err(e) => {
-                tracing::error!("Routing error: {}", e);
+                tracing::error!(
+                    model = request.model,
+                    error = %e,
+                    "Failed to create streaming route"
+                );
                 let error_stream = async_stream::stream! {
                     yield Ok(Event::default()
                         .json_data(serde_json::json!({ "error": e.to_string() }))
@@ -211,7 +250,19 @@ pub async fn create_provider(
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    tracing::info!(
+        provider_name = request.name,
+        provider_slug = request.slug,
+        base_url = request.base_url,
+        "Adding provider to router"
+    );
+    
     state.config.router.add_provider(provider).await;
+    
+    tracing::info!(
+        provider_name = request.name,
+        "Provider added successfully"
+    );
 
     Ok(Json(serde_json::json!({
         "id": 0,
@@ -227,11 +278,15 @@ pub async fn delete_provider(
     Path(slug): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    tracing::info!(provider_slug = slug, "Deleting provider");
+    
     sqlx::query("DELETE FROM providers WHERE slug = ?")
         .bind(&slug)
         .execute(&state.config.db.pool)
         .await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    tracing::info!(provider_slug = slug, "Provider deleted successfully");
 
     Ok(Json(serde_json::json!({
         "deleted": true,
