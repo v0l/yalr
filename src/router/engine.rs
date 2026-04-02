@@ -56,19 +56,35 @@ impl Router {
                 let model = request.model.clone();
                 drop(engine);
                 
-                let latency_ms = total_latency.as_millis() as f64;
+                let latency_ms = total_latency.as_millis() as u32;
                 self.metrics.emit_total_latency(&provider_name, &model, latency_ms);
                 self.metrics.emit_success(&provider_name, &model);
                 
                 if let Some(tokens) = response.usage.as_ref() {
-                    let total_tokens = tokens.total_tokens as f64;
-                    let ttf_ms = latency_ms * 0.1;
-                    let tokens_per_sec = total_tokens / (total_latency.as_secs_f64().max(0.001));
+                    let total_tokens = tokens.total_tokens as f32;
+                    let tokens_per_sec = total_tokens / (total_latency.as_secs_f64().max(0.001)) as f32;
                     
-                    self.metrics.emit_ttft(&provider_name, &model, ttf_ms);
-                    self.metrics.emit_tokens_per_second(&provider_name, &model, tokens_per_sec);
+                    tracing::info!(
+                        provider = %provider_name,
+                        model = %model,
+                        prompt_tokens = tokens.prompt_tokens,
+                        completion_tokens = tokens.completion_tokens,
+                        total_tokens = tokens.total_tokens,
+                        total_latency_ms = latency_ms,
+                        tokens_per_second = tokens_per_sec,
+                        "Emitting tokens metrics"
+                    );
+                    
+                    self.metrics.emit_ttft(&provider_name, &model, (latency_ms as f32 * 0.1) as u32);
+                    self.metrics.emit_output_tokens_per_second(&provider_name, &model, tokens_per_sec);
                     self.metrics.emit_input_tokens(&provider_name, &model, tokens.prompt_tokens as u32);
                     self.metrics.emit_output_tokens(&provider_name, &model, tokens.completion_tokens as u32);
+                } else {
+                    tracing::debug!(
+                        provider = %provider_name,
+                        model = %model,
+                        "No usage information in response"
+                    );
                 }
                 
                 Ok(response)
@@ -109,6 +125,9 @@ impl Router {
         let stream = stream! {
             let start = Instant::now();
             let mut first_token = true;
+            let mut total_tokens = 0u32;
+            let mut prompt_tokens = 0u32;
+            let mut completion_tokens = 0u32;
 
             let provider_stream = match provider.chat_completions_stream(&request) {
                 Ok(stream) => stream,
@@ -126,9 +145,16 @@ impl Router {
                     Ok(chunk) => {
                         if first_token {
                             first_token = false;
-                            let ttft_ms = start.elapsed().as_millis() as f64;
+                            let ttft_ms = start.elapsed().as_millis() as u32;
                             metrics.emit_ttft(&provider_name, &model, ttft_ms);
                         }
+                        
+                        if let Some(usage) = chunk.usage.clone() {
+                            prompt_tokens = usage.prompt_tokens;
+                            completion_tokens = usage.completion_tokens;
+                            total_tokens = usage.total_tokens;
+                        }
+                        
                         yield Ok(chunk);
                     }
                     Err(e) => {
@@ -141,7 +167,27 @@ impl Router {
 
             if !first_token {
                 metrics.emit_success(&provider_name, &model);
-                metrics.emit_total_latency(&provider_name, &model, start.elapsed().as_millis() as f64);
+                let total_latency_ms = start.elapsed().as_millis() as u32;
+                metrics.emit_total_latency(&provider_name, &model, total_latency_ms);
+                
+                if total_tokens > 0 {
+                    let tokens_per_sec = total_tokens as f32 / (start.elapsed().as_secs_f64().max(0.001)) as f32;
+                    
+                    tracing::info!(
+                        provider = %provider_name,
+                        model = %model,
+                        prompt_tokens = prompt_tokens,
+                        completion_tokens = completion_tokens,
+                        total_tokens = total_tokens,
+                        total_latency_ms = total_latency_ms,
+                        tokens_per_second = tokens_per_sec,
+                        "Emitting tokens metrics"
+                    );
+                    
+                    metrics.emit_output_tokens_per_second(&provider_name, &model, tokens_per_sec);
+                    metrics.emit_input_tokens(&provider_name, &model, prompt_tokens);
+                    metrics.emit_output_tokens(&provider_name, &model, completion_tokens);
+                }
             }
         };
 

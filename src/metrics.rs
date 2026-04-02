@@ -1,6 +1,5 @@
 // YALR (Yet another LLM router) - Metrics system
 // Event-based timeseries metrics with percentile support
-use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -11,7 +10,7 @@ use tokio::sync::{broadcast, RwLock};
 pub struct ProviderMetrics {
     pub provider: String,
     pub model: String,
-    pub timestamp: DateTime<Utc>,
+    pub timestamp_ms: u64,
     pub event: MetricsEvent,
 }
 
@@ -19,11 +18,13 @@ pub struct ProviderMetrics {
 #[derive(Debug, Clone, Serialize)]
 pub enum MetricsEvent {
     /// Time to First Token (ms)
-    TTFT(f64),
-    /// Tokens per second
-    TokensPerSecond(f64),
+    TTFT(u32),
+    /// Output tokens per second
+    OutputTokensPerSecond(f32),
+    /// Input tokens per second (prefill speed)
+    InputTokensPerSecond(f32),
     /// Total latency (ms)
-    TotalLatency(f64),
+    TotalLatency(u32),
     /// Input tokens used
     InputTokens(u32),
     /// Output tokens used
@@ -51,12 +52,15 @@ impl MetricsEmitter {
 
     fn emit(&self, provider: String, model: String, event: MetricsEvent) {
         let metrics = ProviderMetrics {
-            timestamp: Utc::now(),
+            timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
             provider: provider.clone(),
             model: model.clone(),
             event: event.clone(),
         };
-        tracing::debug!(
+        tracing::info!(
             provider = %provider,
             model = %model,
             event = ?event,
@@ -65,15 +69,19 @@ impl MetricsEmitter {
         let _ = self.sender.send(metrics);
     }
 
-    pub fn emit_ttft(&self, provider: &str, model: &str, value_ms: f64) {
+    pub fn emit_ttft(&self, provider: &str, model: &str, value_ms: u32) {
         self.emit(provider.to_string(), model.to_string(), MetricsEvent::TTFT(value_ms));
     }
 
-    pub fn emit_tokens_per_second(&self, provider: &str, model: &str, value: f64) {
-        self.emit(provider.to_string(), model.to_string(), MetricsEvent::TokensPerSecond(value));
+    pub fn emit_output_tokens_per_second(&self, provider: &str, model: &str, value: f32) {
+        self.emit(provider.to_string(), model.to_string(), MetricsEvent::OutputTokensPerSecond(value));
     }
 
-    pub fn emit_total_latency(&self, provider: &str, model: &str, value_ms: f64) {
+    pub fn emit_input_tokens_per_second(&self, provider: &str, model: &str, value: f32) {
+        self.emit(provider.to_string(), model.to_string(), MetricsEvent::InputTokensPerSecond(value));
+    }
+
+    pub fn emit_total_latency(&self, provider: &str, model: &str, value_ms: u32) {
         self.emit(provider.to_string(), model.to_string(), MetricsEvent::TotalLatency(value_ms));
     }
 
@@ -113,10 +121,11 @@ impl MetricsReceiver {
 #[derive(Debug, Clone)]
 pub struct ProviderMetricsSummary {
     pub provider: String,
-    pub p90_ttft: Option<f64>,
-    pub p90_tokens_per_second: Option<f64>,
-    pub avg_latency: Option<f64>,
-    pub success_rate: Option<f64>,
+    pub p90_ttft: Option<u32>,
+    pub p90_output_tokens_per_second: Option<f32>,
+    pub p90_input_tokens_per_second: Option<f32>,
+    pub avg_latency: Option<f32>,
+    pub success_rate: Option<f32>,
 }
 
 /// Summary of model-specific metrics for routing decisions
@@ -124,10 +133,11 @@ pub struct ProviderMetricsSummary {
 pub struct ModelMetricsSummary {
     pub provider: String,
     pub model: String,
-    pub p90_ttft: Option<f64>,
-    pub p90_tokens_per_second: Option<f64>,
-    pub avg_latency: Option<f64>,
-    pub success_rate: Option<f64>,
+    pub p90_ttft: Option<u32>,
+    pub p90_output_tokens_per_second: Option<f32>,
+    pub p90_input_tokens_per_second: Option<f32>,
+    pub avg_latency: Option<f32>,
+    pub success_rate: Option<f32>,
 }
 
 /// In-memory timeseries store for metrics with percentile support
@@ -167,7 +177,7 @@ impl MetricsStore {
             events.pop_front();
         }
         
-        tracing::debug!(
+        tracing::info!(
             provider = %provider,
             model = %model,
             event_type = %event_type,
@@ -190,13 +200,27 @@ impl MetricsStore {
             .collect()
     }
 
-    /// Calculate p90 tokens per second for a provider/model (model optional)
-    pub async fn p90_tokens_per_second(&self, provider: &str, model: Option<&str>) -> Option<f64> {
+    /// Calculate p90 output tokens per second for a provider/model (model optional)
+    pub async fn p90_output_tokens_per_second(&self, provider: &str, model: Option<&str>) -> Option<f32> {
         let events = self.get_events_for(provider, model).await;
-        let values: Vec<f64> = events
+        let values: Vec<f32> = events
             .iter()
             .filter_map(|e| match &e.event {
-                MetricsEvent::TokensPerSecond(value) => Some(*value),
+                MetricsEvent::OutputTokensPerSecond(value) => Some(*value),
+                _ => None,
+            })
+            .collect();
+
+        percentile(&values, 0.90)
+    }
+
+    /// Calculate p90 input tokens per second for a provider/model (model optional)
+    pub async fn p90_input_tokens_per_second(&self, provider: &str, model: Option<&str>) -> Option<f32> {
+        let events = self.get_events_for(provider, model).await;
+        let values: Vec<f32> = events
+            .iter()
+            .filter_map(|e| match &e.event {
+                MetricsEvent::InputTokensPerSecond(value) => Some(*value),
                 _ => None,
             })
             .collect();
@@ -205,9 +229,9 @@ impl MetricsStore {
     }
 
     /// Calculate p90 TTFT for a provider/model (model optional)
-    pub async fn p90_ttft(&self, provider: &str, model: Option<&str>) -> Option<f64> {
+    pub async fn p90_ttft(&self, provider: &str, model: Option<&str>) -> Option<u32> {
         let events = self.get_events_for(provider, model).await;
-        let values: Vec<f64> = events
+        let values: Vec<u32> = events
             .iter()
             .filter_map(|e| match &e.event {
                 MetricsEvent::TTFT(value_ms) => Some(*value_ms),
@@ -219,12 +243,12 @@ impl MetricsStore {
     }
 
     /// Calculate average latency for a provider (model aggregated)
-    pub async fn avg_latency(&self, provider: &str, model: Option<&str>) -> Option<f64> {
+    pub async fn avg_latency(&self, provider: &str, model: Option<&str>) -> Option<f32> {
         let events = self.get_events_for(provider, model).await;
-        let values: Vec<f64> = events
+        let values: Vec<f32> = events
             .iter()
             .filter_map(|e| match &e.event {
-                MetricsEvent::TotalLatency(value_ms) => Some(*value_ms),
+                MetricsEvent::TotalLatency(value_ms) => Some(*value_ms as f32),
                 _ => None,
             })
             .collect();
@@ -232,7 +256,7 @@ impl MetricsStore {
         if values.is_empty() {
             None
         } else {
-            Some(values.iter().sum::<f64>() / values.len() as f64)
+            Some(values.iter().sum::<f32>() / values.len() as f32)
         }
     }
 
@@ -264,7 +288,7 @@ impl MetricsStore {
 
     /// Compute metrics summary from events (internal helper)
     fn compute_metrics_summary(provider: String, events: &[ProviderMetrics]) -> ProviderMetricsSummary {
-        let ttft_values: Vec<f64> = events
+        let ttft_values: Vec<u32> = events
             .iter()
             .filter_map(|e| match &e.event {
                 MetricsEvent::TTFT(v) => Some(*v),
@@ -272,18 +296,26 @@ impl MetricsStore {
             })
             .collect();
         
-        let tps_values: Vec<f64> = events
+        let output_tps_values: Vec<f32> = events
             .iter()
             .filter_map(|e| match &e.event {
-                MetricsEvent::TokensPerSecond(v) => Some(*v),
+                MetricsEvent::OutputTokensPerSecond(v) => Some(*v),
                 _ => None,
             })
             .collect();
         
-        let latency_values: Vec<f64> = events
+        let input_tps_values: Vec<f32> = events
             .iter()
             .filter_map(|e| match &e.event {
-                MetricsEvent::TotalLatency(v) => Some(*v),
+                MetricsEvent::InputTokensPerSecond(v) => Some(*v),
+                _ => None,
+            })
+            .collect();
+        
+        let latency_values: Vec<f32> = events
+            .iter()
+            .filter_map(|e| match &e.event {
+                MetricsEvent::TotalLatency(v) => Some(*v as f32),
                 _ => None,
             })
             .collect();
@@ -294,15 +326,16 @@ impl MetricsStore {
         ProviderMetricsSummary {
             provider,
             p90_ttft: percentile(&ttft_values, 0.90),
-            p90_tokens_per_second: percentile(&tps_values, 0.90),
-            avg_latency: if latency_values.is_empty() { None } else { Some(latency_values.iter().sum::<f64>() / latency_values.len() as f64) },
-            success_rate: if total == 0 { None } else { Some(successes as f64 / total as f64) },
+            p90_output_tokens_per_second: percentile(&output_tps_values, 0.90),
+            p90_input_tokens_per_second: percentile(&input_tps_values, 0.90),
+            avg_latency: if latency_values.is_empty() { None } else { Some(latency_values.iter().sum::<f32>() / latency_values.len() as f32) },
+            success_rate: if total == 0 { None } else { Some(successes as f32 / total as f32) },
         }
     }
 
     /// Compute model-specific metrics summary (internal helper)
     fn compute_model_metrics_summary(provider: String, model: String, events: &[ProviderMetrics]) -> ModelMetricsSummary {
-        let ttft_values: Vec<f64> = events
+        let ttft_values: Vec<u32> = events
             .iter()
             .filter_map(|e| match &e.event {
                 MetricsEvent::TTFT(v) => Some(*v),
@@ -310,18 +343,26 @@ impl MetricsStore {
             })
             .collect();
         
-        let tps_values: Vec<f64> = events
+        let output_tps_values: Vec<f32> = events
             .iter()
             .filter_map(|e| match &e.event {
-                MetricsEvent::TokensPerSecond(v) => Some(*v),
+                MetricsEvent::OutputTokensPerSecond(v) => Some(*v),
                 _ => None,
             })
             .collect();
         
-        let latency_values: Vec<f64> = events
+        let input_tps_values: Vec<f32> = events
             .iter()
             .filter_map(|e| match &e.event {
-                MetricsEvent::TotalLatency(v) => Some(*v),
+                MetricsEvent::InputTokensPerSecond(v) => Some(*v),
+                _ => None,
+            })
+            .collect();
+        
+        let latency_values: Vec<f32> = events
+            .iter()
+            .filter_map(|e| match &e.event {
+                MetricsEvent::TotalLatency(v) => Some(*v as f32),
                 _ => None,
             })
             .collect();
@@ -333,9 +374,10 @@ impl MetricsStore {
             provider,
             model,
             p90_ttft: percentile(&ttft_values, 0.90),
-            p90_tokens_per_second: percentile(&tps_values, 0.90),
-            avg_latency: if latency_values.is_empty() { None } else { Some(latency_values.iter().sum::<f64>() / latency_values.len() as f64) },
-            success_rate: if total == 0 { None } else { Some(successes as f64 / total as f64) },
+            p90_output_tokens_per_second: percentile(&output_tps_values, 0.90),
+            p90_input_tokens_per_second: percentile(&input_tps_values, 0.90),
+            avg_latency: if latency_values.is_empty() { None } else { Some(latency_values.iter().sum::<f32>() / latency_values.len() as f32) },
+            success_rate: if total == 0 { None } else { Some(successes as f32 / total as f32) },
         }
     }
 
@@ -386,7 +428,7 @@ impl MetricsStore {
     }
 }
 
-fn percentile(values: &[f64], p: f64) -> Option<f64> {
+fn percentile<T: Copy + PartialOrd>(values: &[T], p: f32) -> Option<T> {
     if values.is_empty() {
         return None;
     }
@@ -394,6 +436,6 @@ fn percentile(values: &[f64], p: f64) -> Option<f64> {
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-    let index = ((p * (sorted.len() - 1) as f64).round() as usize).min(sorted.len() - 1);
+    let index = ((p * (sorted.len() - 1) as f32).round() as usize).min(sorted.len() - 1);
     Some(sorted[index])
 }

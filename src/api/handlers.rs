@@ -19,10 +19,10 @@ pub struct HealthResponse {
 #[derive(Serialize)]
 pub struct ProviderMetrics {
     pub provider: String,
-    pub p90_tokens_per_second: Option<f64>,
-    pub p90_ttft_ms: Option<f64>,
-    pub avg_latency_ms: Option<f64>,
-    pub success_rate: Option<f64>,
+    pub p90_tokens_per_second: Option<f32>,
+    pub p90_ttft_ms: Option<u32>,
+    pub avg_latency_ms: Option<f32>,
+    pub success_rate: Option<f32>,
 }
 
 #[derive(Serialize)]
@@ -47,7 +47,7 @@ pub async fn get_metrics(State(state): State<AppState>) -> Json<MetricsResponse>
             let summary = state.metrics_store.get_provider_summary("openai-primary").await;
             ProviderMetrics {
                 provider: summary.provider,
-                p90_tokens_per_second: summary.p90_tokens_per_second,
+                p90_tokens_per_second: summary.p90_output_tokens_per_second,
                 p90_ttft_ms: summary.p90_ttft,
                 avg_latency_ms: summary.avg_latency,
                 success_rate: summary.success_rate,
@@ -57,7 +57,7 @@ pub async fn get_metrics(State(state): State<AppState>) -> Json<MetricsResponse>
             let summary = state.metrics_store.get_provider_summary("openai-secondary").await;
             ProviderMetrics {
                 provider: summary.provider,
-                p90_tokens_per_second: summary.p90_tokens_per_second,
+                p90_tokens_per_second: summary.p90_output_tokens_per_second,
                 p90_ttft_ms: summary.p90_ttft,
                 avg_latency_ms: summary.avg_latency,
                 success_rate: summary.success_rate,
