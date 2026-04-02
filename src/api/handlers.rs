@@ -137,6 +137,7 @@ pub async fn chat_completions_handler(
                 choices: vec![],
                 usage: None,
                 service_tier: None,
+                #[allow(deprecated)]
                 system_fingerprint: None,
             }))
         }

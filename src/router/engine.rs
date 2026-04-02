@@ -61,6 +61,8 @@ impl Router {
                 self.metrics.emit_success(&provider_name, &model);
                 
                 if let Some(tokens) = response.usage.as_ref() {
+                    // Non-streaming: can't measure TTFT, so use total latency for throughput
+                    // This includes both prompt processing and generation time
                     let output_tokens_per_sec = tokens.completion_tokens as f32 / (total_latency.as_secs_f64().max(0.001)) as f32;
                     let input_tokens_per_sec = tokens.prompt_tokens as f32 / (total_latency.as_secs_f64().max(0.001)) as f32;
                     
@@ -76,7 +78,6 @@ impl Router {
                         "Emitting tokens metrics"
                     );
                     
-                    self.metrics.emit_ttft(&provider_name, &model, (latency_ms as f32 * 0.1) as u32);
                     self.metrics.emit_output_tokens_per_second(&provider_name, &model, output_tokens_per_sec);
                     self.metrics.emit_input_tokens_per_second(&provider_name, &model, input_tokens_per_sec);
                     self.metrics.emit_input_tokens(&provider_name, &model, tokens.prompt_tokens as u32);
@@ -130,6 +131,7 @@ impl Router {
             let mut total_tokens = 0u32;
             let mut prompt_tokens = 0u32;
             let mut completion_tokens = 0u32;
+            let mut ttft_ms = 0u32;
 
             let provider_stream = match provider.chat_completions_stream(&request) {
                 Ok(stream) => stream,
@@ -147,7 +149,7 @@ impl Router {
                     Ok(chunk) => {
                         if first_token {
                             first_token = false;
-                            let ttft_ms = start.elapsed().as_millis() as u32;
+                            ttft_ms = start.elapsed().as_millis() as u32;
                             metrics.emit_ttft(&provider_name, &model, ttft_ms);
                         }
                         
@@ -173,7 +175,8 @@ impl Router {
                 metrics.emit_total_latency(&provider_name, &model, total_latency_ms);
                 
                 if total_tokens > 0 {
-                    let output_tokens_per_sec = completion_tokens as f32 / (start.elapsed().as_secs_f64().max(0.001)) as f32;
+                    let generation_time_ms = total_latency_ms.saturating_sub(ttft_ms) as f32;
+                    let output_tokens_per_sec = completion_tokens as f32 / (generation_time_ms / 1000.0).max(0.001);
                     let input_tokens_per_sec = prompt_tokens as f32 / (start.elapsed().as_secs_f64().max(0.001)) as f32;
                     
                     tracing::info!(
