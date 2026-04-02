@@ -1,4 +1,4 @@
-FROM rust:testing as builder
+FROM rust:trixie as builder
 
 WORKDIR /app
 
@@ -31,7 +31,7 @@ COPY . .
 RUN cargo build --release --bin yalr-server
 
 # Runtime image
-FROM debian:testing-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
