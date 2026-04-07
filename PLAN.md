@@ -75,16 +75,18 @@ src/
 
 - `tokio` - Async runtime with full features
 - `axum` - HTTP server framework
-- `reqwest` - HTTP client with streaming
+- `async-openai` - OpenAI API client with streaming
 - `serde` + `serde_json` - Config serialization
-- `tokio-stream` - SSE streaming support
-- `metrics` or `prometheus-client` - Metrics collection
+- `futures` - Stream handling
+- `async-stream` - Async stream generation
+- `metrics` or `prometheus-client` - Metrics collection (custom implementation)
 - `chrono` - Timestamps and time handling
 - `thiserror` - Error handling
 - `async-trait` - Async trait support
-- `sqlx` or `deadpool` + `r2d2` - Database connection pool
-- `sqlite` or `postgres` - Database driver
-- `tokio` + `parking_lot` - Rate limit token buckets
+- `sqlx` - Database connection pool and queries
+- `sqlite` - Database driver
+- `wiremock` - HTTP mocking for integration tests
+- `tracing` + `tracing-subscriber` - Structured logging
 
 ## Config Schema
 
@@ -173,6 +175,21 @@ CREATE TABLE routing_config (
 
 ## Implementation Phases
 
+### Phase 5b: Retry & Fallback ✅ COMPLETED
+- [x] Add retry configuration (max_retries, retry_delay, backoff_multiplier)
+- [x] Classify provider errors (transient vs permanent)
+- [x] Implement retry logic with exponential backoff for transient errors
+- [x] Implement automatic fallback to next available provider on failure
+- [x] Track retry metrics (retry_count, fallback_count)
+- [x] Add retry logic to non-streaming completions
+- [x] Add fallback logic to streaming completions (fail over to next provider)
+- [x] Configure retry behavior per provider or globally
+- [x] Metrics-driven health tracking integrated into MetricsStore
+- [x] Enhanced error types with error_type, retry_after_ms, status_code
+- [x] Health state transitions: Healthy → Degraded → Unhealthy
+- [x] Automatic provider recovery after successful requests
+- [x] Unit tests for health tracking (6 tests passing)
+
 ### Phase 1: Foundation
 - [x] Update Cargo.toml with dependencies
 - [x] Set up database schema and migrations (`db/mod.rs`, `db/schema.rs`)
@@ -183,7 +200,7 @@ CREATE TABLE routing_config (
 ### Phase 2: Routing Engine
 - [x] Create routing strategy trait (`router/strategies/mod.rs`)
 - [x] Implement RoundRobin strategy
-- [ ] Build routing engine (`router/engine.rs`)
+- [x] Build routing engine (`router/engine.rs`)
 
 ### Phase 3: API Layer
 - [x] Set up Axum server (`api/server.rs`)
@@ -196,13 +213,17 @@ CREATE TABLE routing_config (
 - [x] Implement metrics collector (`metrics.rs`)
 - [x] Add latency tracking
 - [x] Add cost tracking
-- [ ] Implement health check system
+- [x] Implement health check system with metrics-driven health tracking
+- [x] ProviderHealthState with exponential backoff
+- [x] FailureDetails struct with error context
+- [x] Health query methods in MetricsStore
 
 ### Phase 5: Polish
 - [x] Add comprehensive error handling
 - [x] Add logging (tracing)
 - [x] Add configuration hot-reload
-- [ ] Integration testing
+- [x] Implement retry/fallback mechanism for provider errors
+- [ ] Integration testing with wiremock
 
 ### Phase 6: Quota & Rate Limiting
 - [ ] Implement rate limiter (`quota/limiter.rs`)
@@ -223,9 +244,41 @@ CREATE TABLE routing_config (
 - Additional provider implementations (Anthropic, Google, etc.)
 - Request/response transformation
 - Caching layer
-- Rate limiting
+- Rate limiting (outgoing rate limits to providers)
 - Authentication
 - Multi-tenant support
+- Integration testing with wiremock
+
+## Health Tracking & Retry System
+
+### Architecture
+- **Metrics-driven health**: Provider health computed from emitted metrics
+- **Exponential backoff**: `base_backoff * 2^consecutive_failures` (capped at max_backoff)
+- **Rate limit handling**: Respects `retry_after` headers from providers
+- **Automatic recovery**: Providers recover after successful requests
+
+### Components
+- `MetricsStore`: Tracks provider health internally, updates on metrics events
+- `ProviderHealthState`: Manages health state transitions and backoff calculation
+- `ProviderError`: Enhanced error types with error_type, retry_after_ms, status_code
+- `Router`: Retry logic with health-aware routing
+
+### Health States
+- **Healthy**: Normal operation, accepting requests
+- **Degraded**: Elevated error rate, still accepting but with backoff
+- **Unhealthy**: High failure rate, temporarily unavailable
+
+### Error Types
+- `RateLimit`: 429 responses with retry_after
+- `ServerError`: 5xx responses
+- `Timeout`: Request timeout
+- `Authentication`: 401/403 responses
+- `NotFound`: 404 responses
+- `Other`: Unclassified errors
+
+### Tests
+- Unit tests in `src/metrics.rs::health_tests` (6 tests)
+- Test coverage: state transitions, backoff, recovery, rate limits
 
 ## Development Guidelines
 

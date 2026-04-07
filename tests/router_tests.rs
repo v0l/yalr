@@ -122,7 +122,7 @@ fn create_test_router() -> (Router, MetricsStore) {
     
     let router = Router::new(
         Box::new(yalr::router::strategies::round_robin::RoundRobinStrategy::new()),
-        emitter,
+        metrics_store.clone(),
     );
     
     (router, metrics_store)

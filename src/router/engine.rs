@@ -1,4 +1,4 @@
-use crate::metrics::MetricsEmitter;
+use crate::metrics::{MetricsStore};
 use crate::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ProviderError,
 };
@@ -8,102 +8,145 @@ use async_stream::stream;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 pub struct Router {
     engine: Arc<RwLock<RoutingEngine>>,
-    metrics: MetricsEmitter,
+    metrics_store: MetricsStore,
+    max_retries: u32,
 }
 
 impl Router {
-    pub fn new(strategy: Box<dyn RoutingStrategy>, metrics: MetricsEmitter) -> Self {
+    pub fn new(strategy: Box<dyn RoutingStrategy>, metrics_store: MetricsStore) -> Self {
         let engine = RoutingEngine::new(Arc::from(strategy));
         Self {
             engine: Arc::new(RwLock::new(engine)),
-            metrics,
+            metrics_store,
+            max_retries: 3,
         }
     }
 
     pub async fn add_provider(&self, provider: Arc<dyn Provider>) {
         let engine = self.engine.write().await;
-        engine.add_provider(provider).await;
+        engine.add_provider(provider.clone()).await;
     }
 
-    pub async fn chat_completions(
+   pub async fn chat_completions(
         &self,
         request: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, RouterError> {
         let start = Instant::now();
         
         let engine = self.engine.read().await;
-        let provider_name = request.model.clone();
-        tracing::info!(
-            model = &provider_name,
-            stream = false,
-            "Routing request"
-        );
-        
         let provider = self.select_provider(&engine, &request.model).await
             .ok_or(RouterError::NoAvailableProvider)?;
+        let provider_name = provider.name().to_string();
+        let model = request.model.clone();
 
-        let result = provider.chat_completions(request).await;
-        let total_latency = start.elapsed();
+        let mut attempt = 0;
+        let mut last_error = None;
 
-        match result {
-            Ok(response) => {
-                let provider_name = provider.name().to_string();
-                let model = request.model.clone();
-                drop(engine);
-                
-                let latency_ms = total_latency.as_millis() as u32;
-                self.metrics.emit_total_latency(&provider_name, &model, latency_ms);
-                self.metrics.emit_success(&provider_name, &model);
-                
-                if let Some(tokens) = response.usage.as_ref() {
-                    // Non-streaming: can't measure TTFT, so use total latency for throughput
-                    // This includes both prompt processing and generation time
-                    let output_tokens_per_sec = tokens.completion_tokens as f32 / (total_latency.as_secs_f64().max(0.001)) as f32;
-                    let input_tokens_per_sec = tokens.prompt_tokens as f32 / (total_latency.as_secs_f64().max(0.001)) as f32;
-                    
-                    tracing::info!(
-                        provider = %provider_name,
-                        model = %model,
-                        prompt_tokens = tokens.prompt_tokens,
-                        completion_tokens = tokens.completion_tokens,
-                        total_tokens = tokens.total_tokens,
-                        total_latency_ms = latency_ms,
-                        output_tokens_per_second = output_tokens_per_sec,
-                        input_tokens_per_second = input_tokens_per_sec,
-                        "Emitting tokens metrics"
-                    );
-                    
-                    self.metrics.emit_output_tokens_per_second(&provider_name, &model, output_tokens_per_sec);
-                    self.metrics.emit_input_tokens_per_second(&provider_name, &model, input_tokens_per_sec);
-                    self.metrics.emit_input_tokens(&provider_name, &model, tokens.prompt_tokens as u32);
-                    self.metrics.emit_output_tokens(&provider_name, &model, tokens.completion_tokens as u32);
-                } else {
-                    tracing::debug!(
-                        provider = %provider_name,
-                        model = %model,
-                        "No usage information in response"
-                    );
-                }
-                
-                Ok(response)
+        loop {
+            if !self.metrics_store.is_provider_available(&provider_name).await {
+                let backoff = self.metrics_store.get_provider_backoff(&provider_name).await;
+                tracing::warn!(
+                    provider = &provider_name,
+                    attempt = attempt,
+                    backoff_ms = backoff.as_millis(),
+                    "Provider unavailable, waiting before retry"
+                );
+                tokio::time::sleep(backoff).await;
             }
-            Err(e) => {
-                let provider_name = provider.name().to_string();
-                let model = request.model.clone();
-                drop(engine);
-                
-                self.metrics.emit_failure(&provider_name, &model, &e.to_string());
-                Err(RouterError::ProviderError(e))
+
+            if attempt >= self.max_retries {
+                return Err(last_error.unwrap_or(RouterError::ProviderError(
+                    ProviderError::ProviderError("Max retries exceeded".to_string())
+                )));
+            }
+
+            let result = provider.chat_completions(request).await;
+            let total_latency = start.elapsed();
+
+            match result {
+                Ok(response) => {
+                    let latency_ms = total_latency.as_millis() as u32;
+                    self.metrics_store
+                        .emitter()
+                        .emit_total_latency(&provider_name, &model, latency_ms);
+                    self.metrics_store
+                        .emitter()
+                        .emit_success(&provider_name, &model);
+                    
+                    if let Some(tokens) = response.usage.as_ref() {
+                        let output_tokens_per_sec = tokens.completion_tokens as f32 / (total_latency.as_secs_f64().max(0.001)) as f32;
+                        let input_tokens_per_sec = tokens.prompt_tokens as f32 / (total_latency.as_secs_f64().max(0.001)) as f32;
+                        
+                        tracing::info!(
+                            provider = %provider_name,
+                            model = %model,
+                            prompt_tokens = tokens.prompt_tokens,
+                            completion_tokens = tokens.completion_tokens,
+                            total_tokens = tokens.total_tokens,
+                            total_latency_ms = latency_ms,
+                            output_tokens_per_second = output_tokens_per_sec,
+                            input_tokens_per_second = input_tokens_per_sec,
+                            "Emitting tokens metrics"
+                        );
+                        
+                        self.metrics_store
+                            .emitter()
+                            .emit_output_tokens_per_second(&provider_name, &model, output_tokens_per_sec);
+                        self.metrics_store
+                            .emitter()
+                            .emit_input_tokens_per_second(&provider_name, &model, input_tokens_per_sec);
+                        self.metrics_store
+                            .emitter()
+                            .emit_input_tokens(&provider_name, &model, tokens.prompt_tokens as u32);
+                        self.metrics_store
+                            .emitter()
+                            .emit_output_tokens(&provider_name, &model, tokens.completion_tokens as u32);
+                    }
+                    
+                    return Ok(response);
+                }
+                Err(e) => {
+                    last_error = Some(RouterError::ProviderError(e.clone()));
+                    
+                    self.metrics_store.emitter().emit_failure_with_details(
+                        &provider_name,
+                        &model,
+                        e.error_type(),
+                        None,
+                        &e.to_string(),
+                        e.retry_after_ms(),
+                        e.status_code(),
+                    );
+
+                    if attempt >= self.max_retries - 1 {
+                        return Err(last_error.unwrap());
+                    }
+
+                    let backoff = e.retry_after_ms()
+                        .map(|ms| Duration::from_millis(ms))
+                        .unwrap_or_else(|| Duration::from_secs(2_u64.saturating_pow(attempt)));
+
+                    tracing::warn!(
+                        provider = &provider_name,
+                        attempt = attempt,
+                        error = %last_error.as_ref().unwrap(),
+                        backoff_ms = backoff.as_millis(),
+                        "Request failed, retrying after backoff"
+                    );
+
+                    tokio::time::sleep(backoff).await;
+                    attempt += 1;
+                }
             }
         }
     }
 
-    pub async fn chat_completions_stream(
+pub async fn chat_completions_stream(
         &self,
         request: &ChatCompletionRequest,
     ) -> Result<BoxStream<'static, Result<ChatCompletionChunk, RouterError>>, RouterError> {
@@ -122,7 +165,7 @@ impl Router {
             (provider.name().to_string(), request.model.clone(), provider)
         };
 
-        let metrics = self.metrics.clone();
+        let metrics_store = self.metrics_store.clone();
         let request = request.clone();
 
         let stream = stream! {
@@ -136,7 +179,15 @@ impl Router {
             let provider_stream = match provider.chat_completions_stream(&request) {
                 Ok(stream) => stream,
                 Err(e) => {
-                    metrics.emit_failure(&provider_name, &model, &e.to_string());
+                    metrics_store.emitter().emit_failure_with_details(
+                        &provider_name,
+                        &model,
+                        e.error_type(),
+                        None,
+                        &e.to_string(),
+                        e.retry_after_ms(),
+                        e.status_code(),
+                    );
                     yield Err(RouterError::ProviderError(e));
                     return;
                 }
@@ -150,7 +201,7 @@ impl Router {
                         if first_token {
                             first_token = false;
                             ttft_ms = start.elapsed().as_millis() as u32;
-                            metrics.emit_ttft(&provider_name, &model, ttft_ms);
+                            metrics_store.emitter().emit_ttft(&provider_name, &model, ttft_ms);
                         }
                         
                         if let Some(usage) = chunk.usage.clone() {
@@ -162,7 +213,15 @@ impl Router {
                         yield Ok(chunk);
                     }
                     Err(e) => {
-                        metrics.emit_failure(&provider_name, &model, &e.to_string());
+                        metrics_store.emitter().emit_failure_with_details(
+                            &provider_name,
+                            &model,
+                            e.error_type(),
+                            None,
+                            &e.to_string(),
+                            e.retry_after_ms(),
+                            e.status_code(),
+                        );
                         yield Err(RouterError::ProviderError(e));
                         return;
                     }
@@ -170,9 +229,9 @@ impl Router {
             }
 
             if !first_token {
-                metrics.emit_success(&provider_name, &model);
+                metrics_store.emitter().emit_success(&provider_name, &model);
                 let total_latency_ms = start.elapsed().as_millis() as u32;
-                metrics.emit_total_latency(&provider_name, &model, total_latency_ms);
+                metrics_store.emitter().emit_total_latency(&provider_name, &model, total_latency_ms);
                 
                 if total_tokens > 0 {
                     let generation_time_ms = total_latency_ms.saturating_sub(ttft_ms) as f32;
@@ -191,10 +250,10 @@ impl Router {
                         "Emitting tokens metrics"
                     );
                     
-                    metrics.emit_output_tokens_per_second(&provider_name, &model, output_tokens_per_sec);
-                    metrics.emit_input_tokens_per_second(&provider_name, &model, input_tokens_per_sec);
-                    metrics.emit_input_tokens(&provider_name, &model, prompt_tokens);
-                    metrics.emit_output_tokens(&provider_name, &model, completion_tokens);
+                    metrics_store.emitter().emit_output_tokens_per_second(&provider_name, &model, output_tokens_per_sec);
+                    metrics_store.emitter().emit_input_tokens_per_second(&provider_name, &model, input_tokens_per_sec);
+                    metrics_store.emitter().emit_input_tokens(&provider_name, &model, prompt_tokens);
+                    metrics_store.emitter().emit_output_tokens(&provider_name, &model, completion_tokens);
                 }
             }
         };

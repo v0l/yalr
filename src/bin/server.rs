@@ -8,7 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (emitter, _receiver) = metrics::MetricsEmitter::new(10000);
     let metrics_store = metrics::MetricsStore::new(emitter.clone(), 10000);
     
-    let config = config::AppConfig::load(emitter.clone()).await.expect("Failed to load config");
+    let config = config::AppConfig::load(metrics_store.clone()).await.expect("Failed to load config");
     config.load_providers().await.expect("Failed to load providers");
 
     let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());

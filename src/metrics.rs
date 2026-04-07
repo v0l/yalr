@@ -31,8 +31,28 @@ pub enum MetricsEvent {
     OutputTokens(u32),
     /// Request success
     Success,
-    /// Request failed
-    Failure(String),
+    /// Request failed with error details
+    Failure(FailureDetails),
+}
+
+/// Error details for failure events
+#[derive(Debug, Clone, Serialize)]
+pub struct FailureDetails {
+    pub error_type: ErrorType,
+    pub error_code: Option<String>,
+    pub error_message: String,
+    pub retry_after_ms: Option<u64>,
+    pub status_code: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub enum ErrorType {
+    RateLimit,
+    ServerError,
+    Timeout,
+    Authentication,
+    NotFound,
+    Other,
 }
 
 /// Metrics emitter that sends events via broadcast channel
@@ -93,12 +113,68 @@ impl MetricsEmitter {
         self.emit(provider.to_string(), model.to_string(), MetricsEvent::OutputTokens(value));
     }
 
-    pub fn emit_success(&self, provider: &str, model: &str) {
+ pub fn emit_success(&self, provider: &str, model: &str) {
         self.emit(provider.to_string(), model.to_string(), MetricsEvent::Success);
     }
 
-    pub fn emit_failure(&self, provider: &str, model: &str, error: &str) {
-        self.emit(provider.to_string(), model.to_string(), MetricsEvent::Failure(error.to_string()));
+    pub fn emit_failure(
+        &self,
+        provider: &str,
+        model: &str,
+        error_type: ErrorType,
+        error_message: &str,
+    ) {
+        self.emit_failure_with_details(
+            provider,
+            model,
+            error_type,
+            None,
+            error_message,
+            None,
+            None,
+        );
+    }
+
+    pub fn emit_failure_with_details(
+        &self,
+        provider: &str,
+        model: &str,
+        error_type: ErrorType,
+        error_code: Option<String>,
+        error_message: &str,
+        retry_after_ms: Option<u64>,
+        status_code: Option<u16>,
+    ) {
+        let details = FailureDetails {
+            error_type,
+            error_code,
+            error_message: error_message.to_string(),
+            retry_after_ms,
+            status_code,
+        };
+        self.emit(
+            provider.to_string(),
+            model.to_string(),
+            MetricsEvent::Failure(details),
+        );
+    }
+
+    pub fn emit_rate_limit(
+        &self,
+        provider: &str,
+        model: &str,
+        retry_after_ms: u64,
+        status_code: Option<u16>,
+    ) {
+        self.emit_failure_with_details(
+            provider,
+            model,
+            ErrorType::RateLimit,
+            None,
+            "Rate limit exceeded",
+            Some(retry_after_ms),
+            status_code,
+        );
     }
 }
 
@@ -116,6 +192,8 @@ impl MetricsReceiver {
         self.receiver.resubscribe()
     }
 }
+
+use std::time::{Duration, Instant};
 
 /// Summary of provider metrics for routing decisions
 #[derive(Debug, Clone)]
@@ -146,7 +224,10 @@ pub struct MetricsStore {
     emitter: MetricsEmitter,
     /// Store recent events for percentile calculations (wrapped in Arc<RwLock> for shared access)
     events: Arc<RwLock<VecDeque<ProviderMetrics>>>,
+    /// Track provider health states
+    provider_health: Arc<RwLock<std::collections::HashMap<String, ProviderHealthState>>>,
     max_events: usize,
+    health_config: HealthConfig,
 }
 
 /// Type alias for MetricsStore - now cloneable with internal Arc<RwLock>
@@ -154,10 +235,20 @@ pub type SharedMetricsStore = MetricsStore;
 
 impl MetricsStore {
     pub fn new(emitter: MetricsEmitter, max_events: usize) -> Self {
+        Self::with_health_config(emitter, max_events, None)
+    }
+
+    pub fn with_health_config(
+        emitter: MetricsEmitter,
+        max_events: usize,
+        health_config: Option<HealthConfig>,
+    ) -> Self {
         Self {
             emitter,
             events: Arc::new(RwLock::new(VecDeque::with_capacity(max_events))),
+            provider_health: Arc::new(RwLock::new(std::collections::HashMap::new())),
             max_events,
+            health_config: health_config.unwrap_or_default(),
         }
     }
 
@@ -165,17 +256,19 @@ impl MetricsStore {
         &self.emitter
     }
 
-    /// Record a metrics event
+    /// Record a metrics event and update health state
     pub async fn record(&self, event: ProviderMetrics) {
         let provider = event.provider.clone();
         let model = event.model.clone();
         let event_type = format!("{:?}", event.event);
         
         let mut events = self.events.write().await;
-        events.push_back(event);
+        events.push_back(event.clone());
         if events.len() > self.max_events {
             events.pop_front();
         }
+        
+        self.update_health_from_event(&event).await;
         
         tracing::info!(
             provider = %provider,
@@ -184,6 +277,26 @@ impl MetricsStore {
             total_events = events.len(),
             "Metrics event recorded"
         );
+    }
+
+    /// Update provider health state from a metrics event
+    async fn update_health_from_event(&self, event: &ProviderMetrics) {
+        let mut health = self.provider_health.write().await;
+        let provider_health = health
+            .entry(event.provider.clone())
+            .or_insert_with(|| ProviderHealthState::new(Some(self.health_config.clone())));
+
+        match &event.event {
+            MetricsEvent::Success => {
+                provider_health.record_success();
+            }
+            MetricsEvent::Failure(details) => {
+                let retry_after = details.retry_after_ms
+                    .map(|ms| Duration::from_millis(ms));
+                provider_health.record_failure(retry_after);
+            }
+            _ => {}
+        }
     }
 
     /// Get all events for a specific provider and model (model optional)
@@ -426,6 +539,74 @@ impl MetricsStore {
             })
             .collect()
     }
+
+    /// Get health state for a provider
+    pub async fn get_provider_health(&self, provider: &str) -> HealthState {
+        let health = self.provider_health.read().await;
+        health
+            .get(provider)
+            .map(|h| h.state())
+            .unwrap_or(HealthState::Healthy)
+    }
+
+    /// Check if a provider is available for routing
+    pub async fn is_provider_available(&self, provider: &str) -> bool {
+        let health = self.provider_health.read().await;
+        health
+            .get(provider)
+            .map(|h| h.is_available())
+            .unwrap_or(true)
+    }
+
+    /// Get recommended backoff duration for a provider
+    pub async fn get_provider_backoff(&self, provider: &str) -> Duration {
+        let health = self.provider_health.read().await;
+        health
+            .get(provider)
+            .map(|h| h.wait_time())
+            .unwrap_or_default()
+    }
+
+    /// Get recent failure count for a provider
+    pub async fn get_recent_failures(&self, provider: &str) -> u32 {
+        let health = self.provider_health.read().await;
+        health
+            .get(provider)
+            .map(|h| h.consecutive_failures)
+            .unwrap_or(0)
+    }
+
+    /// Compute health from recent metrics (for external health calculation)
+    pub async fn compute_health_from_metrics(&self, provider: &str) -> (HealthState, f32, u32) {
+        let events = self.get_events_for(provider, None).await;
+        
+        let total = events.len();
+        if total == 0 {
+            return (HealthState::Healthy, 1.0, 0);
+        }
+
+        let successes = events
+            .iter()
+            .filter(|e| matches!(e.event, MetricsEvent::Success))
+            .count();
+
+        let recent_failures = events
+            .iter()
+            .filter(|e| matches!(e.event, MetricsEvent::Failure(_)))
+            .count() as u32;
+
+        let success_rate = successes as f32 / total as f32;
+
+        let state = if success_rate < 0.5 {
+            HealthState::Unhealthy
+        } else if success_rate < 0.8 {
+            HealthState::Degraded
+        } else {
+            HealthState::Healthy
+        };
+
+        (state, success_rate, recent_failures)
+    }
 }
 
 fn percentile<T: Copy + PartialOrd>(values: &[T], p: f32) -> Option<T> {
@@ -438,4 +619,238 @@ fn percentile<T: Copy + PartialOrd>(values: &[T], p: f32) -> Option<T> {
 
     let index = ((p * (sorted.len() - 1) as f32).round() as usize).min(sorted.len() - 1);
     Some(sorted[index])
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+
+    #[test]
+    fn test_initial_state_healthy() {
+        let health = ProviderHealthState::new(None);
+        assert_eq!(health.state(), HealthState::Healthy);
+        assert!(health.is_available());
+    }
+
+    #[test]
+    fn test_record_success() {
+        let mut health = ProviderHealthState::new(Some(HealthConfig {
+            failure_threshold: 3,
+            ..Default::default()
+        }));
+
+        health.record_failure(None);
+        health.record_failure(None);
+        health.record_success();
+
+        assert_eq!(health.state(), HealthState::Degraded);
+        assert_eq!(health.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn test_exponential_backoff() {
+        let config = HealthConfig {
+            base_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_secs(1),
+            ..Default::default()
+        };
+        let mut health = ProviderHealthState::new(Some(config));
+
+        health.record_failure(None);
+        let backoff1 = health.calculate_backoff();
+        assert!(backoff1 >= Duration::from_millis(100));
+
+        health.record_failure(None);
+        let backoff2 = health.calculate_backoff();
+        assert!(backoff2 >= backoff1);
+        assert!(backoff2 <= Duration::from_secs(1));
+    }
+
+   #[test]
+    fn test_retry_after_respected() {
+        let retry_after = Duration::from_secs(30);
+        let mut health = ProviderHealthState::new(None);
+
+        health.record_failure(Some(retry_after));
+        let backoff = health.calculate_backoff();
+        
+        assert!(backoff >= Duration::from_secs(29));
+        assert!(backoff <= Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_recovery_after_success() {
+        let config = HealthConfig {
+            failure_threshold: 5,
+            recovery_window: Duration::from_millis(100),
+            ..Default::default()
+        };
+        let mut health = ProviderHealthState::new(Some(config));
+
+        for _ in 0..5 {
+            health.record_failure(None);
+        }
+
+        assert_eq!(health.state(), HealthState::Unhealthy);
+
+        std::thread::sleep(Duration::from_millis(150));
+        health.record_success();
+
+        assert_eq!(health.state(), HealthState::Healthy);
+    }
+
+    #[test]
+    fn test_unhealthy_after_threshold() {
+        let config = HealthConfig {
+            failure_threshold: 3,
+            ..Default::default()
+        };
+        let mut health = ProviderHealthState::new(Some(config));
+
+        assert!(health.is_available());
+
+        health.record_failure(None);
+        health.record_failure(None);
+        health.record_failure(None);
+
+        assert!(!health.is_available());
+        assert_eq!(health.state(), HealthState::Unhealthy);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HealthState {
+    Healthy,
+    Degraded,
+    Unhealthy,
+}
+
+#[derive(Clone)]
+pub struct ProviderHealthState {
+    state: HealthState,
+    consecutive_failures: u32,
+    last_failure_time: Option<Instant>,
+    rate_limit_until: Option<Instant>,
+    config: HealthConfig,
+}
+
+#[derive(Clone)]
+pub struct HealthConfig {
+    pub failure_threshold: u32,
+    pub recovery_window: Duration,
+    pub base_backoff: Duration,
+    pub max_backoff: Duration,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            failure_threshold: 5,
+            recovery_window: Duration::from_secs(60),
+            base_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(60),
+        }
+    }
+}
+
+impl ProviderHealthState {
+    pub fn new(config: Option<HealthConfig>) -> Self {
+        Self {
+            state: HealthState::Healthy,
+            consecutive_failures: 0,
+            last_failure_time: None,
+            rate_limit_until: None,
+            config: config.unwrap_or_default(),
+        }
+    }
+
+    pub fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        
+        if self.state == HealthState::Degraded {
+            if let Some(last_failure) = self.last_failure_time {
+                if Instant::now().duration_since(last_failure) > self.config.recovery_window {
+                    self.state = HealthState::Healthy;
+                }
+            }
+        }
+    }
+
+    pub fn record_failure(&mut self, retry_after: Option<Duration>) {
+        self.consecutive_failures += 1;
+        self.last_failure_time = Some(Instant::now());
+
+        if let Some(retry_after) = retry_after {
+            self.rate_limit_until = Some(Instant::now() + retry_after);
+        }
+
+        if self.consecutive_failures >= self.config.failure_threshold {
+            self.state = HealthState::Unhealthy;
+        } else if self.consecutive_failures >= self.config.failure_threshold / 2 {
+            self.state = HealthState::Degraded;
+        }
+    }
+
+    pub fn update_from_metrics(&mut self, success_rate: f32, recent_failures: u32) {
+        self.consecutive_failures = recent_failures;
+
+        if success_rate < 0.5 {
+            self.state = HealthState::Unhealthy;
+        } else if success_rate < 0.8 {
+            self.state = HealthState::Degraded;
+        } else {
+            if self.consecutive_failures < self.config.failure_threshold / 2 {
+                self.state = HealthState::Healthy;
+            }
+        }
+    }
+
+   pub fn state(&self) -> HealthState {
+        if let Some(rate_limit_until) = self.rate_limit_until {
+            if Instant::now() < rate_limit_until {
+                return HealthState::Unhealthy;
+            }
+        }
+        
+        if self.state == HealthState::Unhealthy && self.consecutive_failures == 0 {
+            return HealthState::Healthy;
+        }
+        
+        self.state.clone()
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.state() != HealthState::Unhealthy
+    }
+
+    pub fn calculate_backoff(&self) -> Duration {
+        if let Some(rate_limit_until) = self.rate_limit_until {
+            if Instant::now() < rate_limit_until {
+                return rate_limit_until.duration_since(Instant::now());
+            }
+        }
+
+        if self.consecutive_failures == 0 {
+            return Duration::from_millis(0);
+        }
+
+        let exponential_backoff = self
+            .config
+            .base_backoff
+            .checked_mul(
+                2_u32
+                    .saturating_pow(self.consecutive_failures.saturating_sub(1).min(10)),
+            )
+            .unwrap_or(self.config.max_backoff);
+
+        exponential_backoff.min(self.config.max_backoff)
+    }
+
+    pub fn wait_time(&self) -> Duration {
+        if !self.is_available() {
+            self.calculate_backoff()
+        } else {
+            Duration::from_millis(0)
+        }
+    }
 }

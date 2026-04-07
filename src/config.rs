@@ -1,5 +1,5 @@
 use crate::db::Database;
-use crate::metrics::MetricsEmitter;
+use crate::metrics::MetricsStore;
 use crate::providers::openai::OpenAiProvider;
 use crate::router::engine::Router;
 use std::sync::Arc;
@@ -42,7 +42,7 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    pub async fn load(metrics: MetricsEmitter) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn load(metrics_store: MetricsStore) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let config: Config = config::Config::builder()
             .add_source(config::File::with_name("config").required(false).format(config::FileFormat::Yaml))
             .build()?
@@ -53,7 +53,7 @@ impl AppConfig {
 
         let router = Arc::new(Router::new(
             Box::new(crate::router::strategies::round_robin::RoundRobinStrategy::new()),
-            metrics,
+            metrics_store,
         ));
 
         Ok(Self { db, router })

@@ -82,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (emitter, _receiver) = metrics::MetricsEmitter::new(10000);
             let metrics_store = metrics::MetricsStore::new(emitter.clone(), 10000);
 
-            let config = config::AppConfig::load(emitter.clone())
+            let config = config::AppConfig::load(metrics_store.clone())
                 .await
                 .expect("Failed to load config");
             config
@@ -99,7 +99,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::CheckConfig => {
             let (emitter, _receiver) = metrics::MetricsEmitter::new(10000);
-            let _config = config::AppConfig::load(emitter.clone())
+            let metrics_store = metrics::MetricsStore::new(emitter.clone(), 10000);
+            let _config = config::AppConfig::load(metrics_store.clone())
                 .await
                 .expect("Failed to load config");
             println!("Configuration loaded successfully");
@@ -239,6 +240,7 @@ async fn chat_with_providers(pool: &SqlitePool, strategy: &str, _message: &str, 
     }
 
     let (emitter, _receiver) = metrics::MetricsEmitter::new(10000);
+    let metrics_store = metrics::MetricsStore::new(emitter.clone(), 10000);
 
     let strategy: Box<dyn yalr::router::strategies::RoutingStrategy> = match strategy {
         "round_robin" => Box::new(yalr::router::strategies::round_robin::RoundRobinStrategy::new()),
@@ -249,7 +251,7 @@ async fn chat_with_providers(pool: &SqlitePool, strategy: &str, _message: &str, 
     };
 
     let strategy_name = strategy.name().to_string();
-    let router = Router::new(strategy, emitter);
+    let router = Router::new(strategy, metrics_store);
 
     for provider_record in &providers {
         let provider = Arc::new(OpenAiProvider::new(

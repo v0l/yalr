@@ -5,6 +5,8 @@ pub mod metrics;
 pub mod providers;
 pub mod router;
 
+pub use metrics::{HealthConfig, HealthState, ProviderHealthState};
+
 // Re-export types from providers module for centralized type management
 pub use providers::{
     CreateChatCompletionRequest as ChatCompletionRequest,
