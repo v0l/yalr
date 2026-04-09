@@ -112,7 +112,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let db = Database::new(&default_config.database.url)
                 .await
                 .expect("Failed to connect to database");
-            db.run_migrations().await.expect("Failed to run migrations");
 
             match provider_cmd {
                 ProviderCommands::List => list_providers(&db.pool).await,
@@ -138,7 +137,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let db = Database::new(&default_config.database.url)
                 .await
                 .expect("Failed to connect to database");
-            db.run_migrations().await.expect("Failed to run migrations");
             chat_with_providers(
                 &db.pool,
                 &strategy,

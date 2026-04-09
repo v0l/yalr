@@ -49,7 +49,6 @@ impl AppConfig {
             .try_deserialize()?;
 
         let db = Arc::new(Database::new(&config.database.url).await?);
-        db.run_migrations().await?;
 
         let router = Arc::new(Router::new(
             Box::new(crate::router::strategies::round_robin::RoundRobinStrategy::new()),

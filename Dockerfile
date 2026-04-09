@@ -27,8 +27,8 @@ RUN cargo build --release
 RUN rm -rf src
 COPY . .
 
-# Build the actual binary
-RUN cargo build --release --bin yalr-server
+# Build the actual binaries
+RUN cargo build --release --bin yalr-server --bin yalr-cli
 
 # Runtime image
 FROM debian:trixie-slim
@@ -41,6 +41,7 @@ RUN apt-get update && \
 WORKDIR /app
 
 COPY --from=builder /app/target/release/yalr-server /usr/local/bin/
+COPY --from=builder /app/target/release/yalr-cli /usr/local/bin/
 
 EXPOSE 3000
 
