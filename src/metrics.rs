@@ -3,6 +3,7 @@
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::{broadcast, RwLock};
 
 /// Provider metrics data point with timestamp and event
@@ -33,6 +34,11 @@ pub enum MetricsEvent {
     Success,
     /// Request failed with error details
     Failure(FailureDetails),
+    /// Provider load event (in-flight requests)
+    ProviderLoad {
+        in_flight: u32,
+        max_concurrency: Option<u32>,
+    },
 }
 
 /// Error details for failure events
@@ -176,6 +182,17 @@ impl MetricsEmitter {
             status_code,
         );
     }
+
+    pub fn emit_provider_load(&self, provider: &str, in_flight: u32, max_concurrency: Option<u32>) {
+        self.emit(
+            provider.to_string(),
+            String::new(),
+            MetricsEvent::ProviderLoad {
+                in_flight,
+                max_concurrency,
+            },
+        );
+    }
 }
 
 /// Receiver for metrics events
@@ -226,6 +243,8 @@ pub struct MetricsStore {
     events: Arc<RwLock<VecDeque<ProviderMetrics>>>,
     /// Track provider health states
     provider_health: Arc<RwLock<std::collections::HashMap<String, ProviderHealthState>>>,
+    /// Track per-provider in-flight request counts
+    provider_in_flight: Arc<RwLock<std::collections::HashMap<String, Arc<AtomicU32>>>>,
     max_events: usize,
     health_config: HealthConfig,
 }
@@ -247,6 +266,7 @@ impl MetricsStore {
             emitter,
             events: Arc::new(RwLock::new(VecDeque::with_capacity(max_events))),
             provider_health: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            provider_in_flight: Arc::new(RwLock::new(std::collections::HashMap::new())),
             max_events,
             health_config: health_config.unwrap_or_default(),
         }
@@ -254,6 +274,49 @@ impl MetricsStore {
 
     pub fn emitter(&self) -> &MetricsEmitter {
         &self.emitter
+    }
+
+    /// Register a provider for in-flight tracking
+    pub async fn register_provider(&self, provider_name: &str) {
+        let mut load = self.provider_in_flight.write().await;
+        load.entry(provider_name.to_string())
+            .or_insert_with(|| Arc::new(AtomicU32::new(0)));
+    }
+
+    /// Increment in-flight count for a provider and return the new count
+    pub async fn increment_in_flight(&self, provider_name: &str) -> u32 {
+        let load = self.provider_in_flight.read().await;
+        if let Some(counter) = load.get(provider_name) {
+            counter.fetch_add(1, Ordering::SeqCst) + 1
+        } else {
+            drop(load);
+            let mut write_load = self.provider_in_flight.write().await;
+            let counter = write_load
+                .entry(provider_name.to_string())
+                .or_insert_with(|| Arc::new(AtomicU32::new(0)))
+                .clone();
+            drop(write_load);
+            counter.fetch_add(1, Ordering::SeqCst) + 1
+        }
+    }
+
+    /// Decrement in-flight count for a provider and return the new count
+    pub async fn decrement_in_flight(&self, provider_name: &str) -> u32 {
+        let load = self.provider_in_flight.read().await;
+        if let Some(counter) = load.get(provider_name) {
+            let current = counter.fetch_sub(1, Ordering::SeqCst) - 1;
+            current
+        } else {
+            0
+        }
+    }
+
+    /// Get current in-flight count for a provider
+    pub async fn get_in_flight(&self, provider_name: &str) -> u32 {
+        let load = self.provider_in_flight.read().await;
+        load.get(provider_name)
+            .map(|c| c.load(Ordering::SeqCst))
+            .unwrap_or(0)
     }
 
     /// Record a metrics event and update health state
@@ -574,6 +637,40 @@ impl MetricsStore {
             .get(provider)
             .map(|h| h.consecutive_failures)
             .unwrap_or(0)
+    }
+
+    /// Get current provider load (in-flight requests)
+    pub async fn get_provider_load(&self, provider: &str) -> Option<(u32, Option<u32>)> {
+        let events = self.events.read().await;
+        let provider_events: Vec<&ProviderMetrics> = events
+            .iter()
+            .filter(|e| e.provider == provider)
+            .collect();
+        
+        provider_events
+            .iter()
+            .rev()
+            .find_map(|e| match &e.event {
+                MetricsEvent::ProviderLoad { in_flight, max_concurrency } => {
+                    Some((*in_flight, *max_concurrency))
+                }
+                _ => None,
+            })
+    }
+
+    /// Get load score for routing (0.0 = fully loaded, 1.0 = completely idle)
+    pub async fn get_provider_load_score(&self, provider: &str) -> Option<f32> {
+        let (in_flight, max_concurrency) = self.get_provider_load(provider).await?;
+        
+        if let Some(max) = max_concurrency {
+            if max == 0 {
+                Some(0.0)
+            } else {
+                Some(((max - in_flight) as f32 / max as f32).max(0.0))
+            }
+        } else {
+            Some(1.0)
+        }
     }
 
     /// Compute health from recent metrics (for external health calculation)

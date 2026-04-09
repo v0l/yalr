@@ -6,9 +6,11 @@ use axum::{
 };
 use futures::Stream;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::convert::Infallible;
 
 use crate::{ChatCompletionRequest, ChatCompletionResponse};
+use crate::router::{DbModelInfo, ModelInfoDetector};
 
 #[derive(Serialize)]
 pub struct HealthResponse {
@@ -293,4 +295,122 @@ pub async fn delete_provider(
         "deleted": true,
         "slug": slug
     })))
+}
+
+#[derive(Serialize)]
+pub struct ModelSyncReportResponse {
+    pub model_name: String,
+    pub provider_name: String,
+    pub discrepancies: Vec<ModelDiscrepancyResponse>,
+    pub is_synced: bool,
+}
+
+#[derive(Serialize)]
+pub struct ModelDiscrepancyResponse {
+    pub field: String,
+    pub database_value: Option<String>,
+    pub api_value: Option<String>,
+    pub severity: String,
+}
+
+#[derive(Deserialize)]
+pub struct ModelSyncRequest {
+    pub models: HashMap<String, DbModelInfo>,
+}
+
+#[axum::debug_handler]
+pub async fn detect_model_discrepancies(
+    State(state): State<AppState>,
+    Json(request): Json<ModelSyncRequest>,
+) -> Json<Vec<ModelSyncReportResponse>> {
+    let providers = state.config.router.get_providers().await;
+    let detector = ModelInfoDetector::new(providers);
+
+    let reports = detector.detect_discrepancies(&request.models).await;
+
+    let response: Vec<ModelSyncReportResponse> = reports
+        .into_iter()
+        .map(|report| {
+            let discrepancies = report.discrepancies
+                .into_iter()
+                .map(|d| ModelDiscrepancyResponse {
+                    field: d.field,
+                    database_value: d.database_value,
+                    api_value: d.api_value,
+                    severity: match d.severity {
+                        crate::router::DiscrepancySeverity::Info => "info".to_string(),
+                        crate::router::DiscrepancySeverity::Warning => "warning".to_string(),
+                        crate::router::DiscrepancySeverity::Error => "error".to_string(),
+                    },
+                })
+                .collect();
+
+            ModelSyncReportResponse {
+                model_name: report.model_name,
+                provider_name: report.provider_name,
+                discrepancies,
+                is_synced: report.is_synced,
+            }
+        })
+        .collect();
+
+    Json(response)
+}
+
+#[axum::debug_handler]
+pub async fn sync_provider_models(
+    Path(provider_slug): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let providers = state.config.router.get_providers().await;
+    let provider = providers
+        .iter()
+        .find(|p| p.slug() == provider_slug)
+        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, format!("Provider '{}' not found", provider_slug)))?;
+
+    match provider.list_models().await {
+        Ok(models) => {
+            let mut model_details = Vec::new();
+            
+            for model in &models {
+                match provider.get_runtime_info(&model.id).await {
+                    Ok(Some(info)) => {
+                        model_details.push(serde_json::json!({
+                            "model_id": model.id,
+                            "object": model.object,
+                            "created": model.created,
+                            "owned_by": model.owned_by,
+                            "context_length": info.context_length(),
+                            "quantization": info.quantization(),
+                            "parameter_size": info.parameter_size(),
+                            "max_output_tokens": info.max_output_tokens,
+                            "additional_fields": info.additional_fields,
+                        }));
+                    }
+                    Ok(None) => {
+                        model_details.push(serde_json::json!({
+                            "model_id": model.id,
+                            "object": model.object,
+                            "created": model.created,
+                            "owned_by": model.owned_by,
+                            "runtime_info": null,
+                        }));
+                    }
+                    Err(e) => {
+                        model_details.push(serde_json::json!({
+                            "model_id": model.id,
+                            "error": e.to_string(),
+                        }));
+                    }
+                }
+            }
+
+            Ok(Json(serde_json::json!({
+                "provider": provider_slug,
+                "models": model_details,
+                "total_count": models.len(),
+            })))
+        }
+        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
 }

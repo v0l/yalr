@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 
 use crate::metrics::ErrorType;
+use crate::router::ModelRuntimeInfo;
 
 #[async_trait]
 pub trait Provider: Send + Sync {
@@ -31,6 +32,11 @@ pub trait Provider: Send + Sync {
     >;
 
     async fn health_check(&self) -> Result<bool, ProviderError>;
+
+    async fn get_runtime_info(&self, model_id: &str) -> Result<Option<ModelRuntimeInfo>, ProviderError> {
+        let _ = model_id;
+        Ok(None)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -29,6 +29,8 @@ pub fn create_router(config: AppConfig, metrics_store: MetricsStore) -> Router<A
         .route("/admin/providers", post(handlers::create_provider))
         .route("/admin/providers/:slug", delete(handlers::delete_provider))
         .route("/admin/metrics", get(handlers::get_metrics))
+        .route("/admin/models/sync/:provider_slug", get(handlers::sync_provider_models))
+        .route("/admin/models/discrepancies", post(handlers::detect_model_discrepancies))
         .route("/health", get(handlers::health_check))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -54,6 +56,8 @@ pub async fn run(
         .route("/providers/:slug", delete(handlers::delete_provider))
         .route("/health", get(handlers::health_check))
         .route("/metrics", get(handlers::get_metrics))
+        .route("/models/sync/:provider_slug", get(handlers::sync_provider_models))
+        .route("/models/discrepancies", post(handlers::detect_model_discrepancies))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

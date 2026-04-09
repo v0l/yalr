@@ -2,23 +2,59 @@
 
 ## Overview
 
-YALR (Yet Another LLM Router) is an async LLM router with load balancing, provider abstraction, and future web UI support.
+Async LLM router with load balancing, provider abstraction, and streaming support.
 
-## Development Guidelines
+## Developer Commands
 
-1. **Async First**: All I/O operations must be async using tokio
-2. **Trait-Based**: Use traits for all abstractions to enable testing and extension
-3. **Streaming Support**: All providers must support streaming responses
-4. **Error Handling**: Use `thiserror` for library errors, proper error propagation
-5. **Logging**: Use `tracing` for structured logging
-6. **Testing**: Write unit tests using `#[cfg(test)] mod tests {}` inline within the source file, not as separate test files
+```bash
+# Run server
+cargo run --bin yalr-server
 
-### Testing Convention
+# Run CLI
+cargo run --bin yalr-cli
 
-- All tests should be written as inline modules: `#[cfg(test)] mod tests { ... }`
-- Place the test module at the bottom of the file being tested
-- Do not create separate `*_test.rs` files
+# Run all tests
+cargo test
+
+# Run library tests only
+cargo test --lib
+
+# Check compilation
+cargo check
+```
+
+## Architecture
+
+- **Entry points**: `src/bin/server.rs`, `src/bin/cli.rs`
+- **Core router**: `src/router/engine.rs` - request routing and provider selection
+- **Providers**: `src/providers/` - OpenAI, LlamaCpp implementations
+- **Metrics**: `src/metrics.rs` - shared metrics store for health/load tracking
+- **Routing strategies**: `src/router/strategies/` - round-robin, etc.
+
+## Testing Conventions
+
+- All tests inline in source files: `#[cfg(test)] mod tests { ... }` at bottom of file
+- No separate `*_test.rs` files
+- Use `wiremock` for HTTP mocking in provider tests
+
+## Provider Implementation Rules
+
+- All providers implement the `Provider` trait in `src/providers/provider_trait.rs`
+- **Always use shared `MetricsStore`** for provider health and load tracking - never implement provider-specific tracking outside it
+- Every provider must include unit tests for trait methods, error handling, and edge cases
+- Providers are wrapped in `Arc<dyn Provider>` and stored in `RoutingEngine`
+
+## Metrics Tracking
+
+All Router instances share the same `MetricsStore` for:
+- Per-provider in-flight request counts
+- Provider health state and backoff timing
+- Request outcomes, latency, token usage, throughput
+
+## Configuration
+
+Providers loaded from SQLite database (`llm_router.db`) via `src/config.rs`. See `config.yaml` for example.
 
 ## Implementation Plan
 
-See [PLAN.md](./PLAN.md) for the full implementation plan.
+See [PLAN.md](./PLAN.md) for implementation roadmap.

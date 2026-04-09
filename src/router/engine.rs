@@ -18,6 +18,13 @@ pub struct Router {
 }
 
 impl Router {
+    pub async fn get_providers(&self) -> Vec<Arc<dyn Provider>> {
+        let engine = self.engine.read().await;
+        engine.get_providers().await
+    }
+}
+
+impl Router {
     pub fn new(strategy: Box<dyn RoutingStrategy>, metrics_store: MetricsStore) -> Self {
         let engine = RoutingEngine::new(Arc::from(strategy));
         Self {
@@ -28,6 +35,9 @@ impl Router {
     }
 
     pub async fn add_provider(&self, provider: Arc<dyn Provider>) {
+        let provider_name = provider.name().to_string();
+        self.metrics_store.register_provider(&provider_name).await;
+        
         let engine = self.engine.write().await;
         engine.add_provider(provider.clone()).await;
     }
@@ -43,6 +53,9 @@ impl Router {
             .ok_or(RouterError::NoAvailableProvider)?;
         let provider_name = provider.name().to_string();
         let model = request.model.clone();
+
+        let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
+        self.metrics_store.emitter().emit_provider_load(&provider_name, in_flight, None);
 
         let mut attempt = 0;
         let mut last_error = None;
@@ -60,6 +73,7 @@ impl Router {
             }
 
             if attempt >= self.max_retries {
+                let _ = self.metrics_store.decrement_in_flight(&provider_name).await;
                 return Err(last_error.unwrap_or(RouterError::ProviderError(
                     ProviderError::ProviderError("Max retries exceeded".to_string())
                 )));
@@ -108,6 +122,9 @@ impl Router {
                             .emit_output_tokens(&provider_name, &model, tokens.completion_tokens as u32);
                     }
                     
+                    let _ = self.metrics_store.decrement_in_flight(&provider_name).await;
+                    let current = self.metrics_store.get_in_flight(&provider_name).await;
+                    self.metrics_store.emitter().emit_provider_load(&provider_name, current, None);
                     return Ok(response);
                 }
                 Err(e) => {
@@ -124,6 +141,7 @@ impl Router {
                     );
 
                     if attempt >= self.max_retries - 1 {
+                        let _ = self.metrics_store.decrement_in_flight(&provider_name).await;
                         return Err(last_error.unwrap());
                     }
 
@@ -165,8 +183,12 @@ pub async fn chat_completions_stream(
             (provider.name().to_string(), request.model.clone(), provider)
         };
 
+        let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
+        self.metrics_store.emitter().emit_provider_load(&provider_name, in_flight, None);
+
         let metrics_store = self.metrics_store.clone();
         let request = request.clone();
+        let provider_name_stream = provider_name.clone();
 
         let stream = stream! {
             let start = Instant::now();
@@ -188,6 +210,9 @@ pub async fn chat_completions_stream(
                         e.retry_after_ms(),
                         e.status_code(),
                     );
+                    let _ = metrics_store.decrement_in_flight(&provider_name_stream).await;
+                    let current = metrics_store.get_in_flight(&provider_name_stream).await;
+                    metrics_store.emitter().emit_provider_load(&provider_name_stream, current, None);
                     yield Err(RouterError::ProviderError(e));
                     return;
                 }
@@ -222,8 +247,11 @@ pub async fn chat_completions_stream(
                             e.retry_after_ms(),
                             e.status_code(),
                         );
-                        yield Err(RouterError::ProviderError(e));
-                        return;
+let _ = metrics_store.decrement_in_flight(&provider_name_stream).await;
+                    let current = metrics_store.get_in_flight(&provider_name_stream).await;
+                    metrics_store.emitter().emit_provider_load(&provider_name_stream, current, None);
+                    yield Err(RouterError::ProviderError(e));
+                    return;
                     }
                 }
             }
@@ -256,6 +284,10 @@ pub async fn chat_completions_stream(
                     metrics_store.emitter().emit_output_tokens(&provider_name, &model, completion_tokens);
                 }
             }
+            
+            let _ = metrics_store.decrement_in_flight(&provider_name_stream).await;
+            let current = metrics_store.get_in_flight(&provider_name_stream).await;
+            metrics_store.emitter().emit_provider_load(&provider_name_stream, current, None);
         };
 
         Ok(Box::pin(stream))
