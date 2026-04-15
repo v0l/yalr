@@ -59,14 +59,10 @@ impl AppConfig {
     }
 
     pub async fn load_providers(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let providers = sqlx::query_as::<_, ProviderRecord>(
-            "SELECT id, name, slug, base_url, api_key FROM providers",
-        )
-        .fetch_all(&self.db.pool)
-        .await?;
+        let providers = self.db.list_providers().await?;
 
         for provider_record in providers {
-            let provider = Arc::new(OpenAiProvider::new(
+            let provider: Arc<dyn crate::providers::Provider> = Arc::new(OpenAiProvider::new(
                 &provider_record.name,
                 Some(&provider_record.slug),
                 &provider_record.base_url,
@@ -77,13 +73,4 @@ impl AppConfig {
 
         Ok(())
     }
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct ProviderRecord {
-    pub id: i64,
-    pub name: String,
-    pub slug: String,
-    pub base_url: String,
-    pub api_key: Option<String>,
 }

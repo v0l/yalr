@@ -44,31 +44,20 @@ pub async fn health_check() -> Json<HealthResponse> {
 }
 
 pub async fn get_metrics(State(state): State<AppState>) -> Json<MetricsResponse> {
-    let providers = vec![
-        {
-            let summary = state.metrics_store.get_provider_summary("openai-primary").await;
-            ProviderMetrics {
-                provider: summary.provider,
-                p90_tokens_per_second: summary.p90_output_tokens_per_second,
-                p90_ttft_ms: summary.p90_ttft,
-                avg_latency_ms: summary.avg_latency,
-                success_rate: summary.success_rate,
-            }
-        },
-        {
-            let summary = state.metrics_store.get_provider_summary("openai-secondary").await;
-            ProviderMetrics {
-                provider: summary.provider,
-                p90_tokens_per_second: summary.p90_output_tokens_per_second,
-                p90_ttft_ms: summary.p90_ttft,
-                avg_latency_ms: summary.avg_latency,
-                success_rate: summary.success_rate,
-            }
-        },
-    ];
+    let providers = state.config.router.get_providers().await;
+    let mut provider_metrics = Vec::new();
 
-    // Get model-specific summaries (available for future use)
-    let _model_summaries = state.metrics_store.get_model_summaries_for_provider("openai-primary").await;
+    for provider in &providers {
+        let provider_name = provider.name();
+        let summary = state.metrics_store.get_provider_summary(provider_name).await;
+        provider_metrics.push(ProviderMetrics {
+            provider: summary.provider,
+            p90_tokens_per_second: summary.p90_output_tokens_per_second,
+            p90_ttft_ms: summary.p90_ttft,
+            avg_latency_ms: summary.avg_latency,
+            success_rate: summary.success_rate,
+        });
+    }
 
     let recent_events: Vec<serde_json::Value> = state
         .metrics_store
@@ -79,15 +68,35 @@ pub async fn get_metrics(State(state): State<AppState>) -> Json<MetricsResponse>
         .collect();
 
     Json(MetricsResponse {
-        providers,
+        providers: provider_metrics,
         recent_events,
     })
 }
 
-pub async fn list_models(State(_state): State<AppState>) -> Json<serde_json::Value> {
+pub async fn list_models(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let providers = state.config.router.get_providers().await;
+    let mut all_models = Vec::new();
+
+    for provider in &providers {
+        match provider.list_models().await {
+            Ok(models) => {
+                for model in models {
+                    all_models.push(model);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = provider.name(),
+                    error = %e,
+                    "Failed to list models from provider"
+                );
+            }
+        }
+    }
+
     Json(serde_json::json!({
         "object": "list",
-        "data": []
+        "data": all_models
     }))
 }
 
@@ -131,17 +140,7 @@ pub async fn chat_completions_handler(
                 error = %e,
                 "Routing failed"
             );
-            Ok(Json(ChatCompletionResponse {
-                id: "error".to_string(),
-                object: "error".to_string(),
-                created: 0,
-                model: request.model,
-                choices: vec![],
-                usage: None,
-                service_tier: None,
-                #[allow(deprecated)]
-                system_fingerprint: None,
-            }))
+            Err((axum::http::StatusCode::BAD_REQUEST, e.to_string()))
         }
     }
 }
@@ -221,9 +220,32 @@ pub struct ProviderCreateRequest {
 }
 
 #[axum::debug_handler]
-pub async fn list_providers(State(_state): State<AppState>) -> Json<serde_json::Value> {
+pub async fn list_providers(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let providers = match state.config.db.list_providers().await {
+        Ok(providers) => providers,
+        Err(e) => {
+            tracing::error!("Failed to list providers from DB: {}", e);
+            return Json(serde_json::json!({
+                "providers": [],
+                "error": e.to_string()
+            }));
+        }
+    };
+
+    let providers_json: Vec<serde_json::Value> = providers
+        .into_iter()
+        .map(|p| serde_json::json!({
+            "id": p.id,
+            "name": p.name,
+            "slug": p.slug,
+            "base_url": p.base_url,
+            "created_at": p.created_at,
+            "updated_at": p.updated_at
+        }))
+        .collect();
+
     Json(serde_json::json!({
-        "providers": []
+        "providers": providers_json
     }))
 }
 
@@ -283,11 +305,20 @@ pub async fn delete_provider(
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     tracing::info!(provider_slug = slug, "Deleting provider");
     
+    // Delete from database
     sqlx::query("DELETE FROM providers WHERE slug = ?")
         .bind(&slug)
         .execute(&state.config.db.pool)
         .await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Remove from in-memory router
+    let providers = state.config.router.get_providers().await;
+    if let Some(provider) = providers.iter().find(|p| p.slug() == slug) {
+        let provider_name = provider.name();
+        state.config.router.remove_provider(provider_name).await;
+        tracing::info!(provider_name = provider_name, "Provider removed from router");
+    }
 
     tracing::info!(provider_slug = slug, "Provider deleted successfully");
 

@@ -22,6 +22,11 @@ impl Router {
         let engine = self.engine.read().await;
         engine.get_providers().await
     }
+
+    pub async fn remove_provider(&self, provider_name: &str) {
+        let engine = self.engine.write().await;
+        let _ = engine.remove_provider(provider_name).await;
+    }
 }
 
 impl Router {

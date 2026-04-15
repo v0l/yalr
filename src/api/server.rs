@@ -15,27 +15,6 @@ pub struct AppState {
     pub metrics_store: MetricsStore,
 }
 
-pub fn create_router(config: AppConfig, metrics_store: MetricsStore) -> Router<AppState> {
-    let state = AppState {
-        config,
-        metrics_emitter: metrics_store.emitter().clone(),
-        metrics_store,
-    };
-
-    Router::new()
-        .route("/v1/chat/completions", post(chat_handler))
-        .route("/v1/models", get(handlers::list_models))
-        .route("/admin/providers", get(handlers::list_providers))
-        .route("/admin/providers", post(handlers::create_provider))
-        .route("/admin/providers/:slug", delete(handlers::delete_provider))
-        .route("/admin/metrics", get(handlers::get_metrics))
-        .route("/admin/models/sync/:provider_slug", get(handlers::sync_provider_models))
-        .route("/admin/models/discrepancies", post(handlers::detect_model_discrepancies))
-        .route("/health", get(handlers::health_check))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
-}
-
 pub async fn run(
     config: AppConfig, 
     addr: &str,

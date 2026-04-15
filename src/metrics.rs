@@ -437,18 +437,24 @@ impl MetricsStore {
     }
 
     /// Calculate success rate for a provider (model aggregated)
+    /// Only counts Success and Failure events in the denominator
     pub async fn success_rate(&self, provider: &str, model: Option<&str>) -> Option<f64> {
         let events = self.get_events_for(provider, model).await;
-        if events.is_empty() {
+        let outcomes: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e.event, MetricsEvent::Success | MetricsEvent::Failure(_)))
+            .collect();
+
+        if outcomes.is_empty() {
             return None;
         }
 
-        let successes = events
+        let successes = outcomes
             .iter()
             .filter(|e| matches!(e.event, MetricsEvent::Success))
             .count();
 
-        Some(successes as f64 / events.len() as f64)
+        Some(successes as f64 / outcomes.len() as f64)
     }
 
     /// Get recent events (last N events)
@@ -496,8 +502,9 @@ impl MetricsStore {
             })
             .collect();
         
-        let successes = events.iter().filter(|e| matches!(e.event, MetricsEvent::Success)).count();
-        let total = events.len();
+        let outcome_events: Vec<_> = events.iter().filter(|e| matches!(e.event, MetricsEvent::Success | MetricsEvent::Failure(_))).collect();
+        let successes = outcome_events.iter().filter(|e| matches!(e.event, MetricsEvent::Success)).count();
+        let total = outcome_events.len();
 
         ProviderMetricsSummary {
             provider,
@@ -543,8 +550,9 @@ impl MetricsStore {
             })
             .collect();
         
-        let successes = events.iter().filter(|e| matches!(e.event, MetricsEvent::Success)).count();
-        let total = events.len();
+        let outcome_events: Vec<_> = events.iter().filter(|e| matches!(e.event, MetricsEvent::Success | MetricsEvent::Failure(_))).collect();
+        let successes = outcome_events.iter().filter(|e| matches!(e.event, MetricsEvent::Success)).count();
+        let total = outcome_events.len();
 
         ModelMetricsSummary {
             provider,

@@ -32,11 +32,12 @@ impl ModelInfoDetector {
                                     let discrepancies = 
                                         self.compare_model_info(&model_id, &provider_name, db_info, &runtime_info);
                                     
+                                    let is_synced = discrepancies.is_empty();
                                     reports.push(ModelSyncReport {
                                         model_name: model_id,
                                         provider_name: provider_name.clone(),
                                         discrepancies,
-                                        is_synced: true,
+                                        is_synced,
                                     });
                                 }
                                 Ok(None) => {

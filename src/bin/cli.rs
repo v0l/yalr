@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 use std::io::Write;
 use std::sync::Arc;
 use yalr::{
-    api, config, db::Database, metrics, providers::openai::OpenAiProvider, ChatCompletionRequest,
+    api, config, db::{Database, Provider}, metrics, providers::openai::OpenAiProvider, ChatCompletionRequest,
     ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageContent,
     ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
     ChatCompletionRequestUserMessageContent, Router,
@@ -151,8 +151,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn list_providers(pool: &SqlitePool) {
-    let providers = sqlx::query_as::<_, config::ProviderRecord>(
-        "SELECT id, name, slug, base_url, api_key FROM providers ORDER BY name",
+    let providers = sqlx::query_as::<_, Provider>(
+        "SELECT id, name, slug, base_url, api_key, created_at, updated_at FROM providers ORDER BY name",
     )
     .fetch_all(pool)
     .await
@@ -224,9 +224,9 @@ fn create_assistant_message(content: &str) -> ChatCompletionRequestMessage {
     })
 }
 
-async fn chat_with_providers(pool: &SqlitePool, strategy: &str, _message: &str, model: &str) {
-    let providers = sqlx::query_as::<_, config::ProviderRecord>(
-        "SELECT id, name, slug, base_url, api_key FROM providers ORDER BY name",
+async fn chat_with_providers(pool: &SqlitePool, strategy: &str, message: &str, model: &str) {
+    let providers = sqlx::query_as::<_, Provider>(
+        "SELECT id, name, slug, base_url, api_key, created_at, updated_at FROM providers ORDER BY name",
     )
     .fetch_all(pool)
     .await
@@ -267,28 +267,43 @@ async fn chat_with_providers(pool: &SqlitePool, strategy: &str, _message: &str, 
 
     let mut messages: Vec<ChatCompletionRequestMessage> = Vec::new();
 
+    // If an initial message was provided, use it
+    if !message.is_empty() {
+        messages.push(create_user_message(message));
+        println!("Initial message: {}", message);
+    }
+
     let stdin = std::io::stdin();
     let mut input = String::new();
 
-    loop {
-        print!("\n> ");
-        let _ = std::io::stdout().flush();
-        input.clear();
-        if stdin.read_line(&mut input).is_err() {
-            break;
-        }
-        let input = input.trim();
+    // If we started with a message, process it first
+    let mut first_input = !message.is_empty();
 
-        if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
+    loop {
+        let user_input = if first_input {
+            first_input = false;
+            input = message.to_string();
+            input.as_str()
+        } else {
+            print!("\n> ");
+            let _ = std::io::stdout().flush();
+            input.clear();
+            if stdin.read_line(&mut input).is_err() {
+                break;
+            }
+            input.trim()
+        };
+
+        if user_input.eq_ignore_ascii_case("exit") || user_input.eq_ignore_ascii_case("quit") {
             println!("Goodbye!");
             break;
         }
 
-        if input.is_empty() {
+        if user_input.is_empty() {
             continue;
         }
 
-        messages.push(create_user_message(input));
+        messages.push(create_user_message(user_input));
 
         let request = ChatCompletionRequest {
             model: model.to_string(),
