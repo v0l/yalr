@@ -1,4 +1,5 @@
 use crate::api::server::AppState;
+use crate::auth::nip98::Nip98Auth;
 use axum::{
     extract::{Path, State},
     response::{sse::{Event, KeepAlive, Sse}, IntoResponse},
@@ -102,13 +103,14 @@ pub async fn list_models(State(state): State<AppState>) -> Json<serde_json::Valu
 
 pub async fn chat_handler(
     State(state): State<AppState>,
+    auth: Nip98Auth,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, String)> {
     if request.stream.unwrap_or(false) {
-        let stream_response = chat_completions_stream(State(state), Json(request)).await;
+        let stream_response = chat_completions_stream(State(state), auth, Json(request)).await;
         Ok(stream_response.into_response())
     } else {
-        let response = chat_completions_handler(State(state), Json(request)).await?;
+        let response = chat_completions_handler(State(state), auth, Json(request)).await?;
         Ok(response.into_response())
     }
 }
@@ -116,6 +118,7 @@ pub async fn chat_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_handler(
     State(state): State<AppState>,
+    _auth: Nip98Auth,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Json<ChatCompletionResponse>, (axum::http::StatusCode, String)> {
     tracing::info!(
@@ -148,6 +151,7 @@ pub async fn chat_completions_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_stream(
     State(state): State<AppState>,
+    _auth: Nip98Auth,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>> + Send + 'static>, (axum::http::StatusCode, String)> {
     tracing::info!(

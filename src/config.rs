@@ -8,6 +8,7 @@ use std::sync::Arc;
 pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
+    pub auth: Option<AuthConfig>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -21,6 +22,12 @@ pub struct DatabaseConfig {
     pub url: String,
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct AuthConfig {
+    pub enabled: bool,
+    pub allowed_pubkeys: Option<Vec<String>>,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -31,6 +38,7 @@ impl Default for Config {
             database: DatabaseConfig {
                 url: "sqlite:llm_router.db?mode=rwc".to_string(),
             },
+            auth: None,
         }
     }
 }
@@ -39,6 +47,7 @@ impl Default for Config {
 pub struct AppConfig {
     pub db: Arc<Database>,
     pub router: Arc<Router>,
+    pub auth_config: crate::auth::nip98::AuthConfig,
 }
 
 impl AppConfig {
@@ -55,7 +64,17 @@ impl AppConfig {
             metrics_store,
         ));
 
-        Ok(Self { db, router })
+        // Convert auth config
+        let auth_config = config.auth.map(|a| {
+            crate::auth::nip98::AuthConfig {
+                enabled: a.enabled,
+                allowed_pubkeys: a.allowed_pubkeys
+                    .map(|keys| keys.into_iter().collect())
+                    .unwrap_or_default(),
+            }
+        }).unwrap_or_default();
+
+        Ok(Self { db, router, auth_config })
     }
 
     pub async fn load_providers(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

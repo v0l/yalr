@@ -4,3 +4,9 @@ server:
 
 database:
   url: "sqlite:llm_router.db?mode=rwc"
+
+# NIP-98 authentication (enabled for testing)
+auth:
+  enabled: true
+  # allowed_pubkeys:
+  #   - "your_pubkey_here"

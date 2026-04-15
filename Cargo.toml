@@ -22,6 +22,9 @@ async-trait = "0.1"
 config = "0.14"
 clap = { version = "4", features = ["derive"] }
 async-openai = { version = "0.34.0", features = ["chat-completion", "responses", "realtime", "model-types", "_api", "model"] }
+nostr = "0.44"
+base64 = "0.22"
+url = "2.5"
 
 [[bin]]
 name = "yalr-server"
