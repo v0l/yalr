@@ -79,8 +79,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Serve { addr } => {
-            let (emitter, _receiver) = metrics::MetricsEmitter::new(10000);
-            let metrics_store = metrics::MetricsStore::new(emitter.clone(), 10000);
+            let metrics_store = metrics::MetricsStore::new(10000);
+            let emitter = metrics_store.emitter().clone();
 
             let config = config::AppConfig::load(metrics_store.clone())
                 .await
@@ -98,8 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("yalr-cli 0.1.0");
         }
         Commands::CheckConfig => {
-            let (emitter, _receiver) = metrics::MetricsEmitter::new(10000);
-            let metrics_store = metrics::MetricsStore::new(emitter.clone(), 10000);
+            let metrics_store = metrics::MetricsStore::new(10000);
             let _config = config::AppConfig::load(metrics_store.clone())
                 .await
                 .expect("Failed to load config");
@@ -108,8 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Router configured");
         }
         Commands::Provider(provider_cmd) => {
-            let (emitter, _receiver) = metrics::MetricsEmitter::new(10000);
-            let metrics_store = metrics::MetricsStore::new(emitter.clone(), 10000);
+            let metrics_store = metrics::MetricsStore::new(10000);
             let config = config::AppConfig::load(metrics_store.clone())
                 .await
                 .expect("Failed to load config");
@@ -135,8 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             message,
             model,
         } => {
-            let (emitter, _receiver) = metrics::MetricsEmitter::new(10000);
-            let metrics_store = metrics::MetricsStore::new(emitter.clone(), 10000);
+            let metrics_store = metrics::MetricsStore::new(10000);
             let config = config::AppConfig::load(metrics_store.clone())
                 .await
                 .expect("Failed to load config");
@@ -241,8 +238,7 @@ async fn chat_with_providers(pool: &SqlitePool, strategy: &str, message: &str, m
         return;
     }
 
-    let (emitter, _receiver) = metrics::MetricsEmitter::new(10000);
-    let metrics_store = metrics::MetricsStore::new(emitter.clone(), 10000);
+    let metrics_store = metrics::MetricsStore::new(10000);
 
     let strategy: Box<dyn yalr::router::strategies::RoutingStrategy> = match strategy {
         "round_robin" => Box::new(yalr::router::strategies::round_robin::RoundRobinStrategy::new()),

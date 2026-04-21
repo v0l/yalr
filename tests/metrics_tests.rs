@@ -1,9 +1,8 @@
-use yalr::metrics::{MetricsEmitter, MetricsEvent, MetricsStore, ProviderMetrics, FailureDetails};
+use yalr::metrics::{MetricsEvent, MetricsStore, ProviderMetrics, FailureDetails};
 
-fn create_test_metrics() -> (MetricsEmitter, MetricsStore) {
-    let (emitter, _) = MetricsEmitter::new(1000);
-    let store = MetricsStore::new(emitter.clone(), 100);
-    (emitter, store)
+fn create_test_metrics() -> (MetricsStore, MetricsStore) {
+    let store = MetricsStore::new(100);
+    (store.clone(), store)
 }
 
 fn create_test_event(provider: &str, model: &str, event: MetricsEvent) -> ProviderMetrics {
@@ -156,8 +155,7 @@ async fn test_metrics_empty_provider() {
 
 #[tokio::test]
 async fn test_metrics_event_count_limit() {
-    let (emitter, _) = MetricsEmitter::new(1000);
-    let store = MetricsStore::new(emitter, 10);
+    let store = MetricsStore::new(10);
     
     for _ in 0..20 {
         let event = create_test_event("provider1", "model1", MetricsEvent::Success);

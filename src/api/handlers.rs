@@ -138,12 +138,28 @@ pub struct SyncModelsResponse {
 
 pub async fn list_models(State(state): State<std::sync::Arc<AppState>>) -> Json<ModelsListResponse> {
     let providers = state.config.router.get_providers().await;
+    let routing_configs = state.config.db.list_routing_configs().await.unwrap_or_default();
     let mut all_models = Vec::new();
 
+    // Add routing configs (routing engines) as models
+    for rc in &routing_configs {
+        all_models.push(async_openai::types::models::Model {
+            id: rc.name.clone(),
+            object: "model".to_string(),
+            created: 0,
+            owned_by: rc.name.clone(),
+        });
+    }
+
+    // Add actual models from providers
     for provider in &providers {
+        let provider_slug = provider.slug();
+        
         match provider.list_models().await {
             Ok(models) => {
-                for model in models {
+                for mut model in models {
+                    // Prefix model ID with provider slug
+                    model.id = format!("{}:{}", provider_slug, model.id);
                     all_models.push(model);
                 }
             }
@@ -595,11 +611,10 @@ mod tests {
     use std::sync::Arc;
     use tower::util::ServiceExt;
 
-    async fn setup_test_state() -> (Arc<AppState>, MetricsEmitter) {
+    async fn setup_test_state() -> (Arc<AppState>, MetricsStore) {
         let db = Database::new("sqlite::memory:").await.unwrap();
         
-        let (metrics_emitter, _) = MetricsEmitter::new(100);
-        let metrics_store = MetricsStore::new(metrics_emitter.clone(), 1000);
+        let metrics_store = MetricsStore::new(1000);
         
         let config = Config {
             server: ServerConfig {
@@ -624,13 +639,13 @@ mod tests {
         let session_store = Arc::new(SessionStore::new());
         let state = Arc::new(AppState {
             config: app_config,
-            metrics_emitter: metrics_emitter.clone(),
-            metrics_store,
+            metrics_emitter: metrics_store.emitter().clone(),
+            metrics_store: metrics_store.clone(),
             session_store,
             db: Arc::new(db),
         });
 
-        (state, metrics_emitter)
+        (state, metrics_store)
     }
 
     async fn setup_admin_user(state: &Arc<AppState>) -> String {

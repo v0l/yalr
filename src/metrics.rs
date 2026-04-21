@@ -2,7 +2,7 @@
 // Event-based timeseries metrics with percentile support
 use serde::Serialize;
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::{broadcast, RwLock};
 
@@ -61,19 +61,28 @@ pub enum ErrorType {
     Other,
 }
 
-/// Metrics emitter that sends events via broadcast channel
+/// Metrics emitter that sends events via broadcast channel and records in store
 #[derive(Clone)]
 pub struct MetricsEmitter {
     sender: broadcast::Sender<ProviderMetrics>,
+    store: Arc<Mutex<VecDeque<ProviderMetrics>>>,
+    max_events: usize,
 }
 
 impl MetricsEmitter {
-    pub fn new(buffer_size: usize) -> (Self, MetricsReceiver) {
-        let (sender, receiver) = broadcast::channel(buffer_size);
-        (
-            Self { sender },
-            MetricsReceiver { receiver },
-        )
+    pub fn with_store(buffer_size: usize, store: Arc<Mutex<VecDeque<ProviderMetrics>>>, max_events: usize) -> Self {
+        let (sender, _) = broadcast::channel(buffer_size);
+        Self { 
+            sender,
+            store,
+            max_events,
+        }
+    }
+
+    pub fn receiver(&self) -> MetricsReceiver {
+        MetricsReceiver {
+            receiver: self.sender.subscribe(),
+        }
     }
 
     fn emit(&self, provider: String, model: String, event: MetricsEvent) {
@@ -92,7 +101,14 @@ impl MetricsEmitter {
             event = ?event,
             "Metrics event emitted"
         );
-        let _ = self.sender.send(metrics);
+        let _ = self.sender.send(metrics.clone());
+        
+        // Record directly in the store (synchronously with Mutex)
+        let mut events = self.store.lock().unwrap();
+        events.push_back(metrics);
+        while events.len() > events.capacity() {
+            events.pop_front();
+        }
     }
 
     pub fn emit_ttft(&self, provider: &str, model: &str, value_ms: u32) {
@@ -239,8 +255,8 @@ pub struct ModelMetricsSummary {
 #[derive(Clone)]
 pub struct MetricsStore {
     emitter: MetricsEmitter,
-    /// Store recent events for percentile calculations (wrapped in Arc<RwLock> for shared access)
-    events: Arc<RwLock<VecDeque<ProviderMetrics>>>,
+    /// Store recent events for percentile calculations (wrapped in Arc<Mutex> for shared access)
+    events: Arc<Mutex<VecDeque<ProviderMetrics>>>,
     /// Track provider health states
     provider_health: Arc<RwLock<std::collections::HashMap<String, ProviderHealthState>>>,
     /// Track per-provider in-flight request counts
@@ -249,22 +265,20 @@ pub struct MetricsStore {
     health_config: HealthConfig,
 }
 
-/// Type alias for MetricsStore - now cloneable with internal Arc<RwLock>
+/// Type alias for MetricsStore - now cloneable with internal Arc<Mutex>
 pub type SharedMetricsStore = MetricsStore;
 
 impl MetricsStore {
-    pub fn new(emitter: MetricsEmitter, max_events: usize) -> Self {
-        Self::with_health_config(emitter, max_events, None)
+    pub fn new(max_events: usize) -> Self {
+        Self::with_health_config(max_events, None)
     }
 
-    pub fn with_health_config(
-        emitter: MetricsEmitter,
-        max_events: usize,
-        health_config: Option<HealthConfig>,
-    ) -> Self {
+    pub fn with_health_config(max_events: usize, health_config: Option<HealthConfig>) -> Self {
+        let events = Arc::new(Mutex::new(VecDeque::with_capacity(max_events)));
+        let emitter = MetricsEmitter::with_store(10000, events.clone(), max_events);
         Self {
             emitter,
-            events: Arc::new(RwLock::new(VecDeque::with_capacity(max_events))),
+            events,
             provider_health: Arc::new(RwLock::new(std::collections::HashMap::new())),
             provider_in_flight: Arc::new(RwLock::new(std::collections::HashMap::new())),
             max_events,
@@ -325,7 +339,7 @@ impl MetricsStore {
         let model = event.model.clone();
         let event_type = format!("{:?}", event.event);
         
-        let mut events = self.events.write().await;
+        let mut events = self.events.lock().unwrap();
         events.push_back(event.clone());
         if events.len() > self.max_events {
             events.pop_front();
@@ -364,7 +378,7 @@ impl MetricsStore {
 
     /// Get all events for a specific provider and model (model optional)
     pub async fn get_events_for(&self, provider: &str, model: Option<&str>) -> Vec<ProviderMetrics> {
-        let events = self.events.read().await;
+        let events = self.events.lock().unwrap();
         events
             .iter()
             .filter(|e| {
@@ -459,7 +473,7 @@ impl MetricsStore {
 
     /// Get recent events (last N events)
     pub async fn recent_events(&self, n: usize) -> Vec<ProviderMetrics> {
-        let events = self.events.read().await;
+        let events = self.events.lock().unwrap();
         events
             .iter()
             .rev()
@@ -567,7 +581,7 @@ impl MetricsStore {
 
     /// Get all metrics for a provider in a single lock acquisition
     pub async fn get_provider_summary(&self, provider: &str) -> ProviderMetricsSummary {
-        let events = self.events.read().await;
+        let events = self.events.lock().unwrap();
         let provider_events: Vec<ProviderMetrics> = events
             .iter()
             .filter(|e| e.provider == provider)
@@ -579,7 +593,7 @@ impl MetricsStore {
 
     /// Get model-specific metrics summary in a single lock acquisition
     pub async fn get_model_summary(&self, provider: &str, model: &str) -> ModelMetricsSummary {
-        let events = self.events.read().await;
+        let events = self.events.lock().unwrap();
         let model_events: Vec<ProviderMetrics> = events
             .iter()
             .filter(|e| e.provider == provider && e.model == model)
@@ -591,7 +605,7 @@ impl MetricsStore {
 
     /// Get summaries for all models of a provider
     pub async fn get_model_summaries_for_provider(&self, provider: &str) -> Vec<ModelMetricsSummary> {
-        let events = self.events.read().await;
+        let events = self.events.lock().unwrap();
         let provider_events: Vec<&ProviderMetrics> = events
             .iter()
             .filter(|e| e.provider == provider)
@@ -649,7 +663,7 @@ impl MetricsStore {
 
     /// Get current provider load (in-flight requests)
     pub async fn get_provider_load(&self, provider: &str) -> Option<(u32, Option<u32>)> {
-        let events = self.events.read().await;
+        let events = self.events.lock().unwrap();
         let provider_events: Vec<&ProviderMetrics> = events
             .iter()
             .filter(|e| e.provider == provider)

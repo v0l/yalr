@@ -63,6 +63,7 @@ pub struct ModelProvider {
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct RoutingConfig {
     pub id: i64,
+    pub name: String,
     pub strategy: String,
     pub health_check_enabled: bool,
     pub health_check_interval_seconds: i32,
@@ -96,6 +97,7 @@ pub struct NewModelProvider {
 
 #[derive(Clone, Debug)]
 pub struct NewRoutingConfig {
+    pub name: String,
     pub strategy: String,
     pub health_check_enabled: bool,
     pub health_check_interval_seconds: i32,
@@ -125,6 +127,7 @@ pub struct UpdateModelProvider {
 
 #[derive(Clone, Debug)]
 pub struct UpdateRoutingConfig {
+    pub name: Option<String>,
     pub strategy: Option<String>,
     pub health_check_enabled: Option<bool>,
     pub health_check_interval_seconds: Option<i32>,
@@ -419,8 +422,9 @@ impl Database {
     // RoutingConfig CRUD
     pub async fn create_routing_config(&self, rc: NewRoutingConfig) -> Result<RoutingConfig, sqlx::Error> {
         sqlx::query_as::<_, RoutingConfig>(
-            "INSERT INTO routing_config (strategy, health_check_enabled, health_check_interval_seconds, health_check_timeout_seconds) VALUES (?, ?, ?, ?) RETURNING *"
+            "INSERT INTO routing_config (name, strategy, health_check_enabled, health_check_interval_seconds, health_check_timeout_seconds) VALUES (?, ?, ?, ?, ?) RETURNING *"
         )
+        .bind(rc.name)
         .bind(rc.strategy)
         .bind(rc.health_check_enabled)
         .bind(rc.health_check_interval_seconds)
@@ -451,6 +455,9 @@ impl Database {
     pub async fn update_routing_config(&self, id: i64, updates: UpdateRoutingConfig) -> Result<RoutingConfig, sqlx::Error> {
         let mut query = String::from("UPDATE routing_config SET updated_at = CURRENT_TIMESTAMP");
         
+        if let Some(ref _name) = updates.name {
+            query.push_str(", name = ?");
+        }
         if let Some(ref _strategy) = updates.strategy {
             query.push_str(", strategy = ?");
         }
@@ -468,6 +475,9 @@ impl Database {
 
         let mut query_builder = sqlx::query_as::<_, RoutingConfig>(&query);
         
+        if let Some(name) = updates.name {
+            query_builder = query_builder.bind(name);
+        }
         if let Some(strategy) = updates.strategy {
             query_builder = query_builder.bind(strategy);
         }
@@ -1164,11 +1174,13 @@ mod tests {
     async fn test_create_routing_config() {
         let db = setup_test_db().await;
         let rc = db.create_routing_config(NewRoutingConfig {
+            name: "test-config".to_string(),
             strategy: "round_robin".to_string(),
             health_check_enabled: true,
             health_check_interval_seconds: 30,
             health_check_timeout_seconds: 5,
         }).await.unwrap();
+        assert_eq!(rc.name, "test-config");
         assert_eq!(rc.strategy, "round_robin");
         assert!(rc.health_check_enabled);
         assert_eq!(rc.health_check_interval_seconds, 30);
@@ -1179,6 +1191,7 @@ mod tests {
     async fn test_get_routing_config() {
         let db = setup_test_db().await;
         let rc = db.create_routing_config(NewRoutingConfig {
+            name: "test-config".to_string(),
             strategy: "round_robin".to_string(),
             health_check_enabled: true,
             health_check_interval_seconds: 30,
@@ -1186,12 +1199,14 @@ mod tests {
         }).await.unwrap();
         let found = db.get_routing_config(rc.id).await.unwrap().unwrap();
         assert_eq!(found.id, rc.id);
+        assert_eq!(found.name, "test-config");
     }
 
     #[tokio::test]
     async fn test_get_first_routing_config() {
         let db = setup_test_db().await;
         let rc = db.create_routing_config(NewRoutingConfig {
+            name: "test-config".to_string(),
             strategy: "round_robin".to_string(),
             health_check_enabled: true,
             health_check_interval_seconds: 30,
@@ -1199,18 +1214,21 @@ mod tests {
         }).await.unwrap();
         let found = db.get_first_routing_config().await.unwrap().unwrap();
         assert_eq!(found.id, rc.id);
+        assert_eq!(found.name, "test-config");
     }
 
     #[tokio::test]
     async fn test_list_routing_configs() {
         let db = setup_test_db().await;
         db.create_routing_config(NewRoutingConfig {
+            name: "config1".to_string(),
             strategy: "round_robin".to_string(),
             health_check_enabled: true,
             health_check_interval_seconds: 30,
             health_check_timeout_seconds: 5,
         }).await.unwrap();
         db.create_routing_config(NewRoutingConfig {
+            name: "config2".to_string(),
             strategy: "weighted".to_string(),
             health_check_enabled: false,
             health_check_interval_seconds: 60,
@@ -1224,17 +1242,20 @@ mod tests {
     async fn test_update_routing_config() {
         let db = setup_test_db().await;
         let rc = db.create_routing_config(NewRoutingConfig {
+            name: "test-config".to_string(),
             strategy: "round_robin".to_string(),
             health_check_enabled: true,
             health_check_interval_seconds: 30,
             health_check_timeout_seconds: 5,
         }).await.unwrap();
         let updated = db.update_routing_config(rc.id, UpdateRoutingConfig {
+            name: Some("updated-config".to_string()),
             strategy: Some("weighted".to_string()),
             health_check_enabled: Some(false),
             health_check_interval_seconds: Some(60),
             health_check_timeout_seconds: Some(10),
         }).await.unwrap();
+        assert_eq!(updated.name, "updated-config");
         assert_eq!(updated.strategy, "weighted");
         assert!(!updated.health_check_enabled);
         assert_eq!(updated.health_check_interval_seconds, 60);
@@ -1245,17 +1266,20 @@ mod tests {
     async fn test_update_routing_config_partial() {
         let db = setup_test_db().await;
         let rc = db.create_routing_config(NewRoutingConfig {
+            name: "test-config".to_string(),
             strategy: "round_robin".to_string(),
             health_check_enabled: true,
             health_check_interval_seconds: 30,
             health_check_timeout_seconds: 5,
         }).await.unwrap();
         let updated = db.update_routing_config(rc.id, UpdateRoutingConfig {
+            name: None,
             strategy: Some("weighted".to_string()),
             health_check_enabled: None,
             health_check_interval_seconds: None,
             health_check_timeout_seconds: None,
         }).await.unwrap();
+        assert_eq!(updated.name, "test-config");
         assert_eq!(updated.strategy, "weighted");
         assert!(updated.health_check_enabled);
         assert_eq!(updated.health_check_interval_seconds, 30);
@@ -1265,6 +1289,7 @@ mod tests {
     async fn test_delete_routing_config() {
         let db = setup_test_db().await;
         let rc = db.create_routing_config(NewRoutingConfig {
+            name: "test-config".to_string(),
             strategy: "round_robin".to_string(),
             health_check_enabled: true,
             health_check_interval_seconds: 30,

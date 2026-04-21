@@ -117,8 +117,7 @@ impl Provider for MockProvider {
 }
 
 fn create_test_router() -> (Router, MetricsStore) {
-    let (emitter, _) = MetricsEmitter::new(1000);
-    let metrics_store = MetricsStore::new(emitter.clone(), 1000);
+    let metrics_store = MetricsStore::new(1000);
     
     let router = Router::new(
         Box::new(yalr::router::strategies::round_robin::RoundRobinStrategy::new()),
