@@ -51,11 +51,15 @@ CREATE TABLE IF NOT EXISTS routing_config (
 pub const CREATE_USERS_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    is_admin BOOLEAN DEFAULT 1,
+    username TEXT UNIQUE,
+    password_hash TEXT,
+    external_id TEXT,
+    user_type INTEGER NOT NULL DEFAULT 0,
+    is_admin BOOLEAN DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (username IS NOT NULL OR external_id IS NOT NULL),
+    UNIQUE(external_id, user_type)
 )
 "#;
 

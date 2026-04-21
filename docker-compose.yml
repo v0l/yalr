@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  yalr:
+    image: voidic/yalr:latest
+    container_name: yalr
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - RUST_LOG=info
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

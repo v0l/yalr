@@ -108,10 +108,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Router configured");
         }
         Commands::Provider(provider_cmd) => {
-            let default_config = config::Config::default();
-            let db = Database::new(&default_config.database.url)
+            let (emitter, _receiver) = metrics::MetricsEmitter::new(10000);
+            let metrics_store = metrics::MetricsStore::new(emitter.clone(), 10000);
+            let config = config::AppConfig::load(metrics_store.clone())
                 .await
-                .expect("Failed to connect to database");
+                .expect("Failed to load config");
+            let db = config.db;
 
             match provider_cmd {
                 ProviderCommands::List => list_providers(&db.pool).await,
@@ -133,10 +135,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             message,
             model,
         } => {
-            let default_config = config::Config::default();
-            let db = Database::new(&default_config.database.url)
+            let (emitter, _receiver) = metrics::MetricsEmitter::new(10000);
+            let metrics_store = metrics::MetricsStore::new(emitter.clone(), 10000);
+            let config = config::AppConfig::load(metrics_store.clone())
                 .await
-                .expect("Failed to connect to database");
+                .expect("Failed to load config");
+            let db = config.db;
             chat_with_providers(
                 &db.pool,
                 &strategy,

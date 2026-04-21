@@ -9,6 +9,7 @@ import ApiKeys from './pages/ApiKeys'
 import Login from './pages/Login'
 import Setup from './pages/Setup'
 import { api } from './api/client'
+import { API_BASE_URL } from './api/client'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const location = useLocation()
@@ -23,7 +24,7 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
       }
       
       try {
-        const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/api/auth/status`, {
+        const response = await fetch(`${API_BASE_URL}/api/auth/status`, {
           headers: { Authorization: `Bearer ${token}` }
         })
         const data = await response.json()

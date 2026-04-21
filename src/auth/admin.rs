@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use crate::state::AppState;
+use crate::db::UserType;
 
 #[derive(Clone)]
 pub struct SessionStore {
@@ -114,7 +115,7 @@ pub async fn login(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()))?;
 
-    let parsed_hash = PasswordHash::new(&user.password_hash)
+    let parsed_hash = PasswordHash::new(user.password_hash.as_ref().unwrap())
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid hash".to_string()))?;
     
     let valid = Argon2::default()
@@ -125,11 +126,11 @@ pub async fn login(
         return Err((StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()));
     }
 
-    let session_id = session_store.create(&user.username, user.is_admin, 24 * 60 * 60).await; // 24 hours
+    let session_id = session_store.create(user.username.as_ref().unwrap(), user.is_admin, 24 * 60 * 60).await; // 24 hours
 
     Ok(Json(LoginResponse {
         token: session_id,
-        username: user.username,
+        username: user.username.unwrap(),
         is_admin: user.is_admin,
     }))
 }
@@ -219,8 +220,10 @@ pub async fn setup_first_user(
         .to_string();
 
     db.create_user(NewUser {
-        username: &req.username,
-        password_hash: &password_hash,
+        username: Some(&req.username),
+        password_hash: Some(&password_hash),
+        external_id: None,
+        user_type: UserType::Internal,
         is_admin: true,
     }).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -236,15 +239,44 @@ pub async fn auth_middleware(
     mut req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let session_store = &state.session_store;
-    let session_id = req.headers()
+    let auth_header = req.headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "));
+        .map(|s| s.to_string());
 
-    if let Some(token) = session_id {
-        if session_store.validate(token).await.is_some() {
+    if let Some(auth) = &auth_header {
+        if auth.starts_with("Nostr ") {
+            // NIP-98 auth - extract pubkey and get/create user
+            use nostr::{Event, JsonUtil, Kind};
+            use base64::Engine;
+            use base64::prelude::BASE64_STANDARD;
+            
+            let auth_str = auth.strip_prefix("Nostr ").unwrap();
+            let event_bytes = BASE64_STANDARD.decode(auth_str).map_err(|_| StatusCode::UNAUTHORIZED)?;
+            let event = Event::from_json(event_bytes).map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+            if event.kind != Kind::HttpAuth || event.verify().is_err() {
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+
+            let pubkey = event.pubkey.to_string();
+            let user = state.db.get_or_create_user_by_nostr_pubkey(&pubkey)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            
+            // Attach user to request extensions
+            req.extensions_mut().insert(user);
             return Ok(next.run(req).await);
+        } else if auth.starts_with("Bearer ") {
+            // Bearer token auth
+            let session_store = &state.session_store;
+            let session_id = auth.strip_prefix("Bearer ");
+            
+            if let Some(token) = session_id {
+                if session_store.validate(token).await.is_some() {
+                    return Ok(next.run(req).await);
+                }
+            }
         }
     }
 

@@ -1,8 +1,32 @@
-pub mod schema;
-
 use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
-use crate::db::schema::{CREATE_PROVIDERS_TABLE, CREATE_MODELS_TABLE, CREATE_MODEL_PROVIDERS_TABLE, CREATE_ROUTING_CONFIG_TABLE, CREATE_USERS_TABLE, CREATE_API_KEYS_TABLE};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[repr(u16)]
+pub enum UserType {
+    Internal = 0,
+    Nostr = 1,
+    OAuth = 2,
+}
+
+impl UserType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            UserType::Internal => "internal",
+            UserType::Nostr => "nostr",
+            UserType::OAuth => "oauth",
+        }
+    }
+    
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "internal" => Some(UserType::Internal),
+            "nostr" => Some(UserType::Nostr),
+            "oauth" => Some(UserType::OAuth),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct Provider {
@@ -110,8 +134,10 @@ pub struct UpdateRoutingConfig {
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct User {
     pub id: i64,
-    pub username: String,
-    pub password_hash: String,
+    pub username: Option<String>,
+    pub password_hash: Option<String>,
+    pub external_id: Option<String>,
+    pub user_type: UserType,
     pub is_admin: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -119,8 +145,10 @@ pub struct User {
 
 #[derive(Clone, Debug)]
 pub struct NewUser<'a> {
-    pub username: &'a str,
-    pub password_hash: &'a str,
+    pub username: Option<&'a str>,
+    pub password_hash: Option<&'a str>,
+    pub external_id: Option<&'a str>,
+    pub user_type: UserType,
     pub is_admin: bool,
 }
 
@@ -158,12 +186,7 @@ impl Database {
     }
 
     async fn initialize_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-        sqlx::query(CREATE_PROVIDERS_TABLE).execute(pool).await?;
-        sqlx::query(CREATE_MODELS_TABLE).execute(pool).await?;
-        sqlx::query(CREATE_MODEL_PROVIDERS_TABLE).execute(pool).await?;
-        sqlx::query(CREATE_ROUTING_CONFIG_TABLE).execute(pool).await?;
-        sqlx::query(CREATE_USERS_TABLE).execute(pool).await?;
-        sqlx::query(CREATE_API_KEYS_TABLE).execute(pool).await?;
+        sqlx::migrate!("./migrations").run(pool).await?;
         Ok(())
     }
 
@@ -472,10 +495,12 @@ impl Database {
     // User CRUD
     pub async fn create_user(&self, user: NewUser<'_>) -> Result<User, sqlx::Error> {
         sqlx::query_as::<_, User>(
-            "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?) RETURNING *"
+            "INSERT INTO users (username, password_hash, external_id, user_type, is_admin) VALUES (?, ?, ?, ?, ?) RETURNING *"
         )
         .bind(user.username)
         .bind(user.password_hash)
+        .bind(user.external_id)
+        .bind(user.user_type)
         .bind(user.is_admin)
         .fetch_one(&self.pool)
         .await
@@ -486,6 +511,31 @@ impl Database {
             .bind(username)
             .fetch_optional(&self.pool)
             .await
+    }
+
+    pub async fn get_user_by_external_id(&self, external_id: &str, user_type: UserType) -> Result<Option<User>, sqlx::Error> {
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE external_id = ? AND user_type = ?")
+            .bind(external_id)
+            .bind(user_type)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn get_or_create_user_by_nostr_pubkey(&self, pubkey: &str) -> Result<User, sqlx::Error> {
+        // Try to find existing user
+        if let Some(user) = self.get_user_by_external_id(pubkey, UserType::Nostr).await? {
+            return Ok(user);
+        }
+
+        // Create new user with auto-generated username
+        let username = format!("nostr_{}", &pubkey[..16]);
+        self.create_user(NewUser {
+            username: Some(&username),
+            password_hash: None,
+            external_id: Some(pubkey),
+            user_type: UserType::Nostr,
+            is_admin: false,
+        }).await
     }
 
     pub async fn user_exists(&self, username: &str) -> Result<bool, sqlx::Error> {

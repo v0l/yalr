@@ -4,12 +4,48 @@ use crate::config::AppConfig;
 use crate::metrics::{MetricsEmitter, MetricsStore};
 use crate::state::AppState;
 use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+    response::{Response, IntoResponse},
     routing::{delete, get, post},
     Router,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::{trace::TraceLayer, cors::CorsLayer, services::ServeDir};
+
+async fn serve_admin_fallback(req: Request<Body>) -> impl IntoResponse {
+    let path = req.uri().path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+    
+    match tokio::fs::read(format!("/app/admin/dist/{}", path)).await {
+        Ok(contents) => {
+            let content_type = if path.ends_with(".html") {
+                "text/html; charset=utf-8"
+            } else if path.ends_with(".css") {
+                "text/css"
+            } else if path.ends_with(".js") {
+                "application/javascript"
+            } else {
+                "application/octet-stream"
+            };
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(axum::http::header::CONTENT_TYPE, content_type.parse().unwrap());
+            (headers, contents).into_response()
+        },
+        Err(_) => {
+            // For SPA routing, serve index.html for any unknown path
+            match tokio::fs::read("/app/admin/dist/index.html").await {
+                Ok(contents) => {
+                    let mut headers = axum::http::HeaderMap::new();
+                    headers.insert(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8".parse().unwrap());
+                    (headers, contents).into_response()
+                },
+                Err(_) => StatusCode::NOT_FOUND.into_response(),
+            }
+        }
+    }
+}
 
 pub async fn run(
     config: AppConfig, 
@@ -54,18 +90,12 @@ pub async fn run(
         .route("/api-keys/:id/enable", post(enable_api_key))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
-    // Serve static files from admin dist directory with SPA fallback
-    let admin_dist_path = "/app/admin/dist";
-    let serve_admin = ServeDir::new(admin_dist_path)
-        .precompressed_gzip()
-        .precompressed_br();
-
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_handler))
         .route("/v1/models", get(handlers::list_models))
         .route("/health", get(handlers::health_check))
         .nest("/api", public_auth_routes.merge(protected_routes))
-        .fallback_service(serve_admin)
+        .fallback(serve_admin_fallback)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
