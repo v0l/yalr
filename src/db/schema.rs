@@ -47,3 +47,28 @@ CREATE TABLE IF NOT EXISTS routing_config (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 "#;
+
+pub const CREATE_USERS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    is_admin BOOLEAN DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"#;
+
+pub const CREATE_API_KEYS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_hash TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    last_four TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP,
+    is_active BOOLEAN DEFAULT 1,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+)
+"#;

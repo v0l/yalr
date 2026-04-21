@@ -1,8 +1,8 @@
 pub mod schema;
 
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
-use crate::db::schema::{CREATE_PROVIDERS_TABLE, CREATE_MODELS_TABLE, CREATE_MODEL_PROVIDERS_TABLE, CREATE_ROUTING_CONFIG_TABLE};
+use crate::db::schema::{CREATE_PROVIDERS_TABLE, CREATE_MODELS_TABLE, CREATE_MODEL_PROVIDERS_TABLE, CREATE_ROUTING_CONFIG_TABLE, CREATE_USERS_TABLE, CREATE_API_KEYS_TABLE};
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct Provider {
@@ -107,6 +107,44 @@ pub struct UpdateRoutingConfig {
     pub health_check_timeout_seconds: Option<i32>,
 }
 
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct User {
+    pub id: i64,
+    pub username: String,
+    pub password_hash: String,
+    pub is_admin: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewUser<'a> {
+    pub username: &'a str,
+    pub password_hash: &'a str,
+    pub is_admin: bool,
+}
+
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct ApiKey {
+    pub id: i64,
+    pub key_hash: String,
+    pub name: String,
+    pub user_id: i64,
+    pub last_four: String,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub is_active: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewApiKey<'a> {
+    pub key_hash: &'a str,
+    pub name: &'a str,
+    pub user_id: i64,
+    pub last_four: &'a str,
+    pub expires_at: Option<chrono::NaiveDateTime>,
+}
+
 #[derive(Clone)]
 pub struct Database {
     pub pool: SqlitePool,
@@ -124,6 +162,8 @@ impl Database {
         sqlx::query(CREATE_MODELS_TABLE).execute(pool).await?;
         sqlx::query(CREATE_MODEL_PROVIDERS_TABLE).execute(pool).await?;
         sqlx::query(CREATE_ROUTING_CONFIG_TABLE).execute(pool).await?;
+        sqlx::query(CREATE_USERS_TABLE).execute(pool).await?;
+        sqlx::query(CREATE_API_KEYS_TABLE).execute(pool).await?;
         Ok(())
     }
 
@@ -427,6 +467,99 @@ impl Database {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    // User CRUD
+    pub async fn create_user(&self, user: NewUser<'_>) -> Result<User, sqlx::Error> {
+        sqlx::query_as::<_, User>(
+            "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?) RETURNING *"
+        )
+        .bind(user.username)
+        .bind(user.password_hash)
+        .bind(user.is_admin)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn get_user_by_username(&self, username: &str) -> Result<Option<User>, sqlx::Error> {
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
+            .bind(username)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn user_exists(&self, username: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("SELECT EXISTS(SELECT 1 FROM users WHERE username = ?) as exists")
+            .bind(username)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(result.get::<i64, _>(0) > 0)
+    }
+
+    pub async fn list_users(&self) -> Result<Vec<User>, sqlx::Error> {
+        sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY username")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    // API Key CRUD
+    pub async fn create_api_key(&self, key: NewApiKey<'_>) -> Result<ApiKey, sqlx::Error> {
+        sqlx::query_as::<_, ApiKey>(
+            "INSERT INTO api_keys (key_hash, name, user_id, last_four, expires_at) VALUES (?, ?, ?, ?, ?) RETURNING *"
+        )
+        .bind(key.key_hash)
+        .bind(key.name)
+        .bind(key.user_id)
+        .bind(key.last_four)
+        .bind(key.expires_at.map(|e| e.format("%Y-%m-%d %H:%M:%S").to_string()))
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn get_api_key_by_hash(&self, key_hash: &str) -> Result<Option<ApiKey>, sqlx::Error> {
+        sqlx::query_as::<_, ApiKey>("SELECT * FROM api_keys WHERE key_hash = ? AND is_active = 1")
+            .bind(key_hash)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn list_api_keys_for_user(&self, user_id: i64) -> Result<Vec<ApiKey>, sqlx::Error> {
+        sqlx::query_as::<_, ApiKey>("SELECT * FROM api_keys WHERE user_id = ? ORDER BY created_at DESC")
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    pub async fn delete_api_key(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM api_keys WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn disable_api_key(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("UPDATE api_keys SET is_active = 0 WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn enable_api_key(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("UPDATE api_keys SET is_active = 1 WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn is_api_key_expired(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query_as::<_, (bool,)>("SELECT expires_at IS NOT NULL AND expires_at < datetime('now') FROM api_keys WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(result.unwrap_or((false,)).0)
     }
 }
 

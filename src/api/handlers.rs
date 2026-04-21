@@ -1,4 +1,4 @@
-use crate::api::server::AppState;
+use crate::state::AppState;
 use crate::auth::nip98::Nip98Auth;
 use axum::{
     extract::{Path, State},
@@ -44,7 +44,74 @@ pub async fn health_check() -> Json<HealthResponse> {
     })
 }
 
-pub async fn get_metrics(State(state): State<AppState>) -> Json<MetricsResponse> {
+#[derive(Serialize)]
+pub struct ConfigResponse {
+    pub server: ServerConfigResponse,
+    pub database: DatabaseConfigResponse,
+    pub auth: Option<AuthConfigResponse>,
+}
+
+#[derive(Serialize)]
+pub struct ServerConfigResponse {
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Serialize)]
+pub struct DatabaseConfigResponse {
+    pub url: String,
+}
+
+#[derive(Serialize)]
+pub struct AuthConfigResponse {
+    pub enabled: bool,
+    pub allowed_pubkeys: Option<Vec<String>>,
+}
+
+pub async fn get_router_config(State(state): State<std::sync::Arc<AppState>>) -> Json<serde_json::Value> {
+    let providers = state.config.router.get_providers().await;
+    let db_providers = state.config.db.list_providers().await.unwrap_or_default();
+    
+    // Build provider info map for metrics lookup
+    let mut provider_info_map = std::collections::HashMap::new();
+    for provider in &providers {
+        if let Some(db_provider) = db_providers.iter().find(|db| db.slug == provider.slug()) {
+            let metrics = state.metrics_store.get_provider_summary(provider.name()).await;
+            
+            provider_info_map.insert(
+                provider.name().to_string(),
+                serde_json::json!({
+                    "name": provider.name(),
+                    "slug": provider.slug(),
+                    "base_url": db_provider.base_url.clone(),
+                    "list_url": format!("{}/v1/models", db_provider.base_url),
+                    "metrics": serde_json::json!({
+                        "p90_ttft_ms": metrics.p90_ttft,
+                        "p90_output_tokens_per_second": metrics.p90_output_tokens_per_second,
+                        "p90_input_tokens_per_second": metrics.p90_input_tokens_per_second,
+                        "avg_latency_ms": metrics.avg_latency,
+                        "success_rate": metrics.success_rate,
+                    })
+                })
+            );
+        }
+    }
+
+    // For now, return all providers under a single "default" routing config
+    // In the future, this could be extended to support multiple routing configs (model aliases)
+    let routing_configs = vec![serde_json::json!({
+        "name": "default",
+        "strategy": "round_robin",
+        "providers": provider_info_map.values().cloned().collect::<Vec<_>>(),
+        "provider_count": providers.len(),
+    })];
+
+    Json(serde_json::json!({
+        "routing_configs": routing_configs,
+    }))
+}
+
+pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<MetricsResponse> {
     let providers = state.config.router.get_providers().await;
     let mut provider_metrics = Vec::new();
 
@@ -74,7 +141,7 @@ pub async fn get_metrics(State(state): State<AppState>) -> Json<MetricsResponse>
     })
 }
 
-pub async fn list_models(State(state): State<AppState>) -> Json<serde_json::Value> {
+pub async fn list_models(State(state): State<std::sync::Arc<AppState>>) -> Json<serde_json::Value> {
     let providers = state.config.router.get_providers().await;
     let mut all_models = Vec::new();
 
@@ -102,7 +169,7 @@ pub async fn list_models(State(state): State<AppState>) -> Json<serde_json::Valu
 }
 
 pub async fn chat_handler(
-    State(state): State<AppState>,
+    State(state): State<std::sync::Arc<AppState>>,
     auth: Nip98Auth,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, String)> {
@@ -117,7 +184,7 @@ pub async fn chat_handler(
 
 #[axum::debug_handler]
 pub async fn chat_completions_handler(
-    State(state): State<AppState>,
+    State(state): State<std::sync::Arc<AppState>>,
     _auth: Nip98Auth,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Json<ChatCompletionResponse>, (axum::http::StatusCode, String)> {
@@ -150,7 +217,7 @@ pub async fn chat_completions_handler(
 
 #[axum::debug_handler]
 pub async fn chat_completions_stream(
-    State(state): State<AppState>,
+    State(state): State<std::sync::Arc<AppState>>,
     _auth: Nip98Auth,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>> + Send + 'static>, (axum::http::StatusCode, String)> {
@@ -224,7 +291,7 @@ pub struct ProviderCreateRequest {
 }
 
 #[axum::debug_handler]
-pub async fn list_providers(State(state): State<AppState>) -> Json<serde_json::Value> {
+pub async fn list_providers(State(state): State<std::sync::Arc<AppState>>) -> Json<serde_json::Value> {
     let providers = match state.config.db.list_providers().await {
         Ok(providers) => providers,
         Err(e) => {
@@ -255,7 +322,7 @@ pub async fn list_providers(State(state): State<AppState>) -> Json<serde_json::V
 
 #[axum::debug_handler]
 pub async fn create_provider(
-    State(state): State<AppState>,
+    State(state): State<std::sync::Arc<AppState>>,
     Json(request): Json<ProviderCreateRequest>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     use crate::providers::openai::OpenAiProvider;
@@ -305,7 +372,7 @@ pub async fn create_provider(
 #[axum::debug_handler]
 pub async fn delete_provider(
     Path(slug): Path<String>,
-    State(state): State<AppState>,
+    State(state): State<std::sync::Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     tracing::info!(provider_slug = slug, "Deleting provider");
     
@@ -355,7 +422,7 @@ pub struct ModelSyncRequest {
 
 #[axum::debug_handler]
 pub async fn detect_model_discrepancies(
-    State(state): State<AppState>,
+    State(state): State<std::sync::Arc<AppState>>,
     Json(request): Json<ModelSyncRequest>,
 ) -> Json<Vec<ModelSyncReportResponse>> {
     let providers = state.config.router.get_providers().await;
@@ -395,7 +462,7 @@ pub async fn detect_model_discrepancies(
 #[axum::debug_handler]
 pub async fn sync_provider_models(
     Path(provider_slug): Path<String>,
-    State(state): State<AppState>,
+    State(state): State<std::sync::Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let providers = state.config.router.get_providers().await;
     let provider = providers

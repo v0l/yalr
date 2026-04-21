@@ -5,6 +5,7 @@ pub mod db;
 pub mod metrics;
 pub mod providers;
 pub mod router;
+pub mod state;
 
 pub use metrics::{HealthConfig, HealthState, ProviderHealthState};
 

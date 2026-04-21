@@ -30,6 +30,15 @@ COPY . .
 # Build the actual binaries
 RUN cargo build --release --bin yalr-server --bin yalr-cli
 
+# Build the admin UI
+FROM oven/bun:1 as admin-builder
+
+WORKDIR /app/admin
+COPY admin/package.json admin/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY admin/ ./
+RUN bun run build
+
 # Runtime image
 FROM debian:trixie-slim
 
@@ -42,6 +51,7 @@ WORKDIR /app
 
 COPY --from=builder /app/target/release/yalr-server /usr/local/bin/
 COPY --from=builder /app/target/release/yalr-cli /usr/local/bin/
+COPY --from=admin-builder /app/admin/dist /app/admin/dist
 
 EXPOSE 3000
 
