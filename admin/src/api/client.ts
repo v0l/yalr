@@ -8,6 +8,10 @@ import type {
   ApiKey,
   ApiKeyListItem,
   RouterConfig,
+  User,
+  CreateUserRequest,
+  UpdateUserRequest,
+  UserDetailResponse,
 } from '../types'
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL || window.location.origin
@@ -36,7 +40,7 @@ async function getAuthHeaders(): Promise<HeadersInit> {
 
 export const api = {
   async getHealth(): Promise<HealthResponse> {
-    return request('/health')
+    return request('/api/health')
   },
 
   async checkSetupComplete(): Promise<{ setup_complete: boolean }> {
@@ -151,9 +155,12 @@ export const api = {
     return response.json()
   },
 
-  async createApiKey(name: string, expiresInDays?: number): Promise<ApiKey> {
+  async createApiKey(name: string, expiresInDays?: number, userId?: number): Promise<ApiKey> {
     const headers = await getAuthHeaders()
-    const response = await fetch(`${API_BASE_URL}/api/api-keys`, {
+    const endpoint = userId 
+      ? `/api/users/${userId}/api-keys`
+      : '/api/api-keys'
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, expires_in_days: expiresInDays }),
@@ -249,6 +256,93 @@ export const api = {
         window.location.href = '/login'
       }
       throw new Error('Failed to fetch router config')
+    }
+    
+    return response.json()
+  },
+
+  // User Management
+  async getUsers(): Promise<User[]> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/users`, { headers })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to fetch users')
+    }
+    
+    return response.json()
+  },
+
+  async createUser(data: CreateUserRequest): Promise<{ message: string; user: User }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/users`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to create user')
+    }
+    
+    return response.json()
+  },
+
+  async updateUser(id: number, data: UpdateUserRequest): Promise<User> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/users/${id}`, {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to update user')
+    }
+    
+    return response.json()
+  },
+
+  async deleteUser(id: number): Promise<{ message: string }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/users/${id}`, {
+      method: 'DELETE',
+      headers,
+    })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to delete user')
+    }
+    
+    return response.json()
+  },
+
+  async getUser(id: number): Promise<UserDetailResponse> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/users/${id}`, { headers })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to fetch user')
     }
     
     return response.json()

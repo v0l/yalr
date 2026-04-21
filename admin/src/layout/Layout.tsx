@@ -6,7 +6,7 @@ const navigation = [
   { name: 'Providers', path: '/providers' },
   { name: 'Config', path: '/config' },
   { name: 'Metrics', path: '/metrics' },
-  { name: 'API Keys', path: '/api-keys' },
+  { name: 'Users', path: '/users' },
 ]
 
 export default function Layout() {

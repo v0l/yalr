@@ -7,7 +7,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
     response::{Response, IntoResponse},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use std::net::SocketAddr;
@@ -65,8 +65,9 @@ pub async fn run(
 
     let cors = CorsLayer::permissive();
 
-    use crate::auth::admin::{login, logout, auth_status, check_setup_complete, setup_first_user, auth_middleware};
-    use crate::auth::api_keys::{create_api_key, list_api_keys, delete_api_key, disable_api_key, enable_api_key};
+    use crate::auth::admin::{login, logout, auth_status, check_setup_complete, setup_first_user, auth_middleware, admin_middleware};
+    use crate::auth::api_keys::{create_api_key, list_api_keys, delete_api_key, disable_api_key, enable_api_key, create_api_key_for_user};
+    use handlers::{list_users, create_user, update_user, delete_user, get_user};
     
     let public_auth_routes = Router::new()
         .route("/auth/setup", post(setup_first_user))
@@ -76,6 +77,9 @@ pub async fn run(
     let protected_routes = Router::new()
         .route("/auth/status", get(auth_status))
         .route("/auth/logout", post(logout))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
+    let admin_routes = Router::new()
         .route("/providers", get(handlers::list_providers))
         .route("/providers", post(handlers::create_provider))
         .route("/providers/:slug", delete(handlers::delete_provider))
@@ -88,13 +92,25 @@ pub async fn run(
         .route("/api-keys/:id", delete(delete_api_key))
         .route("/api-keys/:id/disable", post(disable_api_key))
         .route("/api-keys/:id/enable", post(enable_api_key))
+        .route("/users", get(list_users))
+        .route("/users", post(create_user))
+        .route("/users/:user_id/api-keys", post(create_api_key_for_user))
+        .route("/users/:id", get(get_user))
+        .route("/users/:id", put(update_user))
+        .route("/users/:id", delete(delete_user))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), admin_middleware));
+
+    let all_protected = protected_routes.merge(admin_routes);
+
+    let chat_completions_routes = Router::new()
+        .route("/v1/chat/completions", post(chat_handler))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let app = Router::new()
-        .route("/v1/chat/completions", post(chat_handler))
+        .nest("/api", public_auth_routes.merge(all_protected))
+        .merge(chat_completions_routes)
         .route("/v1/models", get(handlers::list_models))
-        .route("/health", get(handlers::health_check))
-        .nest("/api", public_auth_routes.merge(protected_routes))
+        .route("/api/health", get(handlers::health_check))
         .fallback(serve_admin_fallback)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -111,8 +127,9 @@ pub async fn run(
 
 #[cfg(test)]
 pub async fn create_test_app(state: Arc<AppState>) -> Router {
-    use crate::auth::admin::{login, logout, auth_status, check_setup_complete, setup_first_user, auth_middleware};
-    use crate::auth::api_keys::{create_api_key, list_api_keys, delete_api_key, disable_api_key, enable_api_key};
+    use crate::auth::admin::{login, logout, auth_status, check_setup_complete, setup_first_user, auth_middleware, admin_middleware, AdminExtractor};
+    use crate::auth::api_keys::{create_api_key, list_api_keys, delete_api_key, disable_api_key, enable_api_key, create_api_key_for_user};
+    use handlers::{list_users, create_user, update_user, delete_user, get_user};
     use tower_http::cors::CorsLayer;
     use tower_http::trace::TraceLayer;
     
@@ -124,6 +141,9 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
     let protected_routes = Router::new()
         .route("/auth/status", get(auth_status))
         .route("/auth/logout", post(logout))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
+    let admin_routes = Router::new()
         .route("/providers", get(handlers::list_providers))
         .route("/providers", post(handlers::create_provider))
         .route("/providers/:slug", delete(handlers::delete_provider))
@@ -136,13 +156,24 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/api-keys/:id", delete(delete_api_key))
         .route("/api-keys/:id/disable", post(disable_api_key))
         .route("/api-keys/:id/enable", post(enable_api_key))
+        .route("/users", get(list_users))
+        .route("/users", post(create_user))
+        .route("/users/:id", get(get_user))
+        .route("/users/:id", put(update_user))
+        .route("/users/:id", delete(delete_user))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), admin_middleware));
+
+    let all_protected = protected_routes.merge(admin_routes);
+
+    let chat_completions_routes = Router::new()
+        .route("/v1/chat/completions", post(chat_handler))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     Router::new()
-        .route("/v1/chat/completions", post(chat_handler))
+        .merge(chat_completions_routes)
         .route("/v1/models", get(handlers::list_models))
-        .route("/health", get(handlers::health_check))
-        .nest("/api", public_auth_routes.merge(protected_routes))
+        .route("/api/health", get(handlers::health_check))
+        .nest("/api", public_auth_routes.merge(all_protected))
         .fallback(serve_admin_fallback)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

@@ -622,6 +622,21 @@ impl Database {
             .await?;
         Ok(result.unwrap_or((false,)).0)
     }
+
+    pub async fn get_user_by_id(&self, id: i64) -> Result<Option<User>, sqlx::Error> {
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn delete_user(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 pub type DbPool = Arc<SqlitePool>;

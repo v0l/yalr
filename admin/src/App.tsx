@@ -5,9 +5,10 @@ import Dashboard from './pages/Dashboard'
 import Providers from './pages/Providers'
 import Config from './pages/Config'
 import Metrics from './pages/Metrics'
-import ApiKeys from './pages/ApiKeys'
 import Login from './pages/Login'
 import Setup from './pages/Setup'
+import Users from './pages/Users'
+import UserDetail from './pages/UserDetail'
 import { api } from './api/client'
 import { API_BASE_URL } from './api/client'
 
@@ -82,7 +83,8 @@ function App() {
           <Route path="providers" element={<Providers />} />
           <Route path="config" element={<Config />} />
           <Route path="metrics" element={<Metrics />} />
-          <Route path="api-keys" element={<ApiKeys />} />
+          <Route path="users" element={<Users />} />
+          <Route path="users/:id" element={<UserDetail />} />
         </Route>
       </Routes>
     </BrowserRouter>

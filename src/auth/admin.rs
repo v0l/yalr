@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use axum::{
-    extract::{Request, State},
-    http::{header, StatusCode},
+    extract::{FromRequestParts, Request, State},
+    http::{header, request::Parts, StatusCode},
     middleware::Next,
     response::{IntoResponse, Json, Response},
 };
@@ -9,7 +9,49 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use crate::state::AppState;
-use crate::db::UserType;
+use crate::db::{User, UserType};
+use async_trait::async_trait;
+
+pub struct UserExtractor(pub User);
+
+#[async_trait]
+impl<S> FromRequestParts<S> for UserExtractor
+where
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, String);
+
+    async fn from_request_parts(req: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        req.extensions
+            .get::<User>()
+            .cloned()
+            .map(UserExtractor)
+            .ok_or((StatusCode::UNAUTHORIZED, "User not found in request".to_string()))
+    }
+}
+
+pub struct AdminExtractor(pub User);
+
+#[async_trait]
+impl<S> FromRequestParts<S> for AdminExtractor
+where
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, String);
+
+    async fn from_request_parts(req: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let user = req.extensions
+            .get::<User>()
+            .cloned()
+            .ok_or((StatusCode::UNAUTHORIZED, "User not found in request".to_string()))?;
+        
+        if !user.is_admin {
+            return Err((StatusCode::FORBIDDEN, "Admin access required".to_string()));
+        }
+        
+        Ok(AdminExtractor(user))
+    }
+}
 
 #[derive(Clone)]
 pub struct SessionStore {
@@ -268,12 +310,22 @@ pub async fn auth_middleware(
             req.extensions_mut().insert(user);
             return Ok(next.run(req).await);
         } else if auth.starts_with("Bearer ") {
-            // Bearer token auth
+            // Bearer token auth - check session or API key
             let session_store = &state.session_store;
-            let session_id = auth.strip_prefix("Bearer ");
+            let token = auth.strip_prefix("Bearer ");
             
-            if let Some(token) = session_id {
-                if session_store.validate(token).await.is_some() {
+            if let Some(token) = token {
+                // First check session
+                if let Some(session) = session_store.validate(token).await {
+                    if let Ok(Some(user)) = state.db.get_user_by_username(&session.username).await {
+                        req.extensions_mut().insert(user);
+                        return Ok(next.run(req).await);
+                    }
+                }
+                
+                // Then check API key
+                if let Some(user) = validate_api_key(&state, token).await {
+                    req.extensions_mut().insert(user);
                     return Ok(next.run(req).await);
                 }
             }
@@ -281,4 +333,101 @@ pub async fn auth_middleware(
     }
 
     Err(StatusCode::UNAUTHORIZED)
+}
+
+pub async fn admin_middleware(
+    State(state): State<Arc<AppState>>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let auth_header = req.headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    if let Some(auth) = &auth_header {
+        if auth.starts_with("Nostr ") {
+            // NIP-98 auth - extract pubkey and get/create user
+            use nostr::{Event, JsonUtil, Kind};
+            use base64::Engine;
+            use base64::prelude::BASE64_STANDARD;
+            
+            let auth_str = auth.strip_prefix("Nostr ").unwrap();
+            let event_bytes = BASE64_STANDARD.decode(auth_str).map_err(|_| StatusCode::UNAUTHORIZED)?;
+            let event = Event::from_json(event_bytes).map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+            if event.kind != Kind::HttpAuth || event.verify().is_err() {
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+
+            let pubkey = event.pubkey.to_string();
+            let user = state.db.get_or_create_user_by_nostr_pubkey(&pubkey)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            
+            // Check if user is admin
+            if !user.is_admin {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            
+            // Attach user to request extensions
+            req.extensions_mut().insert(user);
+            return Ok(next.run(req).await);
+        } else if auth.starts_with("Bearer ") {
+            // Bearer token auth - check session or API key
+            let session_store = &state.session_store;
+            let token = auth.strip_prefix("Bearer ");
+            
+            if let Some(token) = token {
+                // First check session
+                if let Some(session) = session_store.validate(token).await {
+                    if session.is_admin {
+                        if let Ok(Some(user)) = state.db.get_user_by_username(&session.username).await {
+                            req.extensions_mut().insert(user);
+                            return Ok(next.run(req).await);
+                        }
+                    } else {
+                        return Err(StatusCode::FORBIDDEN);
+                    }
+                }
+                
+                // Then check API key (admin only)
+                if let Some(user) = validate_api_key(&state, token).await {
+                    if user.is_admin {
+                        req.extensions_mut().insert(user);
+                        return Ok(next.run(req).await);
+                    } else {
+                        return Err(StatusCode::FORBIDDEN);
+                    }
+                }
+            }
+        }
+    }
+
+    Err(StatusCode::UNAUTHORIZED)
+}
+
+async fn validate_api_key(state: &Arc<AppState>, token: &str) -> Option<User> {
+    use sha2::{Digest, Sha256};
+    
+    // Hash the provided token
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let key_hash = hex::encode(hasher.finalize());
+    
+    // Look up the API key in the database
+    if let Ok(Some(api_key)) = state.db.get_api_key_by_hash(&key_hash).await {
+        // Check if key is active and not expired
+        if api_key.is_active {
+            let is_expired = state.db.is_api_key_expired(api_key.id).await.unwrap_or(false);
+            if !is_expired {
+                // Get the user associated with this API key
+                if let Ok(Some(user)) = state.db.get_user_by_id(api_key.user_id).await {
+                    return Some(user);
+                }
+            }
+        }
+    }
+    
+    None
 }

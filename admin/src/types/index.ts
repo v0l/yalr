@@ -98,3 +98,41 @@ export interface RoutingConfig {
 export interface RouterConfig {
   routing_configs: RoutingConfig[]
 }
+
+export interface User {
+  id: number
+  username: string | null
+  external_id: string | null
+  user_type: 'internal' | 'nostr' | 'oauth'
+  is_admin: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateUserRequest {
+  username?: string
+  password?: string
+  external_id?: string
+  user_type: 'internal' | 'nostr' | 'oauth'
+  is_admin: boolean
+}
+
+export interface UpdateUserRequest {
+  username?: string
+  password?: string
+  is_admin?: boolean
+}
+
+export interface UserApiKeyListItem {
+  id: number
+  name: string
+  last_four: string
+  created_at: string
+  expires_at: string | null
+  is_active: boolean
+}
+
+export interface UserDetailResponse {
+  user: User
+  api_keys: UserApiKeyListItem[]
+}

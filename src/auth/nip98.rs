@@ -29,6 +29,7 @@ pub struct Nip98Auth {
     pub content_type: Option<String>,
     pub content_length: Option<u64>,
     pub event: Event,
+    pub pubkey: String,
 }
 
 #[async_trait]
@@ -127,6 +128,8 @@ where
             .verify()
             .map_err(|_| (StatusCode::UNAUTHORIZED, "Event signature invalid"))?;
 
+        let pubkey = event.pubkey.to_string();
+
         let content_type = parts
             .headers
             .get("content-type")
@@ -143,6 +146,7 @@ where
             event,
             content_type,
             content_length,
+            pubkey,
         })
     }
 }

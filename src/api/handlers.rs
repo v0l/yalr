@@ -1,5 +1,5 @@
 use crate::state::AppState;
-use crate::auth::nip98::Nip98Auth;
+use crate::db::UserType;
 use axum::{
     extract::{Path, State},
     response::{sse::{Event, KeepAlive, Sse}, IntoResponse},
@@ -240,14 +240,13 @@ pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<
 
 pub async fn chat_handler(
     State(state): State<std::sync::Arc<AppState>>,
-    auth: Nip98Auth,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, String)> {
     if request.stream.unwrap_or(false) {
-        let stream_response = chat_completions_stream(State(state), auth, Json(request)).await;
+        let stream_response = chat_completions_stream(State(state), Json(request)).await;
         Ok(stream_response.into_response())
     } else {
-        let response = chat_completions_handler(State(state), auth, Json(request)).await?;
+        let response = chat_completions_handler(State(state), Json(request)).await?;
         Ok(response.into_response())
     }
 }
@@ -255,7 +254,6 @@ pub async fn chat_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_handler(
     State(state): State<std::sync::Arc<AppState>>,
-    _auth: Nip98Auth,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Json<ChatCompletionResponse>, (axum::http::StatusCode, String)> {
     tracing::info!(
@@ -288,7 +286,6 @@ pub async fn chat_completions_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_stream(
     State(state): State<std::sync::Arc<AppState>>,
-    _auth: Nip98Auth,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>> + Send + 'static>, (axum::http::StatusCode, String)> {
     tracing::info!(
@@ -664,7 +661,7 @@ mod tests {
         let app = create_test_app(state.clone()).await;
 
         let response = app
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -844,7 +841,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), 403); // NIP-98 auth returns 403 when auth fails
+        assert_eq!(response.status(), 401); // Auth middleware returns 401 when auth is missing
     }
 
     #[tokio::test]
@@ -975,4 +972,319 @@ mod tests {
 
         assert_eq!(response.status(), 200);
     }
+}
+
+// User Management Types and Handlers
+
+#[derive(Serialize)]
+pub struct UserResponse {
+    pub id: i64,
+    pub username: Option<String>,
+    pub external_id: Option<String>,
+    pub user_type: String,
+    pub is_admin: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize)]
+pub struct UserDetailResponse {
+    pub user: UserResponse,
+    pub api_keys: Vec<UserApiKeyResponse>,
+}
+
+#[derive(Serialize)]
+pub struct UserApiKeyResponse {
+    pub id: i64,
+    pub name: String,
+    pub last_four: String,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub is_active: bool,
+}
+
+#[derive(Deserialize)]
+pub struct CreateUserRequest {
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub external_id: Option<String>,
+    pub user_type: String,
+    pub is_admin: bool,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateUserRequest {
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub is_admin: Option<bool>,
+}
+
+#[derive(Serialize)]
+pub struct UserCreateResponse {
+    pub message: String,
+    pub user: UserResponse,
+}
+
+#[derive(Serialize)]
+pub struct UserDeleteResponse {
+    pub message: String,
+}
+
+#[axum::debug_handler]
+pub async fn list_users(
+    State(state): State<std::sync::Arc<AppState>>,
+) -> Json<Vec<UserResponse>> {
+    let users = match state.db.list_users().await {
+        Ok(users) => users,
+        Err(e) => {
+            tracing::error!("Failed to list users from DB: {}", e);
+            return Json(vec![]);
+        }
+    };
+
+    let users_list: Vec<UserResponse> = users
+        .into_iter()
+        .map(|u| UserResponse {
+            id: u.id,
+            username: u.username,
+            external_id: u.external_id,
+            user_type: match u.user_type {
+                UserType::Internal => "internal".to_string(),
+                UserType::Nostr => "nostr".to_string(),
+                UserType::OAuth => "oauth".to_string(),
+            },
+            is_admin: u.is_admin,
+            created_at: u.created_at,
+            updated_at: u.updated_at,
+        })
+        .collect();
+
+    Json(users_list)
+}
+
+#[axum::debug_handler]
+pub async fn create_user(
+    State(state): State<std::sync::Arc<AppState>>,
+    Json(request): Json<CreateUserRequest>,
+) -> Result<Json<UserCreateResponse>, (axum::http::StatusCode, String)> {
+    use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+    use rand::rngs::OsRng;
+
+    if request.username.is_none() && request.external_id.is_none() {
+        return Err((axum::http::StatusCode::BAD_REQUEST, "Either username or external_id is required".to_string()));
+    }
+
+    if let Some(username) = &request.username {
+        if state.db.get_user_by_username(username).await.unwrap_or(None).is_some() {
+            return Err((axum::http::StatusCode::BAD_REQUEST, format!("User '{}' already exists", username)));
+        }
+    }
+
+    let user_type = match request.user_type.as_str() {
+        "internal" => UserType::Internal,
+        "nostr" => UserType::Nostr,
+        "oauth" => UserType::OAuth,
+        _ => UserType::Internal,
+    };
+
+    let password_hash = if let Some(password) = &request.password {
+        if user_type == UserType::Internal {
+            let salt = SaltString::generate(&mut OsRng);
+            let argon2 = Argon2::default();
+            Some(
+                argon2
+                    .hash_password(password.as_bytes(), &salt)
+                    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                    .to_string()
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let new_user = crate::db::NewUser {
+        username: request.username.as_deref(),
+        password_hash: password_hash.as_deref(),
+        external_id: request.external_id.as_deref(),
+        user_type,
+        is_admin: request.is_admin,
+    };
+
+    let user = state.db.create_user(new_user)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let user_response = UserResponse {
+        id: user.id,
+        username: user.username,
+        external_id: user.external_id,
+        user_type: match user.user_type {
+            UserType::Internal => "internal".to_string(),
+            UserType::Nostr => "nostr".to_string(),
+            UserType::OAuth => "oauth".to_string(),
+        },
+        is_admin: user.is_admin,
+        created_at: user.created_at,
+        updated_at: user.updated_at,
+    };
+
+    Ok(Json(UserCreateResponse {
+        message: "User created successfully".to_string(),
+        user: user_response,
+    }))
+}
+
+#[axum::debug_handler]
+pub async fn update_user(
+    Path(id): Path<String>,
+    State(state): State<std::sync::Arc<AppState>>,
+    Json(request): Json<UpdateUserRequest>,
+) -> Result<Json<UserResponse>, (axum::http::StatusCode, String)> {
+    use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+    use rand::rngs::OsRng;
+
+    let user_id: i64 = id.parse()
+        .map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "Invalid user ID".to_string()))?;
+
+    let existing_user = state.db.get_user_by_id(user_id)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, "User not found".to_string()))?;
+
+    if let Some(new_username) = &request.username {
+        if Some(new_username.as_str()) != existing_user.username.as_deref() {
+            if state.db.get_user_by_username(new_username).await.unwrap_or(None).is_some() {
+                return Err((axum::http::StatusCode::BAD_REQUEST, format!("User '{}' already exists", new_username)));
+            }
+        }
+    }
+
+    let mut updates = Vec::new();
+    let mut bindings: Vec<String> = Vec::new();
+
+    if let Some(new_username) = &request.username {
+        updates.push("username = ?".to_string());
+        bindings.push(new_username.clone());
+    }
+
+    if let Some(new_password) = &request.password {
+        if existing_user.user_type == UserType::Internal {
+            let salt = SaltString::generate(&mut OsRng);
+            let argon2 = Argon2::default();
+            let hash = argon2
+                .hash_password(new_password.as_bytes(), &salt)
+                .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                .to_string();
+            updates.push("password_hash = ?".to_string());
+            bindings.push(hash);
+        }
+    }
+
+    if request.is_admin.is_some() {
+        updates.push("is_admin = ?".to_string());
+    }
+
+    if updates.is_empty() {
+        return Err((axum::http::StatusCode::BAD_REQUEST, "No updates provided".to_string()));
+    }
+
+    let mut query = format!("UPDATE users SET updated_at = CURRENT_TIMESTAMP, {}", updates.join(", "));
+    query.push_str(" WHERE id = ? RETURNING *");
+
+    let mut query_builder = sqlx::query_as::<_, crate::db::User>(&query);
+    
+    for binding in &bindings {
+        query_builder = query_builder.bind(binding);
+    }
+    
+    if let Some(is_admin) = request.is_admin {
+        query_builder = query_builder.bind(is_admin);
+    }
+    
+    query_builder = query_builder.bind(user_id);
+
+    let updated_user = query_builder
+        .fetch_one(&state.db.pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let user_response = UserResponse {
+        id: updated_user.id,
+        username: updated_user.username,
+        external_id: updated_user.external_id,
+        user_type: match updated_user.user_type {
+            UserType::Internal => "internal".to_string(),
+            UserType::Nostr => "nostr".to_string(),
+            UserType::OAuth => "oauth".to_string(),
+        },
+        is_admin: updated_user.is_admin,
+        created_at: updated_user.created_at,
+        updated_at: updated_user.updated_at,
+    };
+
+    Ok(Json(user_response))
+}
+
+#[axum::debug_handler]
+pub async fn delete_user(
+    Path(id): Path<String>,
+    State(state): State<std::sync::Arc<AppState>>,
+) -> Result<Json<UserDeleteResponse>, (axum::http::StatusCode, String)> {
+    let user_id: i64 = id.parse()
+        .map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "Invalid user ID".to_string()))?;
+
+    state.db.delete_user(user_id)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(UserDeleteResponse {
+        message: "User deleted successfully".to_string(),
+    }))
+}
+
+#[axum::debug_handler]
+pub async fn get_user(
+    Path(id): Path<i64>,
+    State(state): State<std::sync::Arc<AppState>>,
+) -> Result<Json<UserDetailResponse>, (axum::http::StatusCode, String)> {
+    let user = state.db.get_user_by_id(id)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, "User not found".to_string()))?;
+
+    let api_keys = state.db.list_api_keys_for_user(id)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let user_response = UserResponse {
+        id: user.id,
+        username: user.username,
+        external_id: user.external_id,
+        user_type: match user.user_type {
+            UserType::Internal => "internal".to_string(),
+            UserType::Nostr => "nostr".to_string(),
+            UserType::OAuth => "oauth".to_string(),
+        },
+        is_admin: user.is_admin,
+        created_at: user.created_at,
+        updated_at: user.updated_at,
+    };
+
+    let api_keys_response: Vec<UserApiKeyResponse> = api_keys.into_iter().map(|k| {
+        UserApiKeyResponse {
+            id: k.id,
+            name: k.name,
+            last_four: k.last_four,
+            created_at: k.created_at,
+            expires_at: k.expires_at.map(|e| e.to_string()),
+            is_active: k.is_active,
+        }
+    }).collect();
+
+    Ok(Json(UserDetailResponse {
+        user: user_response,
+        api_keys: api_keys_response,
+    }))
 }
