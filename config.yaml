@@ -3,7 +3,7 @@ server:
   port: 3000
 
 database:
-  url: "sqlite:llm_router.db?mode=rwc"
+  url: "sqlite:/app/data/llm_router.db?mode=rwc"
 
 # NIP-98 authentication (enabled for testing)
 auth:
