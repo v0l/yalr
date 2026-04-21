@@ -29,6 +29,24 @@ pub struct ApiKeyListItem {
     pub is_active: bool,
 }
 
+#[derive(serde::Serialize)]
+pub struct ApiKeyDeleteResponse {
+    pub deleted: bool,
+    pub id: i64,
+}
+
+#[derive(serde::Serialize)]
+pub struct ApiKeyDisableResponse {
+    pub disabled: bool,
+    pub id: i64,
+}
+
+#[derive(serde::Serialize)]
+pub struct ApiKeyEnableResponse {
+    pub enabled: bool,
+    pub id: i64,
+}
+
 #[derive(serde::Deserialize)]
 pub struct CreateApiKeyRequest {
     pub name: String,
@@ -100,41 +118,41 @@ pub async fn list_api_keys(
 pub async fn delete_api_key(
     Path(id): Path<i64>,
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<ApiKeyDeleteResponse>, (StatusCode, String)> {
     state.db.delete_api_key(id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(serde_json::json!({
-        "deleted": true,
-        "id": id,
-    })))
+    Ok(Json(ApiKeyDeleteResponse {
+        deleted: true,
+        id,
+    }))
 }
 
 pub async fn disable_api_key(
     Path(id): Path<i64>,
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<ApiKeyDisableResponse>, (StatusCode, String)> {
     state.db.disable_api_key(id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(serde_json::json!({
-        "disabled": true,
-        "id": id,
-    })))
+    Ok(Json(ApiKeyDisableResponse {
+        disabled: true,
+        id,
+    }))
 }
 
 pub async fn enable_api_key(
     Path(id): Path<i64>,
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<ApiKeyEnableResponse>, (StatusCode, String)> {
     state.db.enable_api_key(id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(serde_json::json!({
-        "enabled": true,
-        "id": id,
-    })))
+    Ok(Json(ApiKeyEnableResponse {
+        enabled: true,
+        id,
+    }))
 }

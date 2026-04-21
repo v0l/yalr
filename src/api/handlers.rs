@@ -68,47 +68,144 @@ pub struct AuthConfigResponse {
     pub allowed_pubkeys: Option<Vec<String>>,
 }
 
-pub async fn get_router_config(State(state): State<std::sync::Arc<AppState>>) -> Json<serde_json::Value> {
+#[derive(Serialize)]
+pub struct ProviderResponse {
+    pub id: i64,
+    pub name: String,
+    pub slug: String,
+    pub base_url: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize)]
+pub struct ListProvidersResponse {
+    pub providers: Vec<ProviderResponse>,
+}
+
+#[derive(Serialize)]
+pub struct ProviderCreateResponse {
+    pub id: i64,
+    pub name: String,
+    pub slug: String,
+    pub base_url: String,
+    pub created_at: String,
+}
+
+#[derive(Serialize)]
+pub struct ProviderDeleteResponse {
+    pub deleted: bool,
+    pub slug: String,
+}
+
+#[derive(Serialize)]
+pub struct ProviderMetricsResponse {
+    pub p90_ttft_ms: Option<u32>,
+    pub p90_output_tokens_per_second: Option<f32>,
+    pub p90_input_tokens_per_second: Option<f32>,
+    pub avg_latency_ms: Option<f32>,
+    pub success_rate: Option<f32>,
+}
+
+#[derive(Serialize)]
+pub struct RoutingConfigProvider {
+    pub name: String,
+    pub slug: String,
+    pub base_url: String,
+    pub list_url: String,
+    pub metrics: ProviderMetricsResponse,
+}
+
+#[derive(Serialize)]
+pub struct RoutingConfig {
+    pub name: String,
+    pub strategy: String,
+    pub providers: Vec<RoutingConfigProvider>,
+    pub provider_count: usize,
+}
+
+#[derive(Serialize)]
+pub struct RouterConfigResponse {
+    pub routing_configs: Vec<RoutingConfig>,
+}
+
+#[derive(Serialize)]
+pub struct SyncModelsResponse {
+    pub provider: String,
+    pub models: Vec<serde_json::Value>,
+    pub total_count: usize,
+}
+
+pub async fn list_models(State(state): State<std::sync::Arc<AppState>>) -> Json<ModelsListResponse> {
+    let providers = state.config.router.get_providers().await;
+    let mut all_models = Vec::new();
+
+    for provider in &providers {
+        match provider.list_models().await {
+            Ok(models) => {
+                for model in models {
+                    all_models.push(model);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = provider.name(),
+                    error = %e,
+                    "Failed to list models from provider"
+                );
+            }
+        }
+    }
+
+    Json(ModelsListResponse {
+        object: "list".to_string(),
+        data: all_models,
+    })
+}
+
+#[derive(Serialize)]
+pub struct ModelsListResponse {
+    pub object: String,
+    pub data: Vec<async_openai::types::models::Model>,
+}
+
+pub async fn get_router_config(State(state): State<std::sync::Arc<AppState>>) -> Json<RouterConfigResponse> {
     let providers = state.config.router.get_providers().await;
     let db_providers = state.config.db.list_providers().await.unwrap_or_default();
     
     // Build provider info map for metrics lookup
-    let mut provider_info_map = std::collections::HashMap::new();
+    let mut provider_list = Vec::new();
+    
     for provider in &providers {
         if let Some(db_provider) = db_providers.iter().find(|db| db.slug == provider.slug()) {
             let metrics = state.metrics_store.get_provider_summary(provider.name()).await;
             
-            provider_info_map.insert(
-                provider.name().to_string(),
-                serde_json::json!({
-                    "name": provider.name(),
-                    "slug": provider.slug(),
-                    "base_url": db_provider.base_url.clone(),
-                    "list_url": format!("{}/v1/models", db_provider.base_url),
-                    "metrics": serde_json::json!({
-                        "p90_ttft_ms": metrics.p90_ttft,
-                        "p90_output_tokens_per_second": metrics.p90_output_tokens_per_second,
-                        "p90_input_tokens_per_second": metrics.p90_input_tokens_per_second,
-                        "avg_latency_ms": metrics.avg_latency,
-                        "success_rate": metrics.success_rate,
-                    })
-                })
-            );
+            provider_list.push(RoutingConfigProvider {
+                name: provider.name().to_string(),
+                slug: provider.slug().to_string(),
+                base_url: db_provider.base_url.clone(),
+                list_url: format!("{}/v1/models", db_provider.base_url),
+                metrics: ProviderMetricsResponse {
+                    p90_ttft_ms: metrics.p90_ttft,
+                    p90_output_tokens_per_second: metrics.p90_output_tokens_per_second,
+                    p90_input_tokens_per_second: metrics.p90_input_tokens_per_second,
+                    avg_latency_ms: metrics.avg_latency,
+                    success_rate: metrics.success_rate,
+                },
+            });
         }
     }
 
     // For now, return all providers under a single "default" routing config
     // In the future, this could be extended to support multiple routing configs (model aliases)
-    let routing_configs = vec![serde_json::json!({
-        "name": "default",
-        "strategy": "round_robin",
-        "providers": provider_info_map.values().cloned().collect::<Vec<_>>(),
-        "provider_count": providers.len(),
-    })];
-
-    Json(serde_json::json!({
-        "routing_configs": routing_configs,
-    }))
+    Json(RouterConfigResponse {
+        routing_configs: vec![RoutingConfig {
+            name: "default".to_string(),
+            strategy: "round_robin".to_string(),
+            providers: provider_list,
+            provider_count: providers.len(),
+        }],
+    })
 }
 
 pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<MetricsResponse> {
@@ -139,33 +236,6 @@ pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<
         providers: provider_metrics,
         recent_events,
     })
-}
-
-pub async fn list_models(State(state): State<std::sync::Arc<AppState>>) -> Json<serde_json::Value> {
-    let providers = state.config.router.get_providers().await;
-    let mut all_models = Vec::new();
-
-    for provider in &providers {
-        match provider.list_models().await {
-            Ok(models) => {
-                for model in models {
-                    all_models.push(model);
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    provider = provider.name(),
-                    error = %e,
-                    "Failed to list models from provider"
-                );
-            }
-        }
-    }
-
-    Json(serde_json::json!({
-        "object": "list",
-        "data": all_models
-    }))
 }
 
 pub async fn chat_handler(
@@ -291,40 +361,37 @@ pub struct ProviderCreateRequest {
 }
 
 #[axum::debug_handler]
-pub async fn list_providers(State(state): State<std::sync::Arc<AppState>>) -> Json<serde_json::Value> {
+pub async fn list_providers(State(state): State<std::sync::Arc<AppState>>) -> Json<ListProvidersResponse> {
     let providers = match state.config.db.list_providers().await {
         Ok(providers) => providers,
         Err(e) => {
             tracing::error!("Failed to list providers from DB: {}", e);
-            return Json(serde_json::json!({
-                "providers": [],
-                "error": e.to_string()
-            }));
+            return Json(ListProvidersResponse { providers: vec![] });
         }
     };
 
-    let providers_json: Vec<serde_json::Value> = providers
+    let providers_list: Vec<ProviderResponse> = providers
         .into_iter()
-        .map(|p| serde_json::json!({
-            "id": p.id,
-            "name": p.name,
-            "slug": p.slug,
-            "base_url": p.base_url,
-            "created_at": p.created_at,
-            "updated_at": p.updated_at
-        }))
+        .map(|p| ProviderResponse {
+            id: p.id,
+            name: p.name,
+            slug: p.slug,
+            base_url: p.base_url,
+            created_at: p.created_at,
+            updated_at: p.updated_at,
+        })
         .collect();
 
-    Json(serde_json::json!({
-        "providers": providers_json
-    }))
+    Json(ListProvidersResponse {
+        providers: providers_list,
+    })
 }
 
 #[axum::debug_handler]
 pub async fn create_provider(
     State(state): State<std::sync::Arc<AppState>>,
     Json(request): Json<ProviderCreateRequest>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> Result<Json<ProviderCreateResponse>, (axum::http::StatusCode, String)> {
     use crate::providers::openai::OpenAiProvider;
     use std::sync::Arc;
 
@@ -360,20 +427,20 @@ pub async fn create_provider(
         "Provider added successfully"
     );
 
-    Ok(Json(serde_json::json!({
-        "id": 0,
-        "name": request.name,
-        "slug": request.slug,
-        "base_url": request.base_url,
-        "created_at": "now"
-    })))
+    Ok(Json(ProviderCreateResponse {
+        id: 0,
+        name: request.name,
+        slug: request.slug,
+        base_url: request.base_url,
+        created_at: "now".to_string(),
+    }))
 }
 
 #[axum::debug_handler]
 pub async fn delete_provider(
     Path(slug): Path<String>,
     State(state): State<std::sync::Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> Result<Json<ProviderDeleteResponse>, (axum::http::StatusCode, String)> {
     tracing::info!(provider_slug = slug, "Deleting provider");
     
     // Delete from database
@@ -393,10 +460,10 @@ pub async fn delete_provider(
 
     tracing::info!(provider_slug = slug, "Provider deleted successfully");
 
-    Ok(Json(serde_json::json!({
-        "deleted": true,
-        "slug": slug
-    })))
+    Ok(Json(ProviderDeleteResponse {
+        deleted: true,
+        slug,
+    }))
 }
 
 #[derive(Serialize)]
@@ -463,7 +530,7 @@ pub async fn detect_model_discrepancies(
 pub async fn sync_provider_models(
     Path(provider_slug): Path<String>,
     State(state): State<std::sync::Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> Result<Json<SyncModelsResponse>, (axum::http::StatusCode, String)> {
     let providers = state.config.router.get_providers().await;
     let provider = providers
         .iter()
@@ -507,11 +574,11 @@ pub async fn sync_provider_models(
                 }
             }
 
-            Ok(Json(serde_json::json!({
-                "provider": provider_slug,
-                "models": model_details,
-                "total_count": models.len(),
-            })))
+            Ok(Json(SyncModelsResponse {
+                provider: provider_slug,
+                models: model_details,
+                total_count: models.len(),
+            }))
         }
         Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }

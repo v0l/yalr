@@ -95,6 +95,12 @@ pub struct SetupStatusResponse {
     pub setup_complete: bool,
 }
 
+#[derive(Serialize)]
+pub struct SetupUserResponse {
+    pub message: String,
+    pub username: String,
+}
+
 pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
@@ -194,7 +200,7 @@ pub struct SetupUserRequest {
 pub async fn setup_first_user(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SetupUserRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<SetupUserResponse>, (StatusCode, String)> {
     let db = &state.db;
     use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
     use rand::rngs::OsRng;
@@ -219,10 +225,10 @@ pub async fn setup_first_user(
     }).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(serde_json::json!({
-        "message": "Admin user created successfully",
-        "username": req.username,
-    })))
+    Ok(Json(SetupUserResponse {
+        message: "Admin user created successfully".to_string(),
+        username: req.username,
+    }))
 }
 
 pub async fn auth_middleware(
