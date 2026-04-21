@@ -529,13 +529,26 @@ impl Database {
 
         // Create new user with auto-generated username
         let username = format!("nostr_{}", &pubkey[..16]);
-        self.create_user(NewUser {
+        match self.create_user(NewUser {
             username: Some(&username),
             password_hash: None,
             external_id: Some(pubkey),
             user_type: UserType::Nostr,
             is_admin: false,
-        }).await
+        }).await {
+            Ok(user) => Ok(user),
+            Err(e) => {
+                // Handle race condition: another request created the user concurrently
+                if e.to_string().contains("UNIQUE constraint failed") {
+                    // Retry lookup
+                    self.get_user_by_external_id(pubkey, UserType::Nostr)
+                        .await?
+                        .ok_or(e)
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     pub async fn user_exists(&self, username: &str) -> Result<bool, sqlx::Error> {

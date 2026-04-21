@@ -42,3 +42,4 @@ path = "src/bin/cli.rs"
 [dev-dependencies]
 tokio-test = "0.4"
 wiremock = "0.5"
+tower = "0.5"

@@ -583,3 +583,267 @@ pub async fn sync_provider_models(
         Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::server::create_test_app;
+    use crate::auth::admin::{SessionStore, setup_first_user};
+    use crate::config::{Config, ServerConfig, DatabaseConfig};
+    use crate::db::{Database, NewUser, UserType};
+    use crate::metrics::{MetricsEmitter, MetricsStore};
+    use crate::state::AppState;
+    use axum::{body::Body, http::{Request, header}, Router};
+    use serde_json::json;
+    use std::sync::Arc;
+    use tower::util::ServiceExt;
+
+    async fn setup_test_state() -> (Arc<AppState>, MetricsEmitter) {
+        let db = Database::new("sqlite::memory:").await.unwrap();
+        
+        let (metrics_emitter, _) = MetricsEmitter::new(100);
+        let metrics_store = MetricsStore::new(metrics_emitter.clone(), 1000);
+        
+        let config = Config {
+            server: ServerConfig {
+                host: "0.0.0.0".to_string(),
+                port: 3000,
+            },
+            database: DatabaseConfig {
+                url: "sqlite::memory:".to_string(),
+            },
+            auth: None,
+        };
+
+        let app_config = crate::config::AppConfig {
+            db: Arc::new(db.clone()),
+            router: Arc::new(crate::router::engine::Router::new(
+                Box::new(crate::router::strategies::round_robin::RoundRobinStrategy::new()),
+                metrics_store.clone(),
+            )),
+            auth_config: crate::auth::nip98::AuthConfig::default(),
+        };
+
+        let session_store = Arc::new(SessionStore::new());
+        let state = Arc::new(AppState {
+            config: app_config,
+            metrics_emitter: metrics_emitter.clone(),
+            metrics_store,
+            session_store,
+            db: Arc::new(db),
+        });
+
+        (state, metrics_emitter)
+    }
+
+    async fn setup_admin_user(state: &Arc<AppState>) -> String {
+        use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+        use rand::rngs::OsRng;
+        
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        let password_hash = argon2
+            .hash_password(b"password123", &salt)
+            .unwrap()
+            .to_string();
+
+        state.db.create_user(NewUser {
+            username: Some("admin"),
+            password_hash: Some(&password_hash),
+            external_id: None,
+            user_type: UserType::Internal,
+            is_admin: true,
+        }).await.unwrap();
+
+        state.session_store.create("admin", true, 86400).await
+    }
+
+    #[tokio::test]
+    async fn test_health_check() {
+        let (state, _) = setup_test_state().await;
+        let app = create_test_app(state.clone()).await;
+
+        let response = app
+            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_v1_models() {
+        let (state, _) = setup_test_state().await;
+        let app = create_test_app(state.clone()).await;
+
+        let response = app
+            .oneshot(Request::builder().uri("/v1/models").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_api_setup_status() {
+        let (state, _) = setup_test_state().await;
+        let app = create_test_app(state.clone()).await;
+
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/setup/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_setup() {
+        let (state, _) = setup_test_state().await;
+        let app = create_test_app(state.clone()).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/setup")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({
+                        "username": "admin",
+                        "password": "password123"
+                    }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_login() {
+        let (state, _) = setup_test_state().await;
+        setup_admin_user(&state).await;
+        let app = create_test_app(state.clone()).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/login")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({
+                        "username": "admin",
+                        "password": "password123"
+                    }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_protected_routes_require_auth() {
+        let (state, _) = setup_test_state().await;
+        let app = create_test_app(state.clone()).await;
+
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/providers").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn test_protected_routes_with_auth() {
+        let (state, _) = setup_test_state().await;
+        let token = setup_admin_user(&state).await;
+        let app = create_test_app(state.clone()).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/providers")
+                    .header("authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_api_keys_crud() {
+        let (state, _) = setup_test_state().await;
+        let token = setup_admin_user(&state).await;
+        let app = create_test_app(state.clone()).await;
+
+        // Create API key
+        let create_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/api-keys")
+                    .method("POST")
+                    .header("authorization", format!("Bearer {}", token))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({
+                        "name": "test-key"
+                    }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(create_response.status(), 200);
+
+        // List API keys
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/api-keys")
+                    .header("authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(list_response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_chat_completion_requires_auth() {
+        let (state, _) = setup_test_state().await;
+        let app = create_test_app(state.clone()).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/chat/completions")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hello"}]
+                    }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 403); // NIP-98 auth returns 403 when auth fails
+    }
+}

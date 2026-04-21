@@ -50,7 +50,7 @@ mod tests {
     #[test]
     fn test_get_last_four() {
         assert_eq!(get_last_four("sk_abc123"), "c123");
-        assert_eq!(get_last_four("sk_1234567890"), "890");
-        assert_eq!(get_last_four("sk_123"), "123");
+        assert_eq!(get_last_four("sk_1234567890"), "7890");
+        assert_eq!(get_last_four("sk_123"), "_123");
     }
 }
