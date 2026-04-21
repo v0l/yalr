@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   yalr:
-    image: voidic/yalr:latest
+    build: .
     container_name: yalr
     restart: unless-stopped
     volumes:
