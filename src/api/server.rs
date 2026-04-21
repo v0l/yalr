@@ -47,11 +47,12 @@ async fn serve_admin_fallback(req: Request<Body>) -> impl IntoResponse {
     }
 }
 
-pub async fn run(
+pub async fn run_with_shutdown<F>(
     config: AppConfig, 
     addr: &str,
     metrics_emitter: MetricsEmitter,
     metrics_store: MetricsStore,
+    _shutdown: F,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_store = Arc::new(SessionStore::new());
     let db = config.db.clone();
@@ -120,9 +121,23 @@ pub async fn run(
     tracing::info!("Listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app).with_graceful_shutdown(async {
+        tokio::signal::ctrl_c().await.ok();
+    }).await?;
 
     Ok(())
+}
+
+pub async fn run(
+    config: AppConfig, 
+    addr: &str,
+    metrics_emitter: MetricsEmitter,
+    metrics_store: MetricsStore,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use tokio::signal;
+    let shutdown = signal::ctrl_c();
+    tokio::pin!(shutdown);
+    run_with_shutdown(config, addr, metrics_emitter, metrics_store, shutdown).await
 }
 
 #[cfg(test)]

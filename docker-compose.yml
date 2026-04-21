@@ -12,6 +12,7 @@ services:
       - RUST_LOG=info
     ports:
       - "127.0.0.1:3000:3000"
+    stop_grace_period: 5s
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s

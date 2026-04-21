@@ -2,3 +2,4 @@ target/
 .git/
 data/
 *.db
+admin/.env.development

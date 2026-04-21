@@ -1,5 +1,6 @@
 use yalr::{api, config, metrics};
 use std::env;
+use tokio::signal;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
