@@ -7,6 +7,7 @@ const navigation = [
   { name: 'Config', path: '/config' },
   { name: 'Metrics', path: '/metrics' },
   { name: 'Users', path: '/users' },
+  { name: 'Chat', path: '/chat' },
 ]
 
 export default function Layout() {

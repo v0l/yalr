@@ -9,6 +9,7 @@ import Login from './pages/Login'
 import Setup from './pages/Setup'
 import Users from './pages/Users'
 import UserDetail from './pages/UserDetail'
+import Chat from './pages/Chat'
 import { api } from './api/client'
 import { API_BASE_URL } from './api/client'
 
@@ -79,12 +80,13 @@ function App() {
             </PrivateRoute>
           </SetupCheckRoute>
         }>
-          <Route index element={<Dashboard />} />
+  <Route index element={<Dashboard />} />
           <Route path="providers" element={<Providers />} />
           <Route path="config" element={<Config />} />
           <Route path="metrics" element={<Metrics />} />
           <Route path="users" element={<Users />} />
           <Route path="users/:id" element={<UserDetail />} />
+          <Route path="chat" element={<Chat />} />
         </Route>
       </Routes>
     </BrowserRouter>
