@@ -1,4 +1,6 @@
 /target
 .idea/
 *.db
-admin-dist/
+admin/dist
+admin-dist
+/
