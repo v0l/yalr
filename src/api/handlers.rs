@@ -846,4 +846,133 @@ mod tests {
 
         assert_eq!(response.status(), 403); // NIP-98 auth returns 403 when auth fails
     }
+
+    #[tokio::test]
+    async fn test_api_auth_status() {
+        let (state, _) = setup_test_state().await;
+        let token = setup_admin_user(&state).await;
+        let app = create_test_app(state.clone()).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/status")
+                    .header("authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_logout() {
+        let (state, _) = setup_test_state().await;
+        let token = setup_admin_user(&state).await;
+        let app = create_test_app(state.clone()).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/logout")
+                    .method("POST")
+                    .header("authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_api_providers_crud() {
+        let (state, _) = setup_test_state().await;
+        let token = setup_admin_user(&state).await;
+        let app = create_test_app(state.clone()).await;
+
+        // Create provider
+        let create_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/providers")
+                    .method("POST")
+                    .header("authorization", format!("Bearer {}", token))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({
+                        "name": "test-provider",
+                        "slug": "test",
+                        "base_url": "http://localhost:8080",
+                        "api_key": "test-key"
+                    }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(create_response.status(), 200);
+
+        // List providers
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/providers")
+                    .header("authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(list_response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_api_config() {
+        let (state, _) = setup_test_state().await;
+        let token = setup_admin_user(&state).await;
+        let app = create_test_app(state.clone()).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config")
+                    .header("authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_api_metrics() {
+        let (state, _) = setup_test_state().await;
+        let token = setup_admin_user(&state).await;
+        let app = create_test_app(state.clone()).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/metrics")
+                    .header("authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+    }
 }

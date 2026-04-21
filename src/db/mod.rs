@@ -522,33 +522,31 @@ impl Database {
     }
 
     pub async fn get_or_create_user_by_nostr_pubkey(&self, pubkey: &str) -> Result<User, sqlx::Error> {
-        // Try to find existing user
+        // Try to find existing user first
         if let Some(user) = self.get_user_by_external_id(pubkey, UserType::Nostr).await? {
             return Ok(user);
         }
 
         // Create new user with auto-generated username
         let username = format!("nostr_{}", &pubkey[..16]);
-        match self.create_user(NewUser {
-            username: Some(&username),
-            password_hash: None,
-            external_id: Some(pubkey),
-            user_type: UserType::Nostr,
-            is_admin: false,
-        }).await {
-            Ok(user) => Ok(user),
-            Err(e) => {
-                // Handle race condition: another request created the user concurrently
-                if e.to_string().contains("UNIQUE constraint failed") {
-                    // Retry lookup
-                    self.get_user_by_external_id(pubkey, UserType::Nostr)
-                        .await?
-                        .ok_or(e)
-                } else {
-                    Err(e)
-                }
-            }
-        }
+        
+        // Use INSERT OR IGNORE to handle race conditions
+        sqlx::query(
+            "INSERT OR IGNORE INTO users (username, password_hash, external_id, user_type, is_admin) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(&username)
+        .bind(None::<&str>)
+        .bind(Some(pubkey))
+        .bind(UserType::Nostr as i16)
+        .bind(false)
+        .execute(&self.pool)
+        .await?;
+
+        // Return the user (either the one we just created or one created by a concurrent request)
+        self.get_user_by_external_id(pubkey, UserType::Nostr)
+            .await
+            .map_err(|e| e)
+            .and_then(|user| user.ok_or(sqlx::Error::RowNotFound))
     }
 
     pub async fn user_exists(&self, username: &str) -> Result<bool, sqlx::Error> {
