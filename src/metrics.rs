@@ -297,6 +297,14 @@ impl MetricsStore {
             .or_insert_with(|| Arc::new(AtomicU32::new(0)));
     }
 
+    /// Unregister a provider from tracking
+    pub async fn unregister_provider(&self, provider_name: &str) {
+        let mut load = self.provider_in_flight.write().await;
+        load.remove(provider_name);
+        let mut health = self.provider_health.write().await;
+        health.remove(provider_name);
+    }
+
     /// Increment in-flight count for a provider and return the new count
     pub async fn increment_in_flight(&self, provider_name: &str) -> u32 {
         let load = self.provider_in_flight.read().await;

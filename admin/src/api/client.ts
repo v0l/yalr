@@ -12,6 +12,12 @@ import type {
   CreateUserRequest,
   UpdateUserRequest,
   UserDetailResponse,
+  RoutingConfigFull,
+  RoutingConfigCreateRequest,
+  RoutingConfigUpdateRequest,
+  RoutingConfigProviderCreateRequest,
+  RoutingConfigProviderUpdateRequest,
+  ProviderListItem,
 } from '../types'
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL || window.location.origin
@@ -256,6 +262,149 @@ export const api = {
         window.location.href = '/login'
       }
       throw new Error('Failed to fetch router config')
+    }
+    
+    return response.json()
+  },
+
+  async getRoutingConfigs(): Promise<RoutingConfigFull[]> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/routing-configs`, { headers })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to fetch routing configs')
+    }
+    
+    return response.json()
+  },
+
+  async createRoutingConfig(data: RoutingConfigCreateRequest): Promise<RoutingConfigFull> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/routing-configs`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to create routing config')
+    }
+    
+    return response.json()
+  },
+
+  async updateRoutingConfig(id: number, data: RoutingConfigUpdateRequest): Promise<RoutingConfigFull> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/routing-configs/${id}`, {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to update routing config')
+    }
+    
+    return response.json()
+  },
+
+  async deleteRoutingConfig(id: number): Promise<{ message: string; id: number }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/routing-configs/${id}`, {
+      method: 'DELETE',
+      headers,
+    })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to delete routing config')
+    }
+    
+    return response.json()
+  },
+
+  async getProvidersList(): Promise<ProviderListItem[]> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/providers`, { headers })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to fetch providers')
+    }
+    
+    const data = await response.json()
+    return data.providers
+  },
+
+  async addProviderToConfig(data: RoutingConfigProviderCreateRequest): Promise<{ message: string }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/routing-configs/providers`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to add provider to routing config')
+    }
+    
+    return response.json()
+  },
+
+  async updateProviderInConfig(id: number, data: RoutingConfigProviderUpdateRequest): Promise<{ message: string }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/routing-configs/providers/${id}`, {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to update provider in routing config')
+    }
+    
+    return response.json()
+  },
+
+  async deleteProviderFromConfig(id: number): Promise<{ message: string; id: number }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/routing-configs/providers/${id}`, {
+      method: 'DELETE',
+      headers,
+    })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to delete provider from routing config')
     }
     
     return response.json()

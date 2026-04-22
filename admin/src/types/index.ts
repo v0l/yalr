@@ -99,6 +99,68 @@ export interface RouterConfig {
   routing_configs: RoutingConfig[]
 }
 
+export interface RoutingConfigProvider {
+  id: number
+  routing_config_id: number
+  provider_id: number
+  provider_name: string
+  provider_slug: string
+  model: string | null
+  weight: number
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface RoutingConfigFull {
+  id: number
+  name: string
+  strategy: string
+  health_check_enabled: boolean
+  health_check_interval_seconds: number
+  health_check_timeout_seconds: number
+  created_at: string
+  updated_at: string
+  providers: RoutingConfigProvider[]
+}
+
+export interface RoutingConfigCreateRequest {
+  name: string
+  strategy: string
+  health_check_enabled: boolean
+  health_check_interval_seconds: number
+  health_check_timeout_seconds: number
+}
+
+export interface RoutingConfigUpdateRequest {
+  name?: string
+  strategy?: string
+  health_check_enabled?: boolean
+  health_check_interval_seconds?: number
+  health_check_timeout_seconds?: number
+}
+
+export interface RoutingConfigProviderCreateRequest {
+  routing_config_id: number
+  provider_id: number
+  model: string | null
+  weight: number
+  is_active: boolean
+}
+
+export interface RoutingConfigProviderUpdateRequest {
+  model?: string | null
+  weight?: number
+  is_active?: boolean
+}
+
+export interface ProviderListItem {
+  id: number
+  name: string
+  slug: string
+  base_url: string
+}
+
 export interface User {
   id: number
   username: string | null

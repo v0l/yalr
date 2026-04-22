@@ -6,13 +6,13 @@ use crate::state::AppState;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
-    response::{Response, IntoResponse},
+    response::IntoResponse,
     routing::{delete, get, post, put},
     Router,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tower_http::{trace::TraceLayer, cors::CorsLayer, services::ServeDir};
+use tower_http::{trace::TraceLayer, cors::CorsLayer};
 
 async fn serve_admin_fallback(req: Request<Body>) -> impl IntoResponse {
     let path = req.uri().path().trim_start_matches('/');
@@ -86,6 +86,13 @@ pub async fn run_with_shutdown<F>(
         .route("/providers/:slug", delete(handlers::delete_provider))
         .route("/metrics", get(handlers::get_metrics))
         .route("/config", get(handlers::get_router_config))
+        .route("/routing-configs", get(handlers::list_routing_configs))
+        .route("/routing-configs", post(handlers::create_routing_config))
+        .route("/routing-configs/:id", put(handlers::update_routing_config))
+        .route("/routing-configs/:id", delete(handlers::delete_routing_config))
+        .route("/routing-configs/providers", post(handlers::create_routing_config_provider))
+        .route("/routing-configs/providers/:id", put(handlers::update_routing_config_provider))
+        .route("/routing-configs/providers/:id", delete(handlers::delete_routing_config_provider))
         .route("/models/sync/:provider_slug", get(handlers::sync_provider_models))
         .route("/models/discrepancies", post(handlers::detect_model_discrepancies))
         .route("/api-keys", get(list_api_keys))
@@ -95,7 +102,7 @@ pub async fn run_with_shutdown<F>(
         .route("/api-keys/:id/enable", post(enable_api_key))
         .route("/users", get(list_users))
         .route("/users", post(create_user))
-        .route("/users/:user_id/api-keys", post(create_api_key_for_user))
+        .route("/users/:id/api-keys", post(create_api_key_for_user))
         .route("/users/:id", get(get_user))
         .route("/users/:id", put(update_user))
         .route("/users/:id", delete(delete_user))
@@ -164,6 +171,13 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/providers/:slug", delete(handlers::delete_provider))
         .route("/metrics", get(handlers::get_metrics))
         .route("/config", get(handlers::get_router_config))
+        .route("/routing-configs", get(handlers::list_routing_configs))
+        .route("/routing-configs", post(handlers::create_routing_config))
+        .route("/routing-configs/:id", put(handlers::update_routing_config))
+        .route("/routing-configs/:id", delete(handlers::delete_routing_config))
+        .route("/routing-configs/providers", post(handlers::create_routing_config_provider))
+        .route("/routing-configs/providers/:id", put(handlers::update_routing_config_provider))
+        .route("/routing-configs/providers/:id", delete(handlers::delete_routing_config_provider))
         .route("/models/sync/:provider_slug", get(handlers::sync_provider_models))
         .route("/models/discrepancies", post(handlers::detect_model_discrepancies))
         .route("/api-keys", get(list_api_keys))
