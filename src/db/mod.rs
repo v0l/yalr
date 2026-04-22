@@ -72,6 +72,18 @@ pub struct RoutingConfig {
     pub updated_at: String,
 }
 
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct RoutingConfigProvider {
+    pub id: i64,
+    pub routing_config_id: i64,
+    pub provider_id: i64,
+    pub model: Option<String>,
+    pub weight: i32,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct NewProvider<'a> {
     pub name: &'a str,
@@ -105,6 +117,15 @@ pub struct NewRoutingConfig {
 }
 
 #[derive(Clone, Debug)]
+pub struct NewRoutingConfigProvider {
+    pub routing_config_id: i64,
+    pub provider_id: i64,
+    pub model: Option<String>,
+    pub weight: i32,
+    pub is_active: bool,
+}
+
+#[derive(Clone, Debug)]
 pub struct UpdateProvider<'a> {
     pub name: Option<&'a str>,
     pub slug: Option<&'a str>,
@@ -132,6 +153,13 @@ pub struct UpdateRoutingConfig {
     pub health_check_enabled: Option<bool>,
     pub health_check_interval_seconds: Option<i32>,
     pub health_check_timeout_seconds: Option<i32>,
+}
+
+#[derive(Clone, Debug)]
+pub struct UpdateRoutingConfigProvider {
+    pub model: Option<String>,
+    pub weight: Option<i32>,
+    pub is_active: Option<bool>,
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -446,6 +474,22 @@ impl Database {
             .await
     }
 
+    pub async fn get_routing_config_by_name(&self, name: &str) -> Result<Option<RoutingConfig>, sqlx::Error> {
+        sqlx::query_as::<_, RoutingConfig>("SELECT * FROM routing_config WHERE name = ?")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn list_active_routing_config_providers(&self, routing_config_id: i64) -> Result<Vec<RoutingConfigProvider>, sqlx::Error> {
+        sqlx::query_as::<_, RoutingConfigProvider>(
+            "SELECT * FROM routing_config_providers WHERE routing_config_id = ? AND is_active = 1 ORDER BY weight DESC"
+        )
+        .bind(routing_config_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
     pub async fn list_routing_configs(&self) -> Result<Vec<RoutingConfig>, sqlx::Error> {
         sqlx::query_as::<_, RoutingConfig>("SELECT * FROM routing_config ORDER BY id")
             .fetch_all(&self.pool)
@@ -496,6 +540,79 @@ impl Database {
 
     pub async fn delete_routing_config(&self, id: i64) -> Result<bool, sqlx::Error> {
         let result = sqlx::query("DELETE FROM routing_config WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // RoutingConfigProvider CRUD
+    pub async fn create_routing_config_provider(&self, rcp: NewRoutingConfigProvider) -> Result<RoutingConfigProvider, sqlx::Error> {
+        sqlx::query_as::<_, RoutingConfigProvider>(
+            "INSERT INTO routing_config_providers (routing_config_id, provider_id, model, weight, is_active) VALUES (?, ?, ?, ?, ?) RETURNING *"
+        )
+        .bind(rcp.routing_config_id)
+        .bind(rcp.provider_id)
+        .bind(rcp.model)
+        .bind(rcp.weight)
+        .bind(rcp.is_active)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn get_routing_config_provider(&self, id: i64) -> Result<Option<RoutingConfigProvider>, sqlx::Error> {
+        sqlx::query_as::<_, RoutingConfigProvider>("SELECT * FROM routing_config_providers WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn list_routing_config_providers_for_config(&self, routing_config_id: i64) -> Result<Vec<RoutingConfigProvider>, sqlx::Error> {
+        sqlx::query_as::<_, RoutingConfigProvider>("SELECT * FROM routing_config_providers WHERE routing_config_id = ? ORDER BY weight DESC")
+            .bind(routing_config_id)
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    pub async fn list_routing_config_providers_for_provider(&self, provider_id: i64) -> Result<Vec<RoutingConfigProvider>, sqlx::Error> {
+        sqlx::query_as::<_, RoutingConfigProvider>("SELECT * FROM routing_config_providers WHERE provider_id = ? ORDER BY routing_config_id")
+            .bind(provider_id)
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    pub async fn update_routing_config_provider(&self, id: i64, updates: UpdateRoutingConfigProvider) -> Result<RoutingConfigProvider, sqlx::Error> {
+        let mut query = String::from("UPDATE routing_config_providers SET updated_at = CURRENT_TIMESTAMP");
+        
+        if let Some(_model) = &updates.model {
+            query.push_str(", model = ?");
+        }
+        if let Some(_weight) = &updates.weight {
+            query.push_str(", weight = ?");
+        }
+        if let Some(_is_active) = &updates.is_active {
+            query.push_str(", is_active = ?");
+        }
+
+        query.push_str(" WHERE id = ? RETURNING *");
+
+        let mut query_builder = sqlx::query_as::<_, RoutingConfigProvider>(&query);
+        
+        if let Some(model) = updates.model {
+            query_builder = query_builder.bind(model);
+        }
+        if let Some(weight) = updates.weight {
+            query_builder = query_builder.bind(weight);
+        }
+        if let Some(is_active) = updates.is_active {
+            query_builder = query_builder.bind(is_active);
+        }
+        
+        query_builder.bind(id).fetch_one(&self.pool).await
+    }
+
+    pub async fn delete_routing_config_provider(&self, id: i64) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM routing_config_providers WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;

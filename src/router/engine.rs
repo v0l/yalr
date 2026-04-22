@@ -47,7 +47,7 @@ impl Router {
         engine.add_provider(provider.clone()).await;
     }
 
-   pub async fn chat_completions(
+    pub async fn chat_completions(
         &self,
         request: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, RouterError> {

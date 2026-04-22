@@ -13,6 +13,58 @@ use std::convert::Infallible;
 use crate::{ChatCompletionRequest, ChatCompletionResponse};
 use crate::router::{DbModelInfo, ModelInfoDetector};
 
+/// Resolve a model name to an actual provider slug and model.
+/// If the model is a routing config name (e.g., "default"), look up the backing providers.
+/// Returns (provider_slug, actual_model) or None if not found.
+async fn resolve_model_name(
+    db: &crate::db::Database,
+    model: &str,
+) -> Option<(String, String)> {
+    // Check if model contains a slash (already in provider/model format)
+    if model.contains('/') {
+        // Already in provider/model format, return as-is
+        let parts: Vec<&str> = model.splitn(2, '/').collect();
+        return Some((parts[0].to_string(), parts[1].to_string()));
+    }
+
+    // Check if model is a routing config name
+    if let Some(rc) = db.get_routing_config_by_name(model).await.ok().flatten() {
+        // Get active providers for this routing config
+        let rcp_list = db.list_active_routing_config_providers(rc.id).await.ok()?;
+        if rcp_list.is_empty() {
+            return None;
+        }
+
+        // Select a provider based on weight (simple deterministic selection)
+        // Use a simple hash-based index to avoid Send issues with rand
+        let idx = {
+            let hash = model.as_bytes().iter().fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(*b as usize));
+            hash % rcp_list.len()
+        };
+        let selected = &rcp_list[idx];
+        
+        let provider_slug = db.get_provider_by_id(selected.provider_id).await.ok()?.map(|p| p.slug)?;
+        
+        // Determine the model to use
+        let actual_model = selected.model.clone().unwrap_or_else(|| {
+            // If no specific model is configured, use a placeholder
+            // The router will handle selecting an actual model from the provider
+            "any".to_string()
+        });
+
+        Some((provider_slug, actual_model))
+    } else {
+        // Not a routing config name, treat as direct provider/model lookup
+        // Check if it's in provider/model format
+        if let Some((slug, m)) = model.split_once('/') {
+            Some((slug.to_string(), m.to_string()))
+        } else {
+            // Direct model name without provider - try to find it
+            None
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct HealthResponse {
     pub status: String,
@@ -151,7 +203,7 @@ pub async fn list_models(State(state): State<std::sync::Arc<AppState>>) -> Json<
         });
     }
 
-    // Add actual models from providers
+    // Add actual models from providers with provider slug prefix
     for provider in &providers {
         let provider_slug = provider.slug();
         
@@ -159,7 +211,7 @@ pub async fn list_models(State(state): State<std::sync::Arc<AppState>>) -> Json<
             Ok(models) => {
                 for mut model in models {
                     // Prefix model ID with provider slug
-                    model.id = format!("{}:{}", provider_slug, model.id);
+                    model.id = format!("{}/{}", provider_slug, model.id);
                     all_models.push(model);
                 }
             }
@@ -254,6 +306,7 @@ pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<
     })
 }
 
+#[axum::debug_handler]
 pub async fn chat_handler(
     State(state): State<std::sync::Arc<AppState>>,
     Json(request): Json<ChatCompletionRequest>,
@@ -270,7 +323,7 @@ pub async fn chat_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_handler(
     State(state): State<std::sync::Arc<AppState>>,
-    Json(request): Json<ChatCompletionRequest>,
+    Json(mut request): Json<ChatCompletionRequest>,
 ) -> Result<Json<ChatCompletionResponse>, (axum::http::StatusCode, String)> {
     tracing::info!(
         model = request.model,
@@ -278,6 +331,20 @@ pub async fn chat_completions_handler(
         messages_count = request.messages.len(),
         "Received chat completion request"
     );
+
+    // Resolve routing config name to actual provider/model if needed
+    let resolved_model = resolve_model_name(&state.config.db, &request.model).await;
+    
+    if let Some((provider_slug, actual_model)) = resolved_model {
+        // If we resolved to a specific provider/model, update the request
+        if actual_model != "any" {
+            request.model = format!("{}/{}", provider_slug, actual_model);
+        } else {
+            // For "any" model, we need to let the router select based on provider
+            // Keep the provider prefix but let the router handle model selection
+            request.model = format!("{}/{}", provider_slug, request.model);
+        }
+    }
 
     match state.config.router.chat_completions(&request).await {
         Ok(response) => {
@@ -302,7 +369,7 @@ pub async fn chat_completions_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_stream(
     State(state): State<std::sync::Arc<AppState>>,
-    Json(request): Json<ChatCompletionRequest>,
+    Json(mut request): Json<ChatCompletionRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>> + Send + 'static>, (axum::http::StatusCode, String)> {
     tracing::info!(
         model = request.model,
@@ -310,6 +377,20 @@ pub async fn chat_completions_stream(
         messages_count = request.messages.len(),
         "Received streaming chat completion request"
     );
+
+    // Resolve routing config name to actual provider/model if needed
+    let resolved_model = resolve_model_name(&state.config.db, &request.model).await;
+    
+    if let Some((provider_slug, actual_model)) = resolved_model {
+        // If we resolved to a specific provider/model, update the request
+        if actual_model != "any" {
+            request.model = format!("{}/{}", provider_slug, actual_model);
+        } else {
+            // For "any" model, we need to let the router select based on provider
+            // Keep the provider prefix but let the router handle model selection
+            request.model = format!("{}/{}", provider_slug, request.model);
+        }
+    }
 
     let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send + 'static>> = 
         match state.config.router.chat_completions_stream(&request).await {
