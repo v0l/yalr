@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 use std::io::Write;
 use std::sync::Arc;
 use yalr::{
-    api, config, db::{Database, Provider}, metrics, providers::openai::OpenAiProvider, ChatCompletionRequest,
+    api, config, db::{Database, Provider}, metrics, ChatCompletionRequest,
     ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageContent,
     ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
     ChatCompletionRequestUserMessageContent, Router,
@@ -129,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Chat {
-            strategy,
+            strategy: _,
             message,
             model,
         } => {
@@ -137,10 +137,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let config = config::AppConfig::load(metrics_store.clone())
                 .await
                 .expect("Failed to load config");
-            let db = config.db;
+            let db = config.db.clone();
             chat_with_providers(
-                &db.pool,
-                &strategy,
+                db,
                 message.as_deref().unwrap_or(""),
                 &model,
             )
@@ -225,43 +224,26 @@ fn create_assistant_message(content: &str) -> ChatCompletionRequestMessage {
     })
 }
 
-async fn chat_with_providers(pool: &SqlitePool, strategy: &str, message: &str, model: &str) {
-    let providers = sqlx::query_as::<_, Provider>(
-        "SELECT id, name, slug, base_url, api_key, created_at, updated_at FROM providers ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await
-    .expect("Failed to fetch providers");
+async fn chat_with_providers(db: Arc<Database>, message: &str, model: &str) {
+    let metrics_store = metrics::MetricsStore::new(10000);
 
+    let router = Router::new(
+        Arc::new(yalr::router::strategies::round_robin::RoundRobinStrategy::new()),
+        metrics_store,
+        db.clone(),
+    );
+
+    if let Err(e) = router.reload_config().await {
+        tracing::warn!(error = %e, "Failed to reload router config");
+    }
+
+    let providers = router.get_providers().await;
     if providers.is_empty() {
         println!("No providers configured");
         return;
     }
 
-    let metrics_store = metrics::MetricsStore::new(10000);
-
-    let strategy: Box<dyn yalr::router::strategies::RoutingStrategy> = match strategy {
-        "round_robin" => Box::new(yalr::router::strategies::round_robin::RoundRobinStrategy::new()),
-        _ => {
-            eprintln!("Unknown strategy: {}. Using round_robin.", strategy);
-            Box::new(yalr::router::strategies::round_robin::RoundRobinStrategy::new())
-        }
-    };
-
-    let strategy_name = strategy.name().to_string();
-    let router = Router::new(strategy, metrics_store);
-
-    for provider_record in &providers {
-        let provider = Arc::new(OpenAiProvider::new(
-            &provider_record.name,
-            Some(&provider_record.slug),
-            &provider_record.base_url,
-            provider_record.api_key.as_deref(),
-        ));
-        router.add_provider(provider).await;
-    }
-
-    println!("Using router (strategy: {})", strategy_name);
+    println!("Using router (strategy: round_robin)");
     println!("Type 'exit' or 'quit' to end the conversation.");
     println!("{}", "-".repeat(50));
 

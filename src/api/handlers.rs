@@ -13,58 +13,6 @@ use std::convert::Infallible;
 use crate::{ChatCompletionRequest, ChatCompletionResponse};
 use crate::router::{DbModelInfo, ModelInfoDetector};
 
-/// Resolve a model name to an actual provider slug and model.
-/// If the model is a routing config name (e.g., "default"), look up the backing providers.
-/// Returns (provider_slug, actual_model) or None if not found.
-async fn resolve_model_name(
-    db: &crate::db::Database,
-    model: &str,
-) -> Option<(String, String)> {
-    // Check if model contains a slash (already in provider/model format)
-    if model.contains('/') {
-        // Already in provider/model format, return as-is
-        let parts: Vec<&str> = model.splitn(2, '/').collect();
-        return Some((parts[0].to_string(), parts[1].to_string()));
-    }
-
-    // Check if model is a routing config name
-    if let Some(rc) = db.get_routing_config_by_name(model).await.ok().flatten() {
-        // Get active providers for this routing config
-        let rcp_list = db.list_active_routing_config_providers(rc.id).await.ok()?;
-        if rcp_list.is_empty() {
-            return None;
-        }
-
-        // Select a provider based on weight (simple deterministic selection)
-        // Use a simple hash-based index to avoid Send issues with rand
-        let idx = {
-            let hash = model.as_bytes().iter().fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(*b as usize));
-            hash % rcp_list.len()
-        };
-        let selected = &rcp_list[idx];
-        
-        let provider_slug = db.get_provider_by_id(selected.provider_id).await.ok()?.map(|p| p.slug)?;
-        
-        // Determine the model to use
-        let actual_model = selected.model.clone().unwrap_or_else(|| {
-            // If no specific model is configured, use a placeholder
-            // The router will handle selecting an actual model from the provider
-            "any".to_string()
-        });
-
-        Some((provider_slug, actual_model))
-    } else {
-        // Not a routing config name, treat as direct provider/model lookup
-        // Check if it's in provider/model format
-        if let Some((slug, m)) = model.split_once('/') {
-            Some((slug.to_string(), m.to_string()))
-        } else {
-            // Direct model name without provider - try to find it
-            None
-        }
-    }
-}
-
 #[derive(Serialize)]
 pub struct HealthResponse {
     pub status: String,
@@ -323,7 +271,7 @@ pub async fn chat_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_handler(
     State(state): State<std::sync::Arc<AppState>>,
-    Json(mut request): Json<ChatCompletionRequest>,
+    Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Json<ChatCompletionResponse>, (axum::http::StatusCode, String)> {
     tracing::info!(
         model = request.model,
@@ -331,20 +279,6 @@ pub async fn chat_completions_handler(
         messages_count = request.messages.len(),
         "Received chat completion request"
     );
-
-    // Resolve routing config name to actual provider/model if needed
-    let resolved_model = resolve_model_name(&state.config.db, &request.model).await;
-    
-    if let Some((provider_slug, actual_model)) = resolved_model {
-        // If we resolved to a specific provider/model, update the request
-        if actual_model != "any" {
-            request.model = format!("{}/{}", provider_slug, actual_model);
-        } else {
-            // For "any" model, we need to let the router select based on provider
-            // Keep the provider prefix but let the router handle model selection
-            request.model = format!("{}/{}", provider_slug, request.model);
-        }
-    }
 
     match state.config.router.chat_completions(&request).await {
         Ok(response) => {
@@ -369,7 +303,7 @@ pub async fn chat_completions_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_stream(
     State(state): State<std::sync::Arc<AppState>>,
-    Json(mut request): Json<ChatCompletionRequest>,
+    Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>> + Send + 'static>, (axum::http::StatusCode, String)> {
     tracing::info!(
         model = request.model,
@@ -377,20 +311,6 @@ pub async fn chat_completions_stream(
         messages_count = request.messages.len(),
         "Received streaming chat completion request"
     );
-
-    // Resolve routing config name to actual provider/model if needed
-    let resolved_model = resolve_model_name(&state.config.db, &request.model).await;
-    
-    if let Some((provider_slug, actual_model)) = resolved_model {
-        // If we resolved to a specific provider/model, update the request
-        if actual_model != "any" {
-            request.model = format!("{}/{}", provider_slug, actual_model);
-        } else {
-            // For "any" model, we need to let the router select based on provider
-            // Keep the provider prefix but let the router handle model selection
-            request.model = format!("{}/{}", provider_slug, request.model);
-        }
-    }
 
     let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send + 'static>> = 
         match state.config.router.chat_completions_stream(&request).await {
@@ -489,7 +409,7 @@ pub async fn create_provider(
     use crate::providers::openai::OpenAiProvider;
     use std::sync::Arc;
 
-    let provider = Arc::new(OpenAiProvider::new(
+    let _provider = Arc::new(OpenAiProvider::new(
         &request.name,
         Some(&request.slug),
         &request.base_url,
@@ -507,18 +427,12 @@ pub async fn create_provider(
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    tracing::info!(
-        provider_name = request.name,
-        provider_slug = request.slug,
-        base_url = request.base_url,
-        "Adding provider to router"
-    );
-    
-    state.config.router.add_provider(provider).await;
+    state.config.router.reload_config().await
+        .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     
     tracing::info!(
         provider_name = request.name,
-        "Provider added successfully"
+        "Provider added and config reloaded successfully"
     );
 
     Ok(Json(ProviderCreateResponse {
@@ -544,15 +458,10 @@ pub async fn delete_provider(
         .await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // Remove from in-memory router
-    let providers = state.config.router.get_providers().await;
-    if let Some(provider) = providers.iter().find(|p| p.slug() == slug) {
-        let provider_name = provider.name();
-        state.config.router.remove_provider(provider_name).await;
-        tracing::info!(provider_name = provider_name, "Provider removed from router");
-    }
+    state.config.router.reload_config().await
+        .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    tracing::info!(provider_slug = slug, "Provider deleted successfully");
+    tracing::info!(provider_slug = slug, "Provider deleted and config reloaded");
 
     Ok(Json(ProviderDeleteResponse {
         deleted: true,
@@ -711,8 +620,9 @@ mod tests {
         let app_config = crate::config::AppConfig {
             db: Arc::new(db.clone()),
             router: Arc::new(crate::router::engine::Router::new(
-                Box::new(crate::router::strategies::round_robin::RoundRobinStrategy::new()),
+                Arc::new(crate::router::strategies::round_robin::RoundRobinStrategy::new()),
                 metrics_store.clone(),
+                Arc::new(db.clone()),
             )),
             auth_config: crate::auth::nip98::AuthConfig::default(),
         };
@@ -1383,4 +1293,37 @@ pub async fn get_user(
         user: user_response,
         api_keys: api_keys_response,
     }))
+}
+
+#[derive(Serialize)]
+pub struct ConfigReloadResponse {
+    pub success: bool,
+    pub message: String,
+    pub providers_loaded: usize,
+}
+
+#[axum::debug_handler]
+pub async fn reload_config(
+    State(state): State<std::sync::Arc<AppState>>,
+) -> Result<Json<ConfigReloadResponse>, (axum::http::StatusCode, String)> {
+    tracing::info!("Reloading router configuration");
+    
+    match state.config.router.reload_config().await {
+        Ok(_) => {
+            let providers = state.config.router.get_providers().await;
+            tracing::info!(
+                providers_count = providers.len(),
+                "Configuration reloaded successfully"
+            );
+            Ok(Json(ConfigReloadResponse {
+                success: true,
+                message: "Configuration reloaded successfully".to_string(),
+                providers_loaded: providers.len(),
+            }))
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to reload configuration");
+            Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        }
+    }
 }

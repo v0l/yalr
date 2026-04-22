@@ -1,50 +1,286 @@
-use crate::metrics::{MetricsStore};
-use crate::{
-    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ProviderError,
-};
+use crate::db::Database;
+use crate::metrics::MetricsStore;
+use crate::providers::openai::OpenAiProvider;
 use crate::providers::Provider;
-use crate::router::strategies::{RoutingEngine, RoutingStrategy};
+use crate::router::strategies::{ProviderEntry, RoutingStrategy};
+use crate::{ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ProviderError};
 use async_stream::stream;
 use futures::stream::BoxStream;
 use futures::StreamExt;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
+struct RoutingTable {
+    strategy_name: String,
+    entries: Vec<ProviderEntry>,
+}
+
 pub struct Router {
-    engine: Arc<RwLock<RoutingEngine>>,
+    db: Arc<Database>,
     metrics_store: MetricsStore,
+    providers: RwLock<HashMap<String, Arc<dyn Provider>>>,
+    routing_tables: RwLock<HashMap<String, RoutingTable>>,
+    strategies: HashMap<String, Arc<dyn RoutingStrategy>>,
     max_retries: u32,
 }
 
 impl Router {
-    pub async fn get_providers(&self) -> Vec<Arc<dyn Provider>> {
-        let engine = self.engine.read().await;
-        engine.get_providers().await
-    }
+    pub fn new(
+        default_strategy: Arc<dyn RoutingStrategy>,
+        metrics_store: MetricsStore,
+        db: Arc<Database>,
+    ) -> Self {
+        let mut strategies = HashMap::new();
+        strategies.insert(default_strategy.name().to_string(), default_strategy);
 
-    pub async fn remove_provider(&self, provider_name: &str) {
-        let engine = self.engine.write().await;
-        let _ = engine.remove_provider(provider_name).await;
-    }
-}
-
-impl Router {
-    pub fn new(strategy: Box<dyn RoutingStrategy>, metrics_store: MetricsStore) -> Self {
-        let engine = RoutingEngine::new(Arc::from(strategy));
         Self {
-            engine: Arc::new(RwLock::new(engine)),
+            db,
             metrics_store,
+            providers: RwLock::new(HashMap::new()),
+            routing_tables: RwLock::new(HashMap::new()),
+            strategies,
             max_retries: 3,
         }
+    }
+
+    pub async fn reload_config(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let provider_records = self.db.list_providers().await?;
+
+        let mut providers = HashMap::new();
+        let mut id_to_slug: HashMap<i64, String> = HashMap::new();
+
+        for record in &provider_records {
+            let provider: Arc<dyn Provider> = Arc::new(OpenAiProvider::new(
+                &record.name,
+                Some(&record.slug),
+                &record.base_url,
+                record.api_key.as_deref(),
+            ));
+            self.metrics_store.register_provider(&record.name).await;
+            id_to_slug.insert(record.id, record.slug.clone());
+            providers.insert(record.slug.clone(), provider);
+        }
+
+        let mut tables = HashMap::new();
+
+        let routing_configs = self.db.list_routing_configs().await?;
+        for rc in &routing_configs {
+            let rcp_records = self.db.list_active_routing_config_providers(rc.id).await?;
+            let mut entries = Vec::new();
+
+            for rcp in &rcp_records {
+                let slug = match id_to_slug.get(&rcp.provider_id) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let provider = match providers.get(slug) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                entries.push(ProviderEntry {
+                    provider: provider.clone(),
+                    model_override: rcp.model.clone(),
+                    weight: rcp.weight,
+                });
+            }
+
+            tracing::info!(
+                routing_config = rc.name,
+                strategy = rc.strategy,
+                provider_count = entries.len(),
+                "Loaded routing config"
+            );
+
+            tables.insert(
+                rc.name.clone(),
+                RoutingTable {
+                    strategy_name: rc.strategy.clone(),
+                    entries,
+                },
+            );
+        }
+
+        let model_records = self.db.list_models().await?;
+        let mp_records = self.db.list_model_providers().await?;
+
+        let mut model_id_to_name: HashMap<i64, String> = HashMap::new();
+        for model in &model_records {
+            model_id_to_name.insert(model.id, model.name.clone());
+        }
+
+        for mp in &mp_records {
+            if !mp.is_active {
+                continue;
+            }
+
+            let model_name = match model_id_to_name.get(&mp.model_id) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            if tables.contains_key(model_name.as_str()) {
+                continue;
+            }
+
+            let slug = match id_to_slug.get(&mp.provider_id) {
+                Some(s) => s,
+                None => continue,
+            };
+            let provider = match providers.get(slug) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            tables
+                .entry(model_name.clone())
+                .or_insert_with(|| RoutingTable {
+                    strategy_name: "round_robin".to_string(),
+                    entries: Vec::new(),
+                })
+                .entries.push(ProviderEntry {
+                    provider: provider.clone(),
+                    model_override: None,
+                    weight: mp.weight,
+                });
+        }
+
+        if !tables.contains_key("default") && !providers.is_empty() {
+            let entries: Vec<ProviderEntry> = providers
+                .values()
+                .map(|provider| ProviderEntry {
+                    provider: provider.clone(),
+                    model_override: None,
+                    weight: 100,
+                })
+                .collect();
+
+            tables.insert(
+                "default".to_string(),
+                RoutingTable {
+                    strategy_name: "round_robin".to_string(),
+                    entries,
+                },
+            );
+        }
+
+        *self.providers.write().await = providers;
+        *self.routing_tables.write().await = tables;
+
+        let provider_count = self.providers.read().await.len();
+        let table_names: Vec<String> = self.routing_tables.read().await.keys().cloned().collect();
+        tracing::info!(
+            providers_loaded = provider_count,
+            routing_tables = ?table_names,
+            "Router config reloaded"
+        );
+
+        Ok(())
+    }
+
+    pub async fn get_providers(&self) -> Vec<Arc<dyn Provider>> {
+        self.providers.read().await.values().cloned().collect()
     }
 
     pub async fn add_provider(&self, provider: Arc<dyn Provider>) {
         let provider_name = provider.name().to_string();
         self.metrics_store.register_provider(&provider_name).await;
-        
-        let engine = self.engine.write().await;
-        engine.add_provider(provider.clone()).await;
+        let slug = provider.slug().to_string();
+        self.providers.write().await.insert(slug.clone(), provider.clone());
+
+        let mut tables = self.routing_tables.write().await;
+        let default = tables
+            .entry("default".to_string())
+            .or_insert_with(|| RoutingTable {
+                strategy_name: "round_robin".to_string(),
+                entries: Vec::new(),
+            });
+        default.entries.push(ProviderEntry {
+            provider,
+            model_override: None,
+            weight: 100,
+        });
+    }
+
+    pub async fn remove_provider(&self, slug: &str) {
+        self.providers.write().await.remove(slug);
+
+        let mut tables = self.routing_tables.write().await;
+        for table in tables.values_mut() {
+            table.entries.retain(|e| e.provider.slug() != slug);
+        }
+    }
+
+    async fn resolve_route(&self, model: &str) -> Option<(Arc<dyn Provider>, String)> {
+        if let Some((slug_prefix, actual_model)) = model.split_once('/') {
+            let providers = self.providers.read().await;
+            let provider = providers
+                .get(slug_prefix)
+                .cloned()
+                .or_else(|| {
+                    providers
+                        .values()
+                        .find(|p| p.slug().starts_with(slug_prefix))
+                        .cloned()
+                });
+            if let Some(provider) = provider {
+                tracing::info!(
+                    model = model,
+                    slug = slug_prefix,
+                    resolved_model = actual_model,
+                    provider = provider.name(),
+                    "Routed by provider prefix"
+                );
+                return Some((provider.clone(), actual_model.to_string()));
+            }
+            tracing::warn!(slug = slug_prefix, "No provider found for slug prefix");
+            return None;
+        }
+
+        let tables = self.routing_tables.read().await;
+        let table = match tables.get(model).or_else(|| tables.get("default")) {
+            Some(t) => t,
+            None => {
+                tracing::warn!(model = model, "No routing table found for model");
+                return None;
+            }
+        };
+
+        if table.entries.is_empty() {
+            tracing::warn!(model = model, "Routing table has no providers");
+            return None;
+        }
+
+        let strategy_name = table.strategy_name.clone();
+        let entries = table.entries.clone();
+        drop(tables);
+
+        let strategy = match self
+            .strategies
+            .get(&strategy_name)
+            .or_else(|| self.strategies.values().next())
+        {
+            Some(s) => s,
+            None => return None,
+        };
+
+        let idx = strategy.select(&entries, model).await?;
+        let entry = &entries[idx];
+        let resolved_model = entry
+            .model_override
+            .clone()
+            .unwrap_or_else(|| model.to_string());
+
+        tracing::info!(
+            model = model,
+            resolved_model = resolved_model,
+            provider = entry.provider.name(),
+            strategy = strategy.name(),
+            "Routed via routing table"
+        );
+
+        Some((entry.provider.clone(), resolved_model))
     }
 
     pub async fn chat_completions(
@@ -52,15 +288,21 @@ impl Router {
         request: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, RouterError> {
         let start = Instant::now();
-        
-        let engine = self.engine.read().await;
-        let provider = self.select_provider(&engine, &request.model).await
+        let original_model = request.model.clone();
+
+        let (provider, resolved_model) = self
+            .resolve_route(&request.model)
+            .await
             .ok_or(RouterError::NoAvailableProvider)?;
         let provider_name = provider.name().to_string();
-        let model = request.model.clone();
+
+        let mut actual_request = request.clone();
+        actual_request.model = resolved_model;
 
         let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
-        self.metrics_store.emitter().emit_provider_load(&provider_name, in_flight, None);
+        self.metrics_store
+            .emitter()
+            .emit_provider_load(&provider_name, in_flight, None);
 
         let mut attempt = 0;
         let mut last_error = None;
@@ -80,11 +322,11 @@ impl Router {
             if attempt >= self.max_retries {
                 let _ = self.metrics_store.decrement_in_flight(&provider_name).await;
                 return Err(last_error.unwrap_or(RouterError::ProviderError(
-                    ProviderError::ProviderError("Max retries exceeded".to_string())
+                    ProviderError::ProviderError("Max retries exceeded".to_string()),
                 )));
             }
 
-            let result = provider.chat_completions(request).await;
+            let result = provider.chat_completions(&actual_request).await;
             let total_latency = start.elapsed();
 
             match result {
@@ -92,18 +334,20 @@ impl Router {
                     let latency_ms = total_latency.as_millis() as u32;
                     self.metrics_store
                         .emitter()
-                        .emit_total_latency(&provider_name, &model, latency_ms);
+                        .emit_total_latency(&provider_name, &original_model, latency_ms);
                     self.metrics_store
                         .emitter()
-                        .emit_success(&provider_name, &model);
-                    
+                        .emit_success(&provider_name, &original_model);
+
                     if let Some(tokens) = response.usage.as_ref() {
-                        let output_tokens_per_sec = tokens.completion_tokens as f32 / (total_latency.as_secs_f64().max(0.001)) as f32;
-                        let input_tokens_per_sec = tokens.prompt_tokens as f32 / (total_latency.as_secs_f64().max(0.001)) as f32;
-                        
+                        let output_tokens_per_sec = tokens.completion_tokens as f32
+                            / (total_latency.as_secs_f64().max(0.001)) as f32;
+                        let input_tokens_per_sec = tokens.prompt_tokens as f32
+                            / (total_latency.as_secs_f64().max(0.001)) as f32;
+
                         tracing::info!(
                             provider = %provider_name,
-                            model = %model,
+                            model = %original_model,
                             prompt_tokens = tokens.prompt_tokens,
                             completion_tokens = tokens.completion_tokens,
                             total_tokens = tokens.total_tokens,
@@ -112,32 +356,42 @@ impl Router {
                             input_tokens_per_second = input_tokens_per_sec,
                             "Emitting tokens metrics"
                         );
-                        
-                        self.metrics_store
-                            .emitter()
-                            .emit_output_tokens_per_second(&provider_name, &model, output_tokens_per_sec);
-                        self.metrics_store
-                            .emitter()
-                            .emit_input_tokens_per_second(&provider_name, &model, input_tokens_per_sec);
-                        self.metrics_store
-                            .emitter()
-                            .emit_input_tokens(&provider_name, &model, tokens.prompt_tokens as u32);
-                        self.metrics_store
-                            .emitter()
-                            .emit_output_tokens(&provider_name, &model, tokens.completion_tokens as u32);
+
+                        self.metrics_store.emitter().emit_output_tokens_per_second(
+                            &provider_name,
+                            &original_model,
+                            output_tokens_per_sec,
+                        );
+                        self.metrics_store.emitter().emit_input_tokens_per_second(
+                            &provider_name,
+                            &original_model,
+                            input_tokens_per_sec,
+                        );
+                        self.metrics_store.emitter().emit_input_tokens(
+                            &provider_name,
+                            &original_model,
+                            tokens.prompt_tokens as u32,
+                        );
+                        self.metrics_store.emitter().emit_output_tokens(
+                            &provider_name,
+                            &original_model,
+                            tokens.completion_tokens as u32,
+                        );
                     }
-                    
+
                     let _ = self.metrics_store.decrement_in_flight(&provider_name).await;
                     let current = self.metrics_store.get_in_flight(&provider_name).await;
-                    self.metrics_store.emitter().emit_provider_load(&provider_name, current, None);
+                    self.metrics_store
+                        .emitter()
+                        .emit_provider_load(&provider_name, current, None);
                     return Ok(response);
                 }
                 Err(e) => {
                     last_error = Some(RouterError::ProviderError(e.clone()));
-                    
+
                     self.metrics_store.emitter().emit_failure_with_details(
                         &provider_name,
-                        &model,
+                        &original_model,
                         e.error_type(),
                         None,
                         &e.to_string(),
@@ -150,7 +404,8 @@ impl Router {
                         return Err(last_error.unwrap());
                     }
 
-                    let backoff = e.retry_after_ms()
+                    let backoff = e
+                        .retry_after_ms()
                         .map(|ms| Duration::from_millis(ms))
                         .unwrap_or_else(|| Duration::from_secs(2_u64.saturating_pow(attempt)));
 
@@ -169,30 +424,35 @@ impl Router {
         }
     }
 
-pub async fn chat_completions_stream(
+    pub async fn chat_completions_stream(
         &self,
         request: &ChatCompletionRequest,
-    ) -> Result<BoxStream<'static, Result<ChatCompletionChunk, RouterError>>, RouterError> {
-        let model = request.model.clone();
+    ) -> Result<BoxStream<'static, Result<ChatCompletionChunk, RouterError>>, RouterError>
+    {
+        let original_model = request.model.clone();
         tracing::info!(
-            model = &model,
+            model = &original_model,
             stream = true,
             "Routing streaming request"
         );
-        
-        let (provider_name, model, provider) = {
-            let engine = self.engine.read().await;
-            let provider = self.select_provider(&engine, &request.model)
+
+        let (provider_name, resolved_model, provider) = {
+            let (provider, resolved_model) = self
+                .resolve_route(&request.model)
                 .await
                 .ok_or(RouterError::NoAvailableProvider)?;
-            (provider.name().to_string(), request.model.clone(), provider)
+            (provider.name().to_string(), resolved_model, provider)
         };
 
+        let mut actual_request = request.clone();
+        actual_request.model = resolved_model;
+
         let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
-        self.metrics_store.emitter().emit_provider_load(&provider_name, in_flight, None);
+        self.metrics_store
+            .emitter()
+            .emit_provider_load(&provider_name, in_flight, None);
 
         let metrics_store = self.metrics_store.clone();
-        let request = request.clone();
         let provider_name_stream = provider_name.clone();
 
         let stream = stream! {
@@ -203,12 +463,12 @@ pub async fn chat_completions_stream(
             let mut completion_tokens = 0u32;
             let mut ttft_ms = 0u32;
 
-            let provider_stream = match provider.chat_completions_stream(&request) {
+            let provider_stream = match provider.chat_completions_stream(&actual_request) {
                 Ok(stream) => stream,
                 Err(e) => {
                     metrics_store.emitter().emit_failure_with_details(
                         &provider_name,
-                        &model,
+                        &original_model,
                         e.error_type(),
                         None,
                         &e.to_string(),
@@ -231,49 +491,49 @@ pub async fn chat_completions_stream(
                         if first_token {
                             first_token = false;
                             ttft_ms = start.elapsed().as_millis() as u32;
-                            metrics_store.emitter().emit_ttft(&provider_name, &model, ttft_ms);
+                            metrics_store.emitter().emit_ttft(&provider_name, &original_model, ttft_ms);
                         }
-                        
+
                         if let Some(usage) = chunk.usage.clone() {
                             prompt_tokens = usage.prompt_tokens;
                             completion_tokens = usage.completion_tokens;
                             total_tokens = usage.total_tokens;
                         }
-                        
+
                         yield Ok(chunk);
                     }
                     Err(e) => {
                         metrics_store.emitter().emit_failure_with_details(
                             &provider_name,
-                            &model,
+                            &original_model,
                             e.error_type(),
                             None,
                             &e.to_string(),
                             e.retry_after_ms(),
                             e.status_code(),
                         );
-let _ = metrics_store.decrement_in_flight(&provider_name_stream).await;
-                    let current = metrics_store.get_in_flight(&provider_name_stream).await;
-                    metrics_store.emitter().emit_provider_load(&provider_name_stream, current, None);
-                    yield Err(RouterError::ProviderError(e));
-                    return;
+                        let _ = metrics_store.decrement_in_flight(&provider_name_stream).await;
+                        let current = metrics_store.get_in_flight(&provider_name_stream).await;
+                        metrics_store.emitter().emit_provider_load(&provider_name_stream, current, None);
+                        yield Err(RouterError::ProviderError(e));
+                        return;
                     }
                 }
             }
 
             if !first_token {
-                metrics_store.emitter().emit_success(&provider_name, &model);
+                metrics_store.emitter().emit_success(&provider_name, &original_model);
                 let total_latency_ms = start.elapsed().as_millis() as u32;
-                metrics_store.emitter().emit_total_latency(&provider_name, &model, total_latency_ms);
-                
+                metrics_store.emitter().emit_total_latency(&provider_name, &original_model, total_latency_ms);
+
                 if total_tokens > 0 {
                     let generation_time_ms = total_latency_ms.saturating_sub(ttft_ms) as f32;
                     let output_tokens_per_sec = completion_tokens as f32 / (generation_time_ms / 1000.0).max(0.001);
                     let input_tokens_per_sec = prompt_tokens as f32 / (start.elapsed().as_secs_f64().max(0.001)) as f32;
-                    
+
                     tracing::info!(
                         provider = %provider_name,
-                        model = %model,
+                        model = %original_model,
                         prompt_tokens = prompt_tokens,
                         completion_tokens = completion_tokens,
                         total_tokens = total_tokens,
@@ -282,32 +542,20 @@ let _ = metrics_store.decrement_in_flight(&provider_name_stream).await;
                         input_tokens_per_second = input_tokens_per_sec,
                         "Emitting tokens metrics"
                     );
-                    
-                    metrics_store.emitter().emit_output_tokens_per_second(&provider_name, &model, output_tokens_per_sec);
-                    metrics_store.emitter().emit_input_tokens_per_second(&provider_name, &model, input_tokens_per_sec);
-                    metrics_store.emitter().emit_input_tokens(&provider_name, &model, prompt_tokens);
-                    metrics_store.emitter().emit_output_tokens(&provider_name, &model, completion_tokens);
+
+                    metrics_store.emitter().emit_output_tokens_per_second(&provider_name, &original_model, output_tokens_per_sec);
+                    metrics_store.emitter().emit_input_tokens_per_second(&provider_name, &original_model, input_tokens_per_sec);
+                    metrics_store.emitter().emit_input_tokens(&provider_name, &original_model, prompt_tokens);
+                    metrics_store.emitter().emit_output_tokens(&provider_name, &original_model, completion_tokens);
                 }
             }
-            
+
             let _ = metrics_store.decrement_in_flight(&provider_name_stream).await;
             let current = metrics_store.get_in_flight(&provider_name_stream).await;
             metrics_store.emitter().emit_provider_load(&provider_name_stream, current, None);
         };
 
         Ok(Box::pin(stream))
-    }
-
-    async fn select_provider(
-        &self,
-        engine: &RoutingEngine,
-        model: &str,
-    ) -> Option<Arc<dyn Provider>> {
-        if let Some((slug_prefix, _actual_model)) = model.split_once('/') {
-            return engine.route_by_slug(slug_prefix).await;
-        }
-        
-        engine.route(model).await
     }
 }
 

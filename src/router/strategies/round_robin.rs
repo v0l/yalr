@@ -25,26 +25,21 @@ impl RoutingStrategy for RoundRobinStrategy {
         "round_robin"
     }
 
-    async fn select_provider(
-        &self,
-        providers: &[Arc<dyn Provider>],
-        _model: &str,
-    ) -> Option<Arc<dyn Provider>> {
-        if providers.is_empty() {
-            tracing::warn!("RoundRobin: No providers available for routing");
+    async fn select(&self, entries: &[ProviderEntry], _key: &str) -> Option<usize> {
+        if entries.is_empty() {
+            tracing::warn!("RoundRobin: No entries available for routing");
             return None;
         }
 
-        let idx = self.counter.fetch_add(1, Ordering::Relaxed) % providers.len();
-        let selected = &providers[idx];
+        let idx = self.counter.fetch_add(1, Ordering::Relaxed) % entries.len();
         tracing::debug!(
             strategy = "round_robin",
-            selected_provider = selected.name(),
+            selected_provider = entries[idx].provider.name(),
             provider_index = idx,
-            total_providers = providers.len(),
-            "Provider selected"
+            total_entries = entries.len(),
+            "Entry selected"
         );
-        Some(selected.clone())
+        Some(idx)
     }
 }
 
@@ -53,18 +48,20 @@ mod tests {
     use super::*;
     use crate::providers::{
         CreateChatCompletionRequest, CreateChatCompletionResponse,
-        CreateChatCompletionStreamResponse, ProviderError,
+        CreateChatCompletionStreamResponse, ProviderError, Model,
     };
     use futures::{stream, StreamExt, stream::BoxStream};
 
     struct TestProvider {
         name: String,
+        slug: String,
     }
 
     impl TestProvider {
-        fn new(name: &str) -> Self {
+        fn new(name: &str, slug: &str) -> Self {
             Self {
                 name: name.to_string(),
+                slug: slug.to_string(),
             }
         }
     }
@@ -76,10 +73,10 @@ mod tests {
         }
 
         fn slug(&self) -> &str {
-            &self.name
+            &self.slug
         }
 
-        async fn list_models(&self) -> Result<Vec<crate::providers::Model>, ProviderError> {
+        async fn list_models(&self) -> Result<Vec<Model>, ProviderError> {
             Ok(vec![])
         }
 
@@ -102,47 +99,67 @@ mod tests {
         }
     }
 
+    fn make_entries(names: &[&str]) -> Vec<ProviderEntry> {
+        names
+            .iter()
+            .map(|n| ProviderEntry {
+                provider: Arc::new(TestProvider::new(n, n)) as Arc<dyn Provider>,
+                model_override: None,
+                weight: 100,
+            })
+            .collect()
+    }
+
     #[tokio::test]
-    async fn test_round_robin_selects_all_providers() {
-        let strategy = Arc::new(RoundRobinStrategy::new());
-        
-        let provider1: Arc<dyn Provider> = Arc::new(TestProvider::new("provider1"));
-        let provider2: Arc<dyn Provider> = Arc::new(TestProvider::new("provider2"));
-        let provider3: Arc<dyn Provider> = Arc::new(TestProvider::new("provider3"));
-        
-        let providers: Vec<Arc<dyn Provider>> = vec![provider1, provider2, provider3];
-        
+    async fn test_round_robin_selects_all() {
+        let strategy = RoundRobinStrategy::new();
+        let entries = make_entries(&["p1", "p2", "p3"]);
+
         let mut selections = Vec::new();
         for _ in 0..6 {
-            let p = strategy.select_provider(&providers, "test-model").await;
-            selections.push(p.unwrap().name().to_string());
+            let idx = strategy.select(&entries, "test").await.unwrap();
+            selections.push(entries[idx].provider.name().to_string());
         }
-        
-        assert_eq!(selections, vec!["provider1", "provider2", "provider3", "provider1", "provider2", "provider3"]);
+
+        assert_eq!(
+            selections,
+            vec!["p1", "p2", "p3", "p1", "p2", "p3"]
+        );
     }
 
     #[tokio::test]
-    async fn test_round_robin_empty_providers() {
-        let strategy = Arc::new(RoundRobinStrategy::new());
-        let providers: Vec<Arc<dyn Provider>> = vec![];
-        
-        let p = strategy.select_provider(&providers, "test-model").await;
-        assert!(p.is_none());
+    async fn test_round_robin_empty() {
+        let strategy = RoundRobinStrategy::new();
+        let entries: Vec<ProviderEntry> = vec![];
+
+        assert!(strategy.select(&entries, "test").await.is_none());
     }
 
     #[tokio::test]
-    async fn test_round_robin_single_provider() {
-        let strategy = Arc::new(RoundRobinStrategy::new());
-        
-        let provider1: Arc<dyn Provider> = Arc::new(TestProvider::new("provider1"));
-        let providers: Vec<Arc<dyn Provider>> = vec![provider1];
-        
+    async fn test_round_robin_single() {
+        let strategy = RoundRobinStrategy::new();
+        let entries = make_entries(&["p1"]);
+
         let mut selections = Vec::new();
         for _ in 0..3 {
-            let p = strategy.select_provider(&providers, "test-model").await;
-            selections.push(p.unwrap().name().to_string());
+            let idx = strategy.select(&entries, "test").await.unwrap();
+            selections.push(entries[idx].provider.name().to_string());
         }
-        
-        assert_eq!(selections, vec!["provider1", "provider1", "provider1"]);
+
+        assert_eq!(selections, vec!["p1", "p1", "p1"]);
+    }
+
+    #[tokio::test]
+    async fn test_model_override_preserved() {
+        let provider: Arc<dyn Provider> = Arc::new(TestProvider::new("p1", "p1"));
+        let entries = vec![ProviderEntry {
+            provider: provider.clone(),
+            model_override: Some("gpt-4-0613".to_string()),
+            weight: 100,
+        }];
+
+        let strategy = RoundRobinStrategy::new();
+        let idx = strategy.select(&entries, "gpt-4").await.unwrap();
+        assert_eq!(entries[idx].model_override, Some("gpt-4-0613".to_string()));
     }
 }

@@ -1,6 +1,5 @@
 use crate::db::Database;
 use crate::metrics::MetricsStore;
-use crate::providers::openai::OpenAiProvider;
 use crate::router::engine::Router;
 use std::sync::Arc;
 
@@ -60,11 +59,15 @@ impl AppConfig {
         let db = Arc::new(Database::new(&config.database.url).await?);
 
         let router = Arc::new(Router::new(
-            Box::new(crate::router::strategies::round_robin::RoundRobinStrategy::new()),
+            Arc::new(crate::router::strategies::round_robin::RoundRobinStrategy::new()),
             metrics_store,
+            db.clone(),
         ));
 
-        // Convert auth config
+        if let Err(e) = router.reload_config().await {
+            tracing::warn!(error = %e, "Failed to reload router config from DB, starting with empty config");
+        }
+
         let auth_config = config.auth.map(|a| {
             crate::auth::nip98::AuthConfig {
                 enabled: a.enabled,
@@ -78,18 +81,6 @@ impl AppConfig {
     }
 
     pub async fn load_providers(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let providers = self.db.list_providers().await?;
-
-        for provider_record in providers {
-            let provider: Arc<dyn crate::providers::Provider> = Arc::new(OpenAiProvider::new(
-                &provider_record.name,
-                Some(&provider_record.slug),
-                &provider_record.base_url,
-                provider_record.api_key.as_deref(),
-            ));
-            self.router.add_provider(provider).await;
-        }
-
-        Ok(())
+        self.router.reload_config().await
     }
 }
