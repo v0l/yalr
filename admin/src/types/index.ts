@@ -3,6 +3,7 @@ export interface Provider {
   name: string
   slug: string
   base_url: string
+  provider_type: string
   created_at: string
   updated_at: string
 }
@@ -37,6 +38,15 @@ export interface ProviderCreateRequest {
   slug: string
   base_url: string
   api_key: string
+  provider_type: string
+}
+
+export interface ProviderUpdateRequest {
+  name?: string
+  slug?: string
+  base_url?: string
+  api_key?: string
+  provider_type?: string
 }
 
 export interface ModelSyncReport {

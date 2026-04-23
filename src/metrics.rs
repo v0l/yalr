@@ -332,8 +332,14 @@ impl MetricsStore {
     pub async fn decrement_in_flight(&self, provider_name: &str) -> u32 {
         let load = self.provider_in_flight.read().await;
         if let Some(counter) = load.get(provider_name) {
-            let current = counter.fetch_sub(1, Ordering::SeqCst) - 1;
-            current
+            let prev = counter.fetch_sub(1, Ordering::SeqCst);
+            // Prevent underflow - if already 0, add it back and return 0
+            if prev == 0 {
+                counter.fetch_add(1, Ordering::SeqCst);
+                0
+            } else {
+                prev - 1
+            }
         } else {
             0
         }

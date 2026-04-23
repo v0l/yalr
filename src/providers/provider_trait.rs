@@ -127,4 +127,26 @@ impl ProviderError {
                 | ProviderError::ServerError { .. }
         )
     }
+
+    /// Returns true if this error is transient and may succeed on retry.
+    /// Transient errors include timeouts, rate limits, server errors (5xx),
+    /// and OpenAI errors which often represent network issues or 502/503s.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            ProviderError::RateLimit { .. } => true,
+            ProviderError::Timeout => true,
+            ProviderError::ServerError { status_code, .. } => {
+                // 5xx errors are transient
+                status_code.map_or(true, |code| code >= 500)
+            }
+            ProviderError::OpenAIError(_) => {
+                // OpenAI errors from async_openai often represent
+                // network issues, 502 Bad Gateway, 503 Service Unavailable, etc.
+                true
+            }
+            ProviderError::Authentication(_) => false,
+            ProviderError::NotFound(_) => false,
+            ProviderError::Other(_) => true,
+        }
+    }
 }

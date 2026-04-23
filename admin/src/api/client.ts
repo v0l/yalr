@@ -4,6 +4,7 @@ import type {
   MetricsResponse,
   HealthResponse,
   ProviderCreateRequest,
+  ProviderUpdateRequest,
   ModelSyncReport,
   ApiKey,
   ApiKeyListItem,
@@ -122,6 +123,25 @@ export const api = {
         window.location.href = '/login'
       }
       throw new Error('Failed to delete provider')
+    }
+    
+    return response.json()
+  },
+
+  async updateProvider(slug: string, data: ProviderUpdateRequest): Promise<Provider> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/providers/${slug}`, {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to update provider')
     }
     
     return response.json()

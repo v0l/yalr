@@ -163,6 +163,7 @@ pub struct UpdateProvider<'a> {
     pub slug: Option<&'a str>,
     pub base_url: Option<&'a str>,
     pub api_key: Option<Option<&'a str>>,
+    pub provider_type: Option<ProviderType>,
 }
 
 #[derive(Clone, Debug)]
@@ -308,6 +309,9 @@ impl Database {
         if let Some(_api_key) = updates.api_key {
             query.push_str(", api_key = ?");
         }
+        if let Some(_provider_type) = updates.provider_type {
+            query.push_str(", provider_type = ?");
+        }
 
         query.push_str(" WHERE id = ? RETURNING *");
 
@@ -324,6 +328,9 @@ impl Database {
         }
         if let Some(api_key) = updates.api_key {
             query_builder = query_builder.bind(api_key);
+        }
+        if let Some(provider_type) = updates.provider_type {
+            query_builder = query_builder.bind(provider_type as i16);
         }
         
         query_builder.bind(id).fetch_one(&self.pool).await
@@ -926,6 +933,7 @@ mod tests {
             slug: Some("updated-slug"),
             base_url: Some("http://localhost:9090"),
             api_key: Some(Some("new-key")),
+            provider_type: None,
         }).await.unwrap();
         assert_eq!(updated.name, "updated-name");
         assert_eq!(updated.slug, "updated-slug");
@@ -949,6 +957,7 @@ mod tests {
             slug: None,
             base_url: None,
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         assert_eq!(updated.name, "updated-name");
         assert_eq!(updated.slug, "test");

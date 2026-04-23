@@ -51,9 +51,13 @@ pub struct OllamaModelsResponse {
 impl OllamaProvider {
     pub fn new(name: &str, slug: Option<&str>, base_url: &str, api_key: Option<&str>) -> Result<Self, ProviderError> {
         let base_url = Url::parse(base_url).map_err(|e| ProviderError::Other(e.into()))?;
+        
+        // Ollama's OpenAI-compatible API is at /v1, so append it for the inner client
+        let openai_base_url = base_url.join("/v1")
+            .map_err(|e| ProviderError::Other(e.into()))?;
 
         Ok(Self {
-            inner: OpenAiProvider::new(name, slug, base_url.as_str(), api_key),
+            inner: OpenAiProvider::new(name, slug, openai_base_url.as_str(), api_key),
             http_client: HttpClient::new(),
             base_url,
         })

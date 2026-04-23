@@ -74,6 +74,7 @@ pub struct ProviderResponse {
     pub name: String,
     pub slug: String,
     pub base_url: String,
+    pub provider_type: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -774,6 +775,7 @@ pub struct ProviderCreateRequest {
     pub slug: String,
     pub base_url: String,
     pub api_key: String,
+    pub provider_type: String,
 }
 
 #[axum::debug_handler]
@@ -793,6 +795,7 @@ pub async fn list_providers(State(state): State<std::sync::Arc<AppState>>) -> Js
             name: p.name,
             slug: p.slug,
             base_url: p.base_url,
+            provider_type: p.provider_type.as_str().to_string(),
             created_at: p.created_at,
             updated_at: p.updated_at,
         })
@@ -808,26 +811,21 @@ pub async fn create_provider(
     State(state): State<std::sync::Arc<AppState>>,
     Json(request): Json<ProviderCreateRequest>,
 ) -> Result<Json<ProviderCreateResponse>, (axum::http::StatusCode, String)> {
-    use crate::providers::openai::OpenAiProvider;
-    use std::sync::Arc;
+    use crate::db::ProviderType;
 
-    let _provider = Arc::new(OpenAiProvider::new(
-        &request.name,
-        Some(&request.slug),
-        &request.base_url,
-        Some(&request.api_key),
-    ));
+    let provider_type = ProviderType::from_str(&request.provider_type)
+        .unwrap_or(ProviderType::OpenAi);
 
-    sqlx::query(
-        "INSERT INTO providers (name, slug, base_url, api_key) VALUES (?, ?, ?, ?)",
-    )
-    .bind(&request.name)
-    .bind(&request.slug)
-    .bind(&request.base_url)
-    .bind(&request.api_key)
-    .execute(&state.config.db.pool)
-    .await
-    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let new_provider = crate::db::NewProvider {
+        name: &request.name,
+        slug: &request.slug,
+        base_url: &request.base_url,
+        api_key: Some(&request.api_key),
+        provider_type: Some(provider_type),
+    };
+
+    let created = state.config.db.create_provider(new_provider).await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     state.config.router.reload_config().await
         .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -838,11 +836,11 @@ pub async fn create_provider(
     );
 
     Ok(Json(ProviderCreateResponse {
-        id: 0,
-        name: request.name,
-        slug: request.slug,
-        base_url: request.base_url,
-        created_at: "now".to_string(),
+        id: created.id,
+        name: created.name,
+        slug: created.slug,
+        base_url: created.base_url,
+        created_at: created.created_at,
     }))
 }
 
@@ -868,6 +866,57 @@ pub async fn delete_provider(
     Ok(Json(ProviderDeleteResponse {
         deleted: true,
         slug,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct ProviderUpdateRequest {
+    pub name: Option<String>,
+    pub slug: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub provider_type: Option<String>,
+}
+
+#[axum::debug_handler]
+pub async fn update_provider(
+    Path(slug): Path<String>,
+    State(state): State<std::sync::Arc<AppState>>,
+    Json(request): Json<ProviderUpdateRequest>,
+) -> Result<Json<ProviderResponse>, (axum::http::StatusCode, String)> {
+    use crate::db::ProviderType;
+
+    let provider = state.config.db.get_provider_by_slug(&slug).await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, format!("Provider '{}' not found", slug)))?;
+
+    let provider_type = request.provider_type.as_deref()
+        .and_then(ProviderType::from_str);
+
+    let api_key = request.api_key.as_deref().map(Some);
+
+    let updated = state.config.db.update_provider(provider.id, crate::db::UpdateProvider {
+        name: request.name.as_deref(),
+        slug: request.slug.as_deref(),
+        base_url: request.base_url.as_deref(),
+        api_key,
+        provider_type,
+    }).await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    state.config.router.reload_config().await
+        .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    tracing::info!(provider_slug = slug, "Provider updated and config reloaded");
+
+    Ok(Json(ProviderResponse {
+        id: updated.id,
+        name: updated.name,
+        slug: updated.slug,
+        base_url: updated.base_url,
+        provider_type: updated.provider_type.as_str().to_string(),
+        created_at: updated.created_at,
+        updated_at: updated.updated_at,
     }))
 }
 
@@ -1314,7 +1363,8 @@ mod tests {
                         "name": "test-provider",
                         "slug": "test",
                         "base_url": "http://localhost:8080",
-                        "api_key": "test-key"
+                        "api_key": "test-key",
+                        "provider_type": "openai"
                     }).to_string()))
                     .unwrap(),
             )

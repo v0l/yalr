@@ -1,7 +1,6 @@
 use crate::db::Database;
 use crate::metrics::MetricsStore;
-use crate::providers::openai::OpenAiProvider;
-use crate::providers::Provider;
+use crate::providers::{create_provider, Provider};
 use crate::router::strategies::{ProviderEntry, RoutingStrategy};
 use crate::{ChatCompletionRequest, ChatCompletionResponse, ProviderError};
 use crate::providers::StreamingChunk;
@@ -12,6 +11,44 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+
+/// Guard that decrements in-flight count when dropped.
+/// Ensures in-flight tracking is correct even on early returns or panics.
+struct InFlightGuard {
+    metrics_store: MetricsStore,
+    provider_name: String,
+    decremented: bool,
+}
+
+impl InFlightGuard {
+    fn new(metrics_store: MetricsStore, provider_name: String) -> Self {
+        Self {
+            metrics_store,
+            provider_name,
+            decremented: false,
+        }
+    }
+
+    fn decrement(&mut self) {
+        if !self.decremented {
+            let metrics = self.metrics_store.clone();
+            let name = self.provider_name.clone();
+            tokio::spawn(async move {
+                let _ = metrics.decrement_in_flight(&name).await;
+                let current = metrics.get_in_flight(&name).await;
+                let max_conc = metrics.get_provider_max_concurrency(&name).await;
+                metrics.emitter().emit_provider_load(&name, current, max_conc);
+            });
+            self.decremented = true;
+        }
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.decrement();
+    }
+}
 
 struct RoutingTable {
     strategy_name: String,
@@ -53,12 +90,13 @@ impl Router {
         let mut id_to_slug: HashMap<i64, String> = HashMap::new();
 
         for record in &provider_records {
-            let provider: Arc<dyn Provider> = Arc::new(OpenAiProvider::new(
+            let provider = create_provider(
                 &record.name,
                 Some(&record.slug),
                 &record.base_url,
                 record.api_key.as_deref(),
-            ));
+                record.provider_type,
+            );
             self.metrics_store.register_provider(&record.name).await;
             id_to_slug.insert(record.id, record.slug.clone());
             providers.insert(record.slug.clone(), provider);
@@ -214,6 +252,14 @@ impl Router {
     }
 
     async fn resolve_route(&self, model: &str) -> Option<(Arc<dyn Provider>, String)> {
+        self.resolve_route_excluding(model, &[]).await
+    }
+
+    async fn resolve_route_excluding(
+        &self,
+        model: &str,
+        excluded_providers: &[String],
+    ) -> Option<(Arc<dyn Provider>, String)> {
         if let Some((slug_prefix, actual_model)) = model.split_once('/') {
             let providers = self.providers.read().await;
             let provider = providers
@@ -254,8 +300,22 @@ impl Router {
         }
 
         let strategy_name = table.strategy_name.clone();
-        let entries = table.entries.clone();
+        let entries: Vec<ProviderEntry> = table
+            .entries
+            .iter()
+            .filter(|e| !excluded_providers.contains(&e.provider.name().to_string()))
+            .cloned()
+            .collect();
         drop(tables);
+
+        if entries.is_empty() {
+            tracing::warn!(
+                model = model,
+                excluded = ?excluded_providers,
+                "All providers excluded, no fallback available"
+            );
+            return None;
+        }
 
         let strategy = match self
             .strategies
@@ -291,39 +351,45 @@ impl Router {
         let start = Instant::now();
         let original_model = request.model.clone();
 
-        let (provider, resolved_model) = self
-            .resolve_route(&request.model)
-            .await
-            .ok_or(RouterError::NoAvailableProvider)?;
-        let provider_name = provider.name().to_string();
+        let mut excluded_providers: Vec<String> = Vec::new();
+        let mut last_error: Option<RouterError> = None;
 
-        let mut actual_request = request.clone();
-        actual_request.model = resolved_model.clone();
+        for attempt in 0..self.max_retries {
+            let (provider, resolved_model) = self
+                .resolve_route_excluding(&request.model, &excluded_providers)
+                .await
+                .ok_or_else(|| {
+                    last_error.unwrap_or(RouterError::NoAvailableProvider)
+                })?;
+            let provider_name = provider.name().to_string();
 
-        let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
-        
-        // Fetch and cache runtime info to get max_concurrency
-        let max_concurrency = self.metrics_store.get_provider_max_concurrency(&provider_name).await;
-        let max_concurrency = if max_concurrency.is_none() {
-            if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
-                let max_conc = info.max_concurrency();
-                self.metrics_store.set_provider_runtime_info(&provider_name, info).await;
-                max_conc
+            let mut actual_request = request.clone();
+            actual_request.model = resolved_model.clone();
+
+            let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
+            let mut guard = InFlightGuard::new(
+                self.metrics_store.clone(),
+                provider_name.clone(),
+            );
+
+            // Fetch and cache runtime info to get max_concurrency
+            let max_concurrency = self.metrics_store.get_provider_max_concurrency(&provider_name).await;
+            let max_concurrency = if max_concurrency.is_none() {
+                if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
+                    let max_conc = info.max_concurrency();
+                    self.metrics_store.set_provider_runtime_info(&provider_name, info).await;
+                    max_conc
+                } else {
+                    None
+                }
             } else {
-                None
-            }
-        } else {
-            max_concurrency
-        };
-        
-        self.metrics_store
-            .emitter()
-            .emit_provider_load(&provider_name, in_flight, max_concurrency);
+                max_concurrency
+            };
 
-        let mut attempt = 0;
-        let mut last_error = None;
+            self.metrics_store
+                .emitter()
+                .emit_provider_load(&provider_name, in_flight, max_concurrency);
 
-        loop {
             if !self.metrics_store.is_provider_available(&provider_name).await {
                 let backoff = self.metrics_store.get_provider_backoff(&provider_name).await;
                 tracing::warn!(
@@ -335,18 +401,14 @@ impl Router {
                 tokio::time::sleep(backoff).await;
             }
 
-            if attempt >= self.max_retries {
-                let _ = self.metrics_store.decrement_in_flight(&provider_name).await;
-                return Err(last_error.unwrap_or(RouterError::ProviderError(
-                    ProviderError::Other("Max retries exceeded".to_string().into()),
-                )));
-            }
-
             let result = provider.chat_completions(&actual_request).await;
             let total_latency = start.elapsed();
 
             match result {
                 Ok(response) => {
+                    guard.decrement();
+                    drop(guard);
+
                     let latency_ms = total_latency.as_millis() as u32;
                     self.metrics_store
                         .emitter()
@@ -395,15 +457,12 @@ impl Router {
                         );
                     }
 
-                    let _ = self.metrics_store.decrement_in_flight(&provider_name).await;
-                    let current = self.metrics_store.get_in_flight(&provider_name).await;
-                    let max_concurrency = self.metrics_store.get_provider_max_concurrency(&provider_name).await;
-                    self.metrics_store
-                        .emitter()
-                        .emit_provider_load(&provider_name, current, max_concurrency);
                     return Ok(response);
                 }
                 Err(e) => {
+                    guard.decrement();
+                    drop(guard);
+
                     last_error = Some(RouterError::ProviderError(e.clone()));
 
                     self.metrics_store.emitter().emit_failure_with_details(
@@ -416,8 +475,23 @@ impl Router {
                         e.status_code(),
                     );
 
-                    if attempt >= self.max_retries - 1 {
-                        let _ = self.metrics_store.decrement_in_flight(&provider_name).await;
+                    if e.is_transient() {
+                        // Exclude this provider and try another on next iteration
+                        excluded_providers.push(provider_name.clone());
+                        tracing::warn!(
+                            provider = &provider_name,
+                            attempt = attempt,
+                            error = %e,
+                            "Transient error, failing over to another provider"
+                        );
+                    } else {
+                        // Non-transient error (auth, not found) - don't retry
+                        tracing::warn!(
+                            provider = &provider_name,
+                            attempt = attempt,
+                            error = %e,
+                            "Non-transient error, aborting"
+                        );
                         return Err(last_error.unwrap());
                     }
 
@@ -426,19 +500,14 @@ impl Router {
                         .map(|ms| Duration::from_millis(ms))
                         .unwrap_or_else(|| Duration::from_secs(2_u64.saturating_pow(attempt)));
 
-                    tracing::warn!(
-                        provider = &provider_name,
-                        attempt = attempt,
-                        error = %last_error.as_ref().unwrap(),
-                        backoff_ms = backoff.as_millis(),
-                        "Request failed, retrying after backoff"
-                    );
-
                     tokio::time::sleep(backoff).await;
-                    attempt += 1;
                 }
             }
         }
+
+        Err(last_error.unwrap_or(RouterError::ProviderError(
+            ProviderError::Other("Max retries exceeded".to_string().into()),
+        )))
     }
 
     pub async fn chat_completions_stream(
@@ -453,51 +522,140 @@ impl Router {
             "Routing streaming request"
         );
 
-        let (provider_name, resolved_model, provider) = {
-            let (provider, resolved_model) = self
-                .resolve_route(&request.model)
-                .await
-                .ok_or(RouterError::NoAvailableProvider)?;
-            (provider.name().to_string(), resolved_model, provider)
-        };
+        let mut excluded_providers: Vec<String> = Vec::new();
+        let mut last_error: Option<RouterError> = None;
 
-        let mut actual_request = request.clone();
-        actual_request.model = resolved_model.clone();
+        for attempt in 0..self.max_retries {
+            let route_result = self
+                .resolve_route_excluding(&request.model, &excluded_providers)
+                .await;
+            
+            let (provider, resolved_model) = match route_result {
+                Some(route) => route,
+                None => {
+                    return Err(last_error.unwrap_or(RouterError::NoAvailableProvider));
+                }
+            };
+            let provider_name = provider.name().to_string();
 
-        let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
-        
-        // Fetch and cache runtime info to get max_concurrency
-        let max_concurrency = self.metrics_store.get_provider_max_concurrency(&provider_name).await;
-        let max_concurrency = if max_concurrency.is_none() {
-            if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
-                let max_conc = info.max_concurrency();
-                self.metrics_store.set_provider_runtime_info(&provider_name, info).await;
-                max_conc
+            let mut actual_request = request.clone();
+            actual_request.model = resolved_model.clone();
+
+            let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
+            let mut guard = InFlightGuard::new(
+                self.metrics_store.clone(),
+                provider_name.clone(),
+            );
+
+            // Fetch and cache runtime info to get max_concurrency
+            let max_concurrency = self.metrics_store.get_provider_max_concurrency(&provider_name).await;
+            let max_concurrency = if max_concurrency.is_none() {
+                if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
+                    let max_conc = info.max_concurrency();
+                    self.metrics_store.set_provider_runtime_info(&provider_name, info).await;
+                    max_conc
+                } else {
+                    None
+                }
             } else {
-                None
-            }
-        } else {
-            max_concurrency
-        };
-        
-        self.metrics_store
-            .emitter()
-            .emit_provider_load(&provider_name, in_flight, max_concurrency);
+                max_concurrency
+            };
 
-        let metrics_store = self.metrics_store.clone();
-        let provider_name_stream = provider_name.clone();
+            self.metrics_store
+                .emitter()
+                .emit_provider_load(&provider_name, in_flight, max_concurrency);
 
-        let stream = stream! {
-            let start = Instant::now();
-            let mut first_token = true;
-            let mut total_tokens = 0u32;
-            let mut prompt_tokens = 0u32;
-            let mut completion_tokens = 0u32;
-            let mut ttft_ms = 0u32;
+            let metrics_store = self.metrics_store.clone();
+            let provider_name_stream = provider_name.clone();
 
-            let provider_stream = match provider.chat_completions_stream(&actual_request) {
-                Ok(stream) => stream,
+            match provider.chat_completions_stream(&actual_request) {
+                Ok(provider_stream) => {
+                    // Stream created successfully - guard will be decremented when stream ends
+                    let stream = stream! {
+                        let start = Instant::now();
+                        let mut first_token = true;
+                        let mut total_tokens = 0u32;
+                        let mut prompt_tokens = 0u32;
+                        let mut completion_tokens = 0u32;
+                        let mut ttft_ms = 0u32;
+                        let mut stream_error: Option<ProviderError> = None;
+
+                        let mut stream: futures::stream::BoxStream<'static, Result<StreamingChunk, ProviderError>> = provider_stream;
+
+                        while let Some(result) = stream.next().await {
+                            match result {
+                                Ok(chunk) => {
+                                    if first_token {
+                                        first_token = false;
+                                        ttft_ms = start.elapsed().as_millis() as u32;
+                                        metrics_store.emitter().emit_ttft(&provider_name, &original_model, ttft_ms);
+                                    }
+
+                                    if let Some(usage) = chunk.usage.clone() {
+                                        prompt_tokens = usage.prompt_tokens;
+                                        completion_tokens = usage.completion_tokens;
+                                        total_tokens = usage.total_tokens;
+                                    }
+
+                                    yield Ok(chunk);
+                                }
+                                Err(e) => {
+                                    stream_error = Some(e.clone());
+                                    metrics_store.emitter().emit_failure_with_details(
+                                        &provider_name,
+                                        &original_model,
+                                        e.error_type(),
+                                        None,
+                                        &e.to_string(),
+                                        e.retry_after_ms(),
+                                        e.status_code(),
+                                    );
+                                    yield Err(RouterError::ProviderError(e));
+                                    break;
+                                }
+                            }
+                        }
+
+                        if stream_error.is_none() && !first_token {
+                            metrics_store.emitter().emit_success(&provider_name, &original_model);
+                            let total_latency_ms = start.elapsed().as_millis() as u32;
+                            metrics_store.emitter().emit_total_latency(&provider_name, &original_model, total_latency_ms);
+
+                            if total_tokens > 0 {
+                                let generation_time_ms = total_latency_ms.saturating_sub(ttft_ms) as f32;
+                                let output_tokens_per_sec = completion_tokens as f32 / (generation_time_ms / 1000.0).max(0.001);
+                                let input_tokens_per_sec = prompt_tokens as f32 / (start.elapsed().as_secs_f64().max(0.001)) as f32;
+
+                                tracing::info!(
+                                    provider = %provider_name,
+                                    model = %original_model,
+                                    prompt_tokens = prompt_tokens,
+                                    completion_tokens = completion_tokens,
+                                    total_tokens = total_tokens,
+                                    total_latency_ms = total_latency_ms,
+                                    output_tokens_per_second = output_tokens_per_sec,
+                                    input_tokens_per_second = input_tokens_per_sec,
+                                    "Emitting tokens metrics"
+                                );
+
+                                metrics_store.emitter().emit_output_tokens_per_second(&provider_name, &original_model, output_tokens_per_sec);
+                                metrics_store.emitter().emit_input_tokens_per_second(&provider_name, &original_model, input_tokens_per_sec);
+                                metrics_store.emitter().emit_input_tokens(&provider_name, &original_model, prompt_tokens);
+                                metrics_store.emitter().emit_output_tokens(&provider_name, &original_model, completion_tokens);
+                            }
+                        }
+
+                        guard.decrement();
+                    };
+
+                    return Ok(Box::pin(stream));
+                }
                 Err(e) => {
+                    guard.decrement();
+                    drop(guard);
+
+                    last_error = Some(RouterError::ProviderError(e.clone()));
+
                     metrics_store.emitter().emit_failure_with_details(
                         &provider_name,
                         &original_model,
@@ -507,90 +665,38 @@ impl Router {
                         e.retry_after_ms(),
                         e.status_code(),
                     );
-                    let _ = metrics_store.decrement_in_flight(&provider_name_stream).await;
-                    let current = metrics_store.get_in_flight(&provider_name_stream).await;
-                    let max_conc = metrics_store.get_provider_max_concurrency(&provider_name_stream).await;
-                    metrics_store.emitter().emit_provider_load(&provider_name_stream, current, max_conc);
-                    yield Err(RouterError::ProviderError(e));
-                    return;
-                }
-            };
 
-            futures::pin_mut!(provider_stream);
-
-            while let Some(result) = provider_stream.next().await {
-                match result {
-                    Ok(chunk) => {
-                        if first_token {
-                            first_token = false;
-                            ttft_ms = start.elapsed().as_millis() as u32;
-                            metrics_store.emitter().emit_ttft(&provider_name, &original_model, ttft_ms);
-                        }
-
-                        if let Some(usage) = chunk.usage.clone() {
-                            prompt_tokens = usage.prompt_tokens;
-                            completion_tokens = usage.completion_tokens;
-                            total_tokens = usage.total_tokens;
-                        }
-
-                        yield Ok(chunk);
-                    }
-                    Err(e) => {
-                        metrics_store.emitter().emit_failure_with_details(
-                            &provider_name,
-                            &original_model,
-                            e.error_type(),
-                            None,
-                            &e.to_string(),
-                            e.retry_after_ms(),
-                            e.status_code(),
+                    if e.is_transient() {
+                        excluded_providers.push(provider_name.clone());
+                        tracing::warn!(
+                            provider = &provider_name,
+                            attempt = attempt,
+                            error = %e,
+                            "Transient stream setup error, failing over to another provider"
                         );
-                        let _ = metrics_store.decrement_in_flight(&provider_name_stream).await;
-                        let current = metrics_store.get_in_flight(&provider_name_stream).await;
-                        let max_conc = metrics_store.get_provider_max_concurrency(&provider_name_stream).await;
-                        metrics_store.emitter().emit_provider_load(&provider_name_stream, current, max_conc);
-                        yield Err(RouterError::ProviderError(e));
-                        return;
+                    } else {
+                        tracing::warn!(
+                            provider = &provider_name,
+                            attempt = attempt,
+                            error = %e,
+                            "Non-transient stream setup error, aborting"
+                        );
+                        return Err(last_error.unwrap());
                     }
+
+                    let backoff = e
+                        .retry_after_ms()
+                        .map(|ms| Duration::from_millis(ms))
+                        .unwrap_or_else(|| Duration::from_secs(2_u64.saturating_pow(attempt)));
+
+                    tokio::time::sleep(backoff).await;
                 }
             }
+        }
 
-            if !first_token {
-                metrics_store.emitter().emit_success(&provider_name, &original_model);
-                let total_latency_ms = start.elapsed().as_millis() as u32;
-                metrics_store.emitter().emit_total_latency(&provider_name, &original_model, total_latency_ms);
-
-                if total_tokens > 0 {
-                    let generation_time_ms = total_latency_ms.saturating_sub(ttft_ms) as f32;
-                    let output_tokens_per_sec = completion_tokens as f32 / (generation_time_ms / 1000.0).max(0.001);
-                    let input_tokens_per_sec = prompt_tokens as f32 / (start.elapsed().as_secs_f64().max(0.001)) as f32;
-
-                    tracing::info!(
-                        provider = %provider_name,
-                        model = %original_model,
-                        prompt_tokens = prompt_tokens,
-                        completion_tokens = completion_tokens,
-                        total_tokens = total_tokens,
-                        total_latency_ms = total_latency_ms,
-                        output_tokens_per_second = output_tokens_per_sec,
-                        input_tokens_per_second = input_tokens_per_sec,
-                        "Emitting tokens metrics"
-                    );
-
-                    metrics_store.emitter().emit_output_tokens_per_second(&provider_name, &original_model, output_tokens_per_sec);
-                    metrics_store.emitter().emit_input_tokens_per_second(&provider_name, &original_model, input_tokens_per_sec);
-                    metrics_store.emitter().emit_input_tokens(&provider_name, &original_model, prompt_tokens);
-                    metrics_store.emitter().emit_output_tokens(&provider_name, &original_model, completion_tokens);
-                }
-            }
-
-            let _ = metrics_store.decrement_in_flight(&provider_name_stream).await;
-            let current = metrics_store.get_in_flight(&provider_name_stream).await;
-            let max_conc = metrics_store.get_provider_max_concurrency(&provider_name_stream).await;
-            metrics_store.emitter().emit_provider_load(&provider_name_stream, current, max_conc);
-        };
-
-        Ok(Box::pin(stream))
+        Err(last_error.unwrap_or(RouterError::ProviderError(
+            ProviderError::Other("Max retries exceeded".to_string().into()),
+        )))
     }
 }
 

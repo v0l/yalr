@@ -9,12 +9,15 @@ use crate::router::{Modality, ModelRuntimeInfo};
 pub struct OpenAiProvider {
     name: String,
     slug: String,
-    client: Client<OpenAIConfig>,
+    pub(crate) client: Client<OpenAIConfig>,
 }
 
 impl OpenAiProvider {
     pub fn new(name: &str, slug: Option<&str>, base_url: &str, api_key: Option<&str>) -> Self {
         let slug = slug.unwrap_or(name).to_lowercase().replace(" ", "-").replace("_", "-");
+        
+        // Strip trailing slash to avoid double slashes in API URLs
+        let base_url = base_url.trim_end_matches('/');
         
         let config = OpenAIConfig::default()
             .with_api_base(base_url)
