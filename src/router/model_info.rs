@@ -16,6 +16,7 @@ pub struct ModelRuntimeInfo {
     pub variant: Option<String>,
     pub parameter_size: Option<String>,
     pub max_output_tokens: Option<u32>,
+    pub max_concurrency: Option<u32>,
     pub modalities: Vec<Modality>,
     pub additional_fields: std::collections::HashMap<String, serde_json::Value>,
 }
@@ -32,6 +33,7 @@ impl ModelRuntimeInfo {
             variant: None,
             parameter_size: None,
             max_output_tokens: None,
+            max_concurrency: None,
             modalities: vec![Modality::Text],
             additional_fields,
         }
@@ -64,6 +66,22 @@ impl ModelRuntimeInfo {
             .or_else(|| {
                 self.additional_fields
                     .get("max_context_tokens")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+            })
+    }
+
+    pub fn max_concurrency(&self) -> Option<u32> {
+        self.max_concurrency
+            .or_else(|| {
+                self.additional_fields
+                    .get("max_concurrency")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+            })
+            .or_else(|| {
+                self.additional_fields
+                    .get("total_slots")
                     .and_then(|v| v.as_u64())
                     .map(|v| v as u32)
             })

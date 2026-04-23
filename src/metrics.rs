@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::{broadcast, RwLock};
+use crate::router::ModelRuntimeInfo;
 
 /// Provider metrics data point with timestamp and event
 #[derive(Debug, Clone, Serialize)]
@@ -261,6 +262,8 @@ pub struct MetricsStore {
     provider_health: Arc<RwLock<std::collections::HashMap<String, ProviderHealthState>>>,
     /// Track per-provider in-flight request counts
     provider_in_flight: Arc<RwLock<std::collections::HashMap<String, Arc<AtomicU32>>>>,
+    /// Cache provider runtime info (including max_concurrency)
+    provider_runtime_info: Arc<RwLock<std::collections::HashMap<String, ModelRuntimeInfo>>>,
     max_events: usize,
     health_config: HealthConfig,
 }
@@ -281,6 +284,7 @@ impl MetricsStore {
             events,
             provider_health: Arc::new(RwLock::new(std::collections::HashMap::new())),
             provider_in_flight: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            provider_runtime_info: Arc::new(RwLock::new(std::collections::HashMap::new())),
             max_events,
             health_config: health_config.unwrap_or_default(),
         }
@@ -303,6 +307,8 @@ impl MetricsStore {
         load.remove(provider_name);
         let mut health = self.provider_health.write().await;
         health.remove(provider_name);
+        let mut runtime_info = self.provider_runtime_info.write().await;
+        runtime_info.remove(provider_name);
     }
 
     /// Increment in-flight count for a provider and return the new count
@@ -339,6 +345,18 @@ impl MetricsStore {
         load.get(provider_name)
             .map(|c| c.load(Ordering::SeqCst))
             .unwrap_or(0)
+    }
+
+    /// Set runtime info for a provider (caches max_concurrency and other details)
+    pub async fn set_provider_runtime_info(&self, provider_name: &str, runtime_info: ModelRuntimeInfo) {
+        let mut info = self.provider_runtime_info.write().await;
+        info.insert(provider_name.to_string(), runtime_info);
+    }
+
+    /// Get max concurrency for a provider
+    pub async fn get_provider_max_concurrency(&self, provider_name: &str) -> Option<u32> {
+        let info = self.provider_runtime_info.read().await;
+        info.get(provider_name).and_then(|r| r.max_concurrency())
     }
 
     /// Record a metrics event and update health state

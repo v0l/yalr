@@ -230,6 +230,7 @@ impl Provider for LlamaCppProvider {
         runtime_info.quantization = props.model_quant_type;
         runtime_info.parameter_size = props.model_n_params.map(|p| p.to_string());
         runtime_info.max_output_tokens = props.n_batch;
+        runtime_info.max_concurrency = props.total_slots;
 
         if let Some(modalities) = props.modalities {
             if modalities.vision.unwrap_or(false) {

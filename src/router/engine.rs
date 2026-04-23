@@ -298,12 +298,27 @@ impl Router {
         let provider_name = provider.name().to_string();
 
         let mut actual_request = request.clone();
-        actual_request.model = resolved_model;
+        actual_request.model = resolved_model.clone();
 
         let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
+        
+        // Fetch and cache runtime info to get max_concurrency
+        let max_concurrency = self.metrics_store.get_provider_max_concurrency(&provider_name).await;
+        let max_concurrency = if max_concurrency.is_none() {
+            if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
+                let max_conc = info.max_concurrency();
+                self.metrics_store.set_provider_runtime_info(&provider_name, info).await;
+                max_conc
+            } else {
+                None
+            }
+        } else {
+            max_concurrency
+        };
+        
         self.metrics_store
             .emitter()
-            .emit_provider_load(&provider_name, in_flight, None);
+            .emit_provider_load(&provider_name, in_flight, max_concurrency);
 
         let mut attempt = 0;
         let mut last_error = None;
@@ -382,9 +397,10 @@ impl Router {
 
                     let _ = self.metrics_store.decrement_in_flight(&provider_name).await;
                     let current = self.metrics_store.get_in_flight(&provider_name).await;
+                    let max_concurrency = self.metrics_store.get_provider_max_concurrency(&provider_name).await;
                     self.metrics_store
                         .emitter()
-                        .emit_provider_load(&provider_name, current, None);
+                        .emit_provider_load(&provider_name, current, max_concurrency);
                     return Ok(response);
                 }
                 Err(e) => {
@@ -446,12 +462,27 @@ impl Router {
         };
 
         let mut actual_request = request.clone();
-        actual_request.model = resolved_model;
+        actual_request.model = resolved_model.clone();
 
         let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
+        
+        // Fetch and cache runtime info to get max_concurrency
+        let max_concurrency = self.metrics_store.get_provider_max_concurrency(&provider_name).await;
+        let max_concurrency = if max_concurrency.is_none() {
+            if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
+                let max_conc = info.max_concurrency();
+                self.metrics_store.set_provider_runtime_info(&provider_name, info).await;
+                max_conc
+            } else {
+                None
+            }
+        } else {
+            max_concurrency
+        };
+        
         self.metrics_store
             .emitter()
-            .emit_provider_load(&provider_name, in_flight, None);
+            .emit_provider_load(&provider_name, in_flight, max_concurrency);
 
         let metrics_store = self.metrics_store.clone();
         let provider_name_stream = provider_name.clone();
@@ -478,7 +509,8 @@ impl Router {
                     );
                     let _ = metrics_store.decrement_in_flight(&provider_name_stream).await;
                     let current = metrics_store.get_in_flight(&provider_name_stream).await;
-                    metrics_store.emitter().emit_provider_load(&provider_name_stream, current, None);
+                    let max_conc = metrics_store.get_provider_max_concurrency(&provider_name_stream).await;
+                    metrics_store.emitter().emit_provider_load(&provider_name_stream, current, max_conc);
                     yield Err(RouterError::ProviderError(e));
                     return;
                 }
@@ -515,7 +547,8 @@ impl Router {
                         );
                         let _ = metrics_store.decrement_in_flight(&provider_name_stream).await;
                         let current = metrics_store.get_in_flight(&provider_name_stream).await;
-                        metrics_store.emitter().emit_provider_load(&provider_name_stream, current, None);
+                        let max_conc = metrics_store.get_provider_max_concurrency(&provider_name_stream).await;
+                        metrics_store.emitter().emit_provider_load(&provider_name_stream, current, max_conc);
                         yield Err(RouterError::ProviderError(e));
                         return;
                     }
@@ -553,7 +586,8 @@ impl Router {
 
             let _ = metrics_store.decrement_in_flight(&provider_name_stream).await;
             let current = metrics_store.get_in_flight(&provider_name_stream).await;
-            metrics_store.emitter().emit_provider_load(&provider_name_stream, current, None);
+            let max_conc = metrics_store.get_provider_max_concurrency(&provider_name_stream).await;
+            metrics_store.emitter().emit_provider_load(&provider_name_stream, current, max_conc);
         };
 
         Ok(Box::pin(stream))
