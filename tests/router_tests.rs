@@ -67,7 +67,7 @@ impl Provider for MockProvider {
         request: &CreateChatCompletionRequest,
     ) -> Result<CreateChatCompletionResponse, ProviderError> {
         if self.should_fail {
-            return Err(ProviderError::ProviderError("Mock failure".to_string()));
+            return Err(ProviderError::Other("Mock failure".to_string().into()));
         }
 
         if self.response_delay_ms > 0 {
@@ -101,7 +101,7 @@ impl Provider for MockProvider {
     > {
         if self.should_fail {
             return Ok(Box::pin(stream::once(async move {
-                Err(ProviderError::ProviderError("Mock stream failure".to_string()))
+                Err(ProviderError::Other("Mock stream failure".to_string().into()))
             })));
         }
 
@@ -338,6 +338,7 @@ async fn test_router_db_backed_routing_config() {
         slug: "openai",
         base_url: "http://localhost:8080",
         api_key: None,
+        provider_type: None,
     }).await.unwrap();
 
     db.create_routing_config(yalr::db::NewRoutingConfig {
@@ -365,6 +366,7 @@ async fn test_router_model_override_from_db() {
         slug: "openai",
         base_url: "http://localhost:8080",
         api_key: None,
+        provider_type: None,
     }).await.unwrap();
 
     let rc = db.create_routing_config(yalr::db::NewRoutingConfig {

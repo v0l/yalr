@@ -22,23 +22,6 @@ pub struct ModelRuntimeInfo {
 }
 
 impl ModelRuntimeInfo {
-    pub fn from_api_response(
-        model_id: &str,
-        additional_fields: std::collections::HashMap<String, serde_json::Value>,
-    ) -> Self {
-        Self {
-            model_id: model_id.to_string(),
-            context_length: None,
-            quantization: None,
-            variant: None,
-            parameter_size: None,
-            max_output_tokens: None,
-            max_concurrency: None,
-            modalities: vec![Modality::Text],
-            additional_fields,
-        }
-    }
-
     pub fn supports_modality(&self, modality: Modality) -> bool {
         self.modalities.contains(&modality)
     }

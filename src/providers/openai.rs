@@ -1,9 +1,9 @@
 use super::*;
 use async_openai::config::OpenAIConfig;
 use async_openai::Client;
-use futures::{stream::BoxStream, StreamExt};
+use futures::stream::BoxStream;
 use std::collections::HashMap;
-use crate::router::ModelRuntimeInfo;
+use crate::router::{Modality, ModelRuntimeInfo};
 
 #[derive(Clone)]
 pub struct OpenAiProvider {
@@ -114,7 +114,19 @@ impl Provider for OpenAiProvider {
                 additional_fields.insert("created".to_string(), serde_json::json!(model.created));
                 additional_fields.insert("owned_by".to_string(), serde_json::json!(model.owned_by));
                 
-                Ok(Some(ModelRuntimeInfo::from_api_response(model_id, additional_fields)))
+                let runtime_info = ModelRuntimeInfo {
+                    model_id: model_id.to_string(),
+                    context_length: None,
+                    quantization: None,
+                    variant: None,
+                    parameter_size: None,
+                    max_output_tokens: None,
+                    max_concurrency: None,
+                    modalities: vec![Modality::Text],
+                    additional_fields,
+                };
+                
+                Ok(Some(runtime_info))
             }
             Err(e) => Err(ProviderError::OpenAIError(e)),
         }

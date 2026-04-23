@@ -33,6 +33,8 @@ impl UserType {
 pub enum ProviderType {
     OpenAi = 0,
     LlamaCpp = 1,
+    Vllm = 2,
+    Ollama = 3,
 }
 
 impl ProviderType {
@@ -40,6 +42,8 @@ impl ProviderType {
         match self {
             ProviderType::OpenAi => "openai",
             ProviderType::LlamaCpp => "llamacpp",
+            ProviderType::Vllm => "vllm",
+            ProviderType::Ollama => "ollama",
         }
     }
     
@@ -47,6 +51,8 @@ impl ProviderType {
         match s {
             "openai" => Some(ProviderType::OpenAi),
             "llamacpp" => Some(ProviderType::LlamaCpp),
+            "vllm" => Some(ProviderType::Vllm),
+            "ollama" => Some(ProviderType::Ollama),
             _ => None,
         }
     }
