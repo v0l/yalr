@@ -140,28 +140,38 @@ impl Provider for LlamaCppProvider {
         &self,
         request: &CreateChatCompletionRequest,
     ) -> Result<
-        BoxStream<'static, Result<CreateChatCompletionStreamResponse, ProviderError>>,
+        BoxStream<'static, Result<crate::providers::StreamingChunk, ProviderError>>,
         ProviderError,
     > {
+        use crate::providers::StreamingChunk;
+        use futures::StreamExt;
+
         let client = self.client.clone();
         let request = request.clone();
 
+        // Serialize request once at the start
+        let request_value = serde_json::to_value(request)
+            .map_err(|e| ProviderError::ProviderError(format!("Failed to serialize request: {}", e)))?;
+
         let stream = async move {
-            match client.chat().create_stream(request).await {
+            match client.chat().create_stream_byot(request_value).await {
                 Ok(stream) => {
-                    Box::pin(stream.map(|result| result.map_err(|e| ProviderError::OpenAIError(e))))
-                        as BoxStream<
-                            'static,
-                            Result<CreateChatCompletionStreamResponse, ProviderError>,
-                        >
+                    Box::pin(stream.map(|result| {
+                        result
+                            .map_err(|e| ProviderError::OpenAIError(e))
+                            .and_then(|json_value: serde_json::Value| {
+                                // Deserialize the raw JSON value to our custom type
+                                // This preserves all fields including reasoning_content
+                                serde_json::from_value(json_value)
+                                    .map_err(|e| ProviderError::ProviderError(format!("Failed to deserialize chunk: {}", e)))
+                            })
+                    })) as BoxStream<'static, Result<StreamingChunk, ProviderError>>
                 }
-                Err(e) => Box::pin(futures::stream::once(async move {
-                    Err(ProviderError::OpenAIError(e))
-                }))
-                    as BoxStream<
-                        'static,
-                        Result<CreateChatCompletionStreamResponse, ProviderError>,
-                    >,
+                Err(e) => {
+                    Box::pin(futures::stream::once(async move {
+                        Err(ProviderError::OpenAIError(e))
+                    })) as BoxStream<'static, Result<StreamingChunk, ProviderError>>
+                }
             }
         };
 
@@ -171,8 +181,7 @@ impl Provider for LlamaCppProvider {
             while let Some(item) = s.next().await {
                 yield item;
             }
-        }
-        .boxed())
+        }.boxed())
     }
 
     async fn health_check(&self) -> Result<bool, ProviderError> {

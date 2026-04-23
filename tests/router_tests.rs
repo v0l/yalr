@@ -5,7 +5,7 @@ use yalr::{
     ChatCompletionRequestUserMessageContent, Provider, ProviderError, Router, RouterError,
 };
 use yalr::providers::{
-    CreateChatCompletionRequest, CreateChatCompletionResponse, CreateChatCompletionStreamResponse,
+    CreateChatCompletionRequest, CreateChatCompletionResponse, StreamingChunk,
 };
 use yalr::metrics::MetricsStore;
 use yalr::db::Database;
@@ -96,7 +96,7 @@ impl Provider for MockProvider {
         &self,
         request: &CreateChatCompletionRequest,
     ) -> Result<
-        futures::stream::BoxStream<'static, Result<CreateChatCompletionStreamResponse, ProviderError>>,
+        futures::stream::BoxStream<'static, Result<StreamingChunk, ProviderError>>,
         ProviderError,
     > {
         if self.should_fail {
@@ -106,7 +106,7 @@ impl Provider for MockProvider {
         }
 
         let chunks = vec![
-            Ok(CreateChatCompletionStreamResponse {
+            Ok(StreamingChunk {
                 id: format!("mock-stream-{}", self.name),
                 object: "chat.completion.chunk".to_string(),
                 choices: vec![],
@@ -115,6 +115,7 @@ impl Provider for MockProvider {
                 system_fingerprint: None,
                 service_tier: None,
                 usage: None,
+                extra_fields: std::collections::HashMap::new(),
             }),
         ];
 

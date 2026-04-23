@@ -1,7 +1,6 @@
 use async_openai::error::OpenAIError;
 use async_openai::types::chat::{
     CreateChatCompletionRequest, CreateChatCompletionResponse,
-    CreateChatCompletionStreamResponse,
 };
 use async_openai::types::models::Model;
 use async_trait::async_trait;
@@ -9,6 +8,7 @@ use futures::stream::BoxStream;
 
 use crate::metrics::ErrorType;
 use crate::router::ModelRuntimeInfo;
+use crate::providers::StreamingChunk;
 
 #[async_trait]
 pub trait Provider: Send + Sync {
@@ -27,7 +27,7 @@ pub trait Provider: Send + Sync {
         &self,
         request: &CreateChatCompletionRequest,
     ) -> Result<
-        BoxStream<'static, Result<CreateChatCompletionStreamResponse, ProviderError>>,
+        BoxStream<'static, Result<StreamingChunk, ProviderError>>,
         ProviderError,
     >;
 

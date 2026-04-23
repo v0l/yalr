@@ -48,7 +48,7 @@ mod tests {
     use super::*;
     use crate::providers::{
         CreateChatCompletionRequest, CreateChatCompletionResponse,
-        CreateChatCompletionStreamResponse, ProviderError, Model,
+        StreamingChunk, ProviderError, Model,
     };
     use futures::{stream, StreamExt, stream::BoxStream};
 
@@ -90,7 +90,7 @@ mod tests {
         fn chat_completions_stream(
             &self,
             _request: &CreateChatCompletionRequest,
-        ) -> Result<BoxStream<'static, Result<CreateChatCompletionStreamResponse, ProviderError>>, ProviderError> {
+        ) -> Result<BoxStream<'static, Result<StreamingChunk, ProviderError>>, ProviderError> {
             Ok(stream::empty().boxed())
         }
 

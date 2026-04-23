@@ -21,7 +21,7 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 config = "0.14"
 clap = { version = "4", features = ["derive"] }
-async-openai = { version = "0.34.0", features = ["chat-completion", "responses", "realtime", "model-types", "_api", "model"] }
+async-openai = { version = "0.34.0", features = ["chat-completion", "responses", "realtime", "model-types", "_api", "model", "byot"] }
 nostr = "0.44"
 base64 = "0.22"
 url = "2.5"

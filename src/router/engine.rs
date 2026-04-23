@@ -3,7 +3,8 @@ use crate::metrics::MetricsStore;
 use crate::providers::openai::OpenAiProvider;
 use crate::providers::Provider;
 use crate::router::strategies::{ProviderEntry, RoutingStrategy};
-use crate::{ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ProviderError};
+use crate::{ChatCompletionRequest, ChatCompletionResponse, ProviderError};
+use crate::providers::StreamingChunk;
 use async_stream::stream;
 use futures::stream::BoxStream;
 use futures::StreamExt;
@@ -427,7 +428,7 @@ impl Router {
     pub async fn chat_completions_stream(
         &self,
         request: &ChatCompletionRequest,
-    ) -> Result<BoxStream<'static, Result<ChatCompletionChunk, RouterError>>, RouterError>
+    ) -> Result<BoxStream<'static, Result<StreamingChunk, RouterError>>, RouterError>
     {
         let original_model = request.model.clone();
         tracing::info!(
