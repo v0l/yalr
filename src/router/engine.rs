@@ -338,7 +338,7 @@ impl Router {
             if attempt >= self.max_retries {
                 let _ = self.metrics_store.decrement_in_flight(&provider_name).await;
                 return Err(last_error.unwrap_or(RouterError::ProviderError(
-                    ProviderError::ProviderError("Max retries exceeded".to_string()),
+                    ProviderError::Other("Max retries exceeded".to_string().into()),
                 )));
             }
 

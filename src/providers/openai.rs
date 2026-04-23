@@ -66,7 +66,7 @@ impl Provider for OpenAiProvider {
 
         // Serialize request once at the start
         let request_value = serde_json::to_value(request)
-            .map_err(|e| ProviderError::ProviderError(format!("Failed to serialize request: {}", e)))?;
+            .map_err(|e| ProviderError::Other(e.into()))?;
 
         let stream = async move {
             match client.chat().create_stream_byot(request_value).await {
@@ -78,7 +78,7 @@ impl Provider for OpenAiProvider {
                                 // Deserialize the raw JSON value to our custom type
                                 // This preserves all fields including reasoning_content
                                 serde_json::from_value(json_value)
-                                    .map_err(|e| ProviderError::ProviderError(format!("Failed to deserialize chunk: {}", e)))
+                                    .map_err(|e| ProviderError::Other(e.into()))
                             })
                     })) as BoxStream<'static, Result<StreamingChunk, ProviderError>>
                 }

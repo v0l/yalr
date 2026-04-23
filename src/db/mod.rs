@@ -28,6 +28,30 @@ impl UserType {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[repr(u16)]
+pub enum ProviderType {
+    OpenAi = 0,
+    LlamaCpp = 1,
+}
+
+impl ProviderType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProviderType::OpenAi => "openai",
+            ProviderType::LlamaCpp => "llamacpp",
+        }
+    }
+    
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "openai" => Some(ProviderType::OpenAi),
+            "llamacpp" => Some(ProviderType::LlamaCpp),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct Provider {
     pub id: i64,
@@ -35,6 +59,7 @@ pub struct Provider {
     pub slug: String,
     pub base_url: String,
     pub api_key: Option<String>,
+    pub provider_type: ProviderType,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -90,6 +115,7 @@ pub struct NewProvider<'a> {
     pub slug: &'a str,
     pub base_url: &'a str,
     pub api_key: Option<&'a str>,
+    pub provider_type: Option<ProviderType>,
 }
 
 #[derive(Clone, Debug)]
@@ -228,13 +254,15 @@ impl Database {
 
     // Provider CRUD
     pub async fn create_provider(&self, provider: NewProvider<'_>) -> Result<Provider, sqlx::Error> {
+        let provider_type = provider.provider_type.unwrap_or(ProviderType::OpenAi);
         sqlx::query_as::<_, Provider>(
-            "INSERT INTO providers (name, slug, base_url, api_key) VALUES (?, ?, ?, ?) RETURNING *"
+            "INSERT INTO providers (name, slug, base_url, api_key, provider_type) VALUES (?, ?, ?, ?, ?) RETURNING *"
         )
         .bind(provider.name)
         .bind(provider.slug)
         .bind(provider.base_url)
         .bind(provider.api_key)
+        .bind(provider_type as i16)
         .fetch_one(&self.pool)
         .await
     }
@@ -787,6 +815,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: Some("test-key"),
+            provider_type: None,
         };
         let result = db.create_provider(provider).await.unwrap();
         assert_eq!(result.name, "test-provider");
@@ -803,6 +832,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: None,
+            provider_type: None,
         };
         let result = db.create_provider(provider).await.unwrap();
         assert_eq!(result.api_key, None);
@@ -816,6 +846,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: Some("test-key"),
+            provider_type: None,
         };
         let created = db.create_provider(provider).await.unwrap();
         let found = db.get_provider_by_id(created.id).await.unwrap().unwrap();
@@ -838,6 +869,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: Some("test-key"),
+            provider_type: None,
         };
         let created = db.create_provider(provider).await.unwrap();
         let found = db.get_provider_by_slug("test").await.unwrap().unwrap();
@@ -859,12 +891,14 @@ mod tests {
             slug: "p1",
             base_url: "http://localhost:1",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         db.create_provider(NewProvider {
             name: "provider2",
             slug: "p2",
             base_url: "http://localhost:2",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let providers = db.list_providers().await.unwrap();
         assert_eq!(providers.len(), 2);
@@ -878,6 +912,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: Some("test-key"),
+            provider_type: None,
         };
         let created = db.create_provider(provider).await.unwrap();
         let updated = db.update_provider(created.id, UpdateProvider {
@@ -900,6 +935,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: Some("test-key"),
+            provider_type: None,
         };
         let created = db.create_provider(provider).await.unwrap();
         let updated = db.update_provider(created.id, UpdateProvider {
@@ -921,6 +957,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: Some("test-key"),
+            provider_type: None,
         };
         let created = db.create_provider(provider).await.unwrap();
         let deleted = db.delete_provider(created.id).await.unwrap();
@@ -1056,6 +1093,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let model = db.create_model(NewModel {
             name: "test-model",
@@ -1082,6 +1120,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let model = db.create_model(NewModel {
             name: "test-model",
@@ -1106,6 +1145,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let model1 = db.create_model(NewModel {
             name: "model1",
@@ -1141,12 +1181,14 @@ mod tests {
             slug: "p1",
             base_url: "http://localhost:1",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let provider2 = db.create_provider(NewProvider {
             name: "provider2",
             slug: "p2",
             base_url: "http://localhost:2",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let model = db.create_model(NewModel {
             name: "test-model",
@@ -1177,6 +1219,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let model1 = db.create_model(NewModel {
             name: "model1",
@@ -1212,6 +1255,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let model = db.create_model(NewModel {
             name: "test-model",
@@ -1240,6 +1284,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let model = db.create_model(NewModel {
             name: "test-model",
@@ -1268,6 +1313,7 @@ mod tests {
             slug: "test",
             base_url: "http://localhost:8080",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let model = db.create_model(NewModel {
             name: "test-model",
@@ -1427,18 +1473,21 @@ mod tests {
             slug: "p1",
             base_url: "http://localhost:1",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let provider2 = db.create_provider(NewProvider {
             name: "provider2",
             slug: "p2",
             base_url: "http://localhost:2",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let provider3 = db.create_provider(NewProvider {
             name: "provider3",
             slug: "p3",
             base_url: "http://localhost:3",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         
         let rc = db.create_routing_config(NewRoutingConfig {
@@ -1487,12 +1536,14 @@ mod tests {
             slug: "p1",
             base_url: "http://localhost:1",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let provider2 = db.create_provider(NewProvider {
             name: "provider2",
             slug: "p2",
             base_url: "http://localhost:2",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         
         let rc = db.create_routing_config(NewRoutingConfig {
@@ -1532,18 +1583,21 @@ mod tests {
             slug: "p1",
             base_url: "http://localhost:1",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let provider2 = db.create_provider(NewProvider {
             name: "provider2",
             slug: "p2",
             base_url: "http://localhost:2",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         let provider3 = db.create_provider(NewProvider {
             name: "provider3",
             slug: "p3",
             base_url: "http://localhost:3",
             api_key: None,
+            provider_type: None,
         }).await.unwrap();
         
         let rc1 = db.create_routing_config(NewRoutingConfig {

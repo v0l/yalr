@@ -44,9 +44,6 @@ pub enum ProviderError {
     #[error("OpenAI error: {0}")]
     OpenAIError(#[from] OpenAIError),
 
-    #[error("Provider error: {0}")]
-    ProviderError(String),
-
     #[error("Rate limit exceeded. Retry after: {retry_after_ms}ms")]
     RateLimit {
         retry_after_ms: u64,
@@ -67,15 +64,17 @@ pub enum ProviderError {
 
     #[error("Not found: {0}")]
     NotFound(String),
+
+    #[error(transparent)]
+    Other(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl Clone for ProviderError {
     fn clone(&self) -> Self {
         match self {
             ProviderError::OpenAIError(_) => {
-                ProviderError::ProviderError("OpenAI error".to_string())
+                ProviderError::Other("OpenAI error".to_string().into())
             }
-            ProviderError::ProviderError(msg) => ProviderError::ProviderError(msg.clone()),
             ProviderError::RateLimit { retry_after_ms, message } => {
                 ProviderError::RateLimit {
                     retry_after_ms: *retry_after_ms,
@@ -89,6 +88,7 @@ impl Clone for ProviderError {
             ProviderError::Timeout => ProviderError::Timeout,
             ProviderError::Authentication(msg) => ProviderError::Authentication(msg.clone()),
             ProviderError::NotFound(msg) => ProviderError::NotFound(msg.clone()),
+            ProviderError::Other(_) => ProviderError::Other("Error".to_string().into()),
         }
     }
 }

@@ -5,14 +5,21 @@ use async_openai::Client;
 use futures::{stream::BoxStream, StreamExt};
 use reqwest::Client as HttpClient;
 use std::collections::HashMap;
+use url::Url;
 
+/// LlamaCppProvider - A provider implementation for llama.cpp servers.
+/// 
+/// llama.cpp provides an OpenAI-compatible API server that can be used with this provider.
+/// For more information on the API endpoints and features:
+/// - API Documentation: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#api-endpoints
+/// - Props endpoint (llama.cpp specific): `{base_url}/props` - Returns server and model configuration
 #[derive(Clone)]
 pub struct LlamaCppProvider {
     name: String,
     slug: String,
     client: Client<OpenAIConfig>,
     http_client: HttpClient,
-    props_url: String,
+    base_url: Url,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -65,7 +72,7 @@ pub struct LlamaCppModalities {
 }
 
 impl LlamaCppProvider {
-    pub fn new(name: &str, slug: Option<&str>, base_url: &str, api_key: Option<&str>) -> Self {
+    pub fn new(name: &str, slug: Option<&str>, base_url: &str, api_key: Option<&str>) -> Result<Self, ProviderError> {
         let slug = slug
             .unwrap_or(name)
             .to_lowercase()
@@ -76,40 +83,36 @@ impl LlamaCppProvider {
             .with_api_base(base_url)
             .with_api_key(api_key.unwrap_or(""));
 
-        let props_url = if base_url.ends_with('/') {
-            format!("{}props", base_url)
-        } else {
-            format!("{}/props", base_url)
-        };
+        let base_url = Url::parse(base_url).map_err(|e| ProviderError::Other(e.into()))?;
 
-        Self {
+        Ok(Self {
             name: name.to_string(),
             slug,
             client: Client::with_config(config),
             http_client: HttpClient::new(),
-            props_url,
-        }
+            base_url,
+        })
     }
 
     async fn fetch_props(&self) -> Result<LlamaCppProps, ProviderError> {
+        let props_url = self.base_url.join("/props").map_err(|e| ProviderError::Other(e.into()))?;
         let response = self
             .http_client
-            .get(&self.props_url)
+            .get(props_url.as_str())
             .send()
             .await
-            .map_err(|e| ProviderError::ProviderError(format!("Failed to fetch props: {}", e)))?;
+            .map_err(|e| ProviderError::Other(e.into()))?;
 
         if !response.status().is_success() {
-            return Err(ProviderError::ProviderError(format!(
-                "Props endpoint returned status: {}",
-                response.status()
-            )));
+            return Err(ProviderError::Other(
+                format!("Props endpoint returned status: {}", response.status()).into()
+            ));
         }
 
         response
             .json::<LlamaCppProps>()
             .await
-            .map_err(|e| ProviderError::ProviderError(format!("Failed to parse props: {}", e)))
+            .map_err(|e| ProviderError::Other(e.into()))
     }
 }
 
@@ -151,7 +154,7 @@ impl Provider for LlamaCppProvider {
 
         // Serialize request once at the start
         let request_value = serde_json::to_value(request)
-            .map_err(|e| ProviderError::ProviderError(format!("Failed to serialize request: {}", e)))?;
+            .map_err(|e| ProviderError::Other(e.into()))?;
 
         let stream = async move {
             match client.chat().create_stream_byot(request_value).await {
@@ -163,7 +166,7 @@ impl Provider for LlamaCppProvider {
                                 // Deserialize the raw JSON value to our custom type
                                 // This preserves all fields including reasoning_content
                                 serde_json::from_value(json_value)
-                                    .map_err(|e| ProviderError::ProviderError(format!("Failed to deserialize chunk: {}", e)))
+                                    .map_err(|e| ProviderError::Other(e.into()))
                             })
                     })) as BoxStream<'static, Result<StreamingChunk, ProviderError>>
                 }
@@ -185,8 +188,10 @@ impl Provider for LlamaCppProvider {
     }
 
     async fn health_check(&self) -> Result<bool, ProviderError> {
-        match self.client.models().list().await {
-            Ok(_) => Ok(true),
+        let health_url = self.base_url.join("/health").map_err(|e| ProviderError::Other(e.into()))?;
+        
+        match self.http_client.get(health_url.as_str()).send().await {
+            Ok(response) => Ok(response.status().is_success()),
             Err(_) => Ok(false),
         }
     }
@@ -387,7 +392,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_name_and_slug() {
-        let provider = LlamaCppProvider::new("Test Provider", Some("test"), "http://localhost:8080", None);
+        let provider = LlamaCppProvider::new("Test Provider", Some("test"), "http://localhost:8080", None).unwrap();
 
         assert_eq!(provider.name(), "Test Provider");
         assert_eq!(provider.slug(), "test");
@@ -395,16 +400,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_slug_generation() {
-        let provider1 = LlamaCppProvider::new("My Provider", None, "http://localhost:8080", None);
+        let provider1 = LlamaCppProvider::new("My Provider", None, "http://localhost:8080", None).unwrap();
         assert_eq!(provider1.slug(), "my-provider");
 
-        let provider2 = LlamaCppProvider::new("Test_Provider", Some("custom_slug"), "http://localhost:8080", None);
+        let provider2 = LlamaCppProvider::new("Test_Provider", Some("custom_slug"), "http://localhost:8080", None).unwrap();
         assert_eq!(provider2.slug(), "custom-slug");
     }
 
     #[tokio::test]
     async fn test_health_check_returns_bool() {
-        let provider = LlamaCppProvider::new("Test", None, "http://localhost:8080", None);
+        let provider = LlamaCppProvider::new("Test", None, "http://localhost:8080", None).unwrap();
         let result = provider.health_check().await;
         assert!(result.is_ok());
         let _is_healthy = result.unwrap();
@@ -412,21 +417,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch_props_success() {
-        let provider = LlamaCppProvider::new("Test", None, "http://localhost:8080", None);
+        let provider = LlamaCppProvider::new("Test", None, "http://localhost:8080", None).unwrap();
         let result = provider.fetch_props().await;
         assert!(result.is_ok() || result.is_err());
     }
 
     #[tokio::test]
     async fn test_fetch_props_with_trailing_slash() {
-        let provider = LlamaCppProvider::new("Test", None, "http://localhost:8080/", None);
-        assert_eq!(provider.props_url, "http://localhost:8080/props");
+        let provider = LlamaCppProvider::new("Test", None, "http://localhost:8080/", None).unwrap();
+        assert_eq!(provider.base_url.to_string(), "http://localhost:8080/");
     }
 
     #[tokio::test]
     async fn test_fetch_props_without_trailing_slash() {
-        let provider = LlamaCppProvider::new("Test", None, "http://localhost:8080", None);
-        assert_eq!(provider.props_url, "http://localhost:8080/props");
+        let provider = LlamaCppProvider::new("Test", None, "http://localhost:8080", None).unwrap();
+        // Url::join normalizes the URL, adding a trailing slash
+        assert!(provider.base_url.to_string().starts_with("http://localhost:8080"));
     }
 
     #[tokio::test]
@@ -442,7 +448,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let provider = LlamaCppProvider::new("Test", None, &mock_server.uri(), None);
+        let provider = LlamaCppProvider::new("Test", None, &mock_server.uri(), None).unwrap();
         let result = provider.fetch_props().await;
         assert!(result.is_ok());
         let props = result.unwrap();
@@ -462,7 +468,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let provider = LlamaCppProvider::new("Test", None, &mock_server.uri(), None);
+        let provider = LlamaCppProvider::new("Test", None, &mock_server.uri(), None).unwrap();
         let result = provider.fetch_props().await;
         assert!(result.is_err());
     }
