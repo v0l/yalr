@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { api, API_BASE_URL } from '../api/client'
-import type { WsProviderMetrics, WsMetricsEvent, MetricsResponse } from '../types'
+import type { WsProviderMetrics, WsMetricsEvent, WsFailureDetails, MetricsResponse } from '../types'
 
 interface AggregatedProvider {
   name: string
@@ -118,7 +118,6 @@ export default function Metrics() {
   }, [])
 
   // Preload historical data from REST endpoint
-  const [initialLoaded, setInitialLoaded] = useState(false)
   useEffect(() => {
     async function preload() {
       try {
@@ -183,8 +182,6 @@ export default function Metrics() {
         setLiveEvents(events.reverse().slice(0, MAX_LIVE_EVENTS))
       } catch {
         // Non-critical — WS will still provide live data
-      } finally {
-        setInitialLoaded(true)
       }
     }
     preload()
