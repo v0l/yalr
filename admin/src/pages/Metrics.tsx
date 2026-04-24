@@ -123,15 +123,31 @@ export default function Metrics() {
       try {
         const data: MetricsResponse = await api.getMetrics()
 
-        // Process recent events through the same aggregation as WS events
+        // Seed providers from REST summary (always present, even with no events)
+        const map = new Map<string, AggregatedProvider>()
+        for (const p of data.providers) {
+          if (p.provider) {
+            map.set(p.provider, {
+              name: p.provider,
+              models: new Map(),
+              totalRequests: 0,
+              successes: 0,
+              failures: 0,
+              ttftValues: p.p90_ttft_ms != null ? [p.p90_ttft_ms] : [],
+              latencyValues: p.avg_latency_ms != null ? [p.avg_latency_ms] : [],
+              outputTpsValues: p.p90_tokens_per_second != null ? [p.p90_tokens_per_second] : [],
+              lastEvent: Date.now(),
+            })
+          }
+        }
+
+        // Process recent events to enrich with model-level data and accurate counts
         // REST returns newest-first; process oldest-first so counters accumulate correctly
         const events: WsProviderMetrics[] = data.recent_events
           .filter((e): e is Record<string, unknown> => typeof e === 'object' && e !== null)
           .map(e => e as unknown as WsProviderMetrics)
           .reverse() // now oldest-first
 
-        // Build up provider + model aggregation from events
-        const map = new Map<string, AggregatedProvider>()
         for (const ev of events) {
           const isOutcome = ev.event === 'Success' || hasKey(ev.event, 'Failure')
           const isTtft = hasKey(ev.event, 'TTFT')
