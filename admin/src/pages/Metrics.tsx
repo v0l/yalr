@@ -276,9 +276,12 @@ export default function Metrics() {
     }
   }, [processEvent])
 
-  // Auto-scroll live events
+  // Auto-scroll live events container to top when new events arrive (newest at top)
   useEffect(() => {
-    eventsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const container = eventsEndRef.current?.parentElement
+    if (container) {
+      container.scrollTo({ top: 0, behavior: 'smooth' })
+    }
   }, [liveEvents.length])
 
   const providerList = Array.from(providers.values()).sort((a, b) => b.lastEvent - a.lastEvent)
