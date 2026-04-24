@@ -300,7 +300,9 @@ impl Router {
         }
 
         let strategy_name = table.strategy_name.clone();
-        let entries: Vec<ProviderEntry> = table
+
+        // Collect entries that are not explicitly excluded, then prefer available ones
+        let not_excluded: Vec<ProviderEntry> = table
             .entries
             .iter()
             .filter(|e| !excluded_providers.contains(&e.provider.name().to_string()))
@@ -308,7 +310,7 @@ impl Router {
             .collect();
         drop(tables);
 
-        if entries.is_empty() {
+        if not_excluded.is_empty() {
             tracing::warn!(
                 model = model,
                 excluded = ?excluded_providers,
@@ -316,6 +318,27 @@ impl Router {
             );
             return None;
         }
+
+        // Prefer providers that are available (not in backoff/unhealthy state)
+        let mut available = Vec::new();
+        let mut unavailable = Vec::new();
+        for entry in not_excluded {
+            if self.metrics_store.is_provider_available(entry.provider.name()).await {
+                available.push(entry);
+            } else {
+                unavailable.push(entry);
+            }
+        }
+
+        let entries = if !available.is_empty() {
+            available
+        } else {
+            tracing::warn!(
+                model = model,
+                "All non-excluded providers are unavailable, using fallback"
+            );
+            unavailable
+        };
 
         let strategy = match self
             .strategies
@@ -707,4 +730,140 @@ pub enum RouterError {
 
     #[error("Provider error: {0}")]
     ProviderError(ProviderError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::openai::OpenAiProvider;
+    use crate::router::strategies::round_robin::RoundRobinStrategy;
+    use crate::metrics::{MetricsStore, ProviderMetrics, MetricsEvent, FailureDetails, ErrorType};
+    use std::sync::Arc;
+
+    async fn setup_test_router() -> (Router, MetricsStore) {
+        let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+        let metrics_store = MetricsStore::new(1000);
+        
+        let router = Router::new(
+            Arc::new(RoundRobinStrategy::new()),
+            metrics_store.clone(),
+            db.clone(),
+        );
+        
+        (router, metrics_store)
+    }
+
+    #[tokio::test]
+    async fn test_resolve_route_prefers_available_providers() {
+        let (router, metrics_store) = setup_test_router().await;
+        
+        // Create two providers
+        let provider1 = Arc::new(OpenAiProvider::new("Provider1", Some("provider1"), "http://localhost:8001", Some("key")));
+        let provider2 = Arc::new(OpenAiProvider::new("Provider2", Some("provider2"), "http://localhost:8002", Some("key")));
+        
+        // Register providers
+        router.add_provider(provider1.clone()).await;
+        router.add_provider(provider2.clone()).await;
+        
+        // Mark provider2 as unavailable by recording 5 failures (hits failure_threshold)
+        for _ in 0..5 {
+            metrics_store.record(ProviderMetrics {
+                provider: "Provider2".to_string(),
+                model: "default".to_string(),
+                timestamp_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                event: MetricsEvent::Failure(FailureDetails {
+                    error_type: ErrorType::Other,
+                    error_code: None,
+                    error_message: "test failure".to_string(),
+                    retry_after_ms: None,
+                    status_code: None,
+                }),
+            }).await;
+        }
+        
+        // Verify provider2 is now unavailable
+        assert!(!metrics_store.is_provider_available("Provider2").await);
+        assert!(metrics_store.is_provider_available("Provider1").await);
+        
+        // Resolve route for "default" model - should prefer provider1 (available)
+        let result = router.resolve_route_excluding("default", &[]).await;
+        
+        assert!(result.is_some(), "Should find a route");
+        let (resolved_provider, _) = result.unwrap();
+        assert_eq!(resolved_provider.name(), "Provider1", "Should prefer available provider");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_route_fallback_to_unavailable_when_all_excluded() {
+        let (router, metrics_store) = setup_test_router().await;
+        
+        let provider1 = Arc::new(OpenAiProvider::new("Provider1", Some("provider1"), "http://localhost:8001", Some("key")));
+        let provider2 = Arc::new(OpenAiProvider::new("Provider2", Some("provider2"), "http://localhost:8002", Some("key")));
+        
+        router.add_provider(provider1.clone()).await;
+        router.add_provider(provider2.clone()).await;
+        
+        // Mark both as unavailable
+        for _ in 0..5 {
+            metrics_store.record(ProviderMetrics {
+                provider: "Provider1".to_string(),
+                model: "default".to_string(),
+                timestamp_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                event: MetricsEvent::Failure(FailureDetails {
+                    error_type: ErrorType::Other,
+                    error_code: None,
+                    error_message: "test failure".to_string(),
+                    retry_after_ms: None,
+                    status_code: None,
+                }),
+            }).await;
+            
+            metrics_store.record(ProviderMetrics {
+                provider: "Provider2".to_string(),
+                model: "default".to_string(),
+                timestamp_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                event: MetricsEvent::Failure(FailureDetails {
+                    error_type: ErrorType::Other,
+                    error_code: None,
+                    error_message: "test failure".to_string(),
+                    retry_after_ms: None,
+                    status_code: None,
+                }),
+            }).await;
+        }
+        
+        // Exclude provider1 - should still fall back to provider2 (unavailable but not excluded)
+        let result = router.resolve_route_excluding("default", &["Provider1".to_string()]).await;
+        
+        assert!(result.is_some(), "Should find a fallback route even if unavailable");
+        let (resolved_provider, _) = result.unwrap();
+        assert_eq!(resolved_provider.name(), "Provider2", "Should fall back to unavailable but not-excluded provider");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_route_excludes_explicitly_excluded_providers() {
+        let (router, _metrics_store) = setup_test_router().await;
+        
+        let provider1 = Arc::new(OpenAiProvider::new("Provider1", Some("provider1"), "http://localhost:8001", Some("key")));
+        let provider2 = Arc::new(OpenAiProvider::new("Provider2", Some("provider2"), "http://localhost:8002", Some("key")));
+        
+        router.add_provider(provider1.clone()).await;
+        router.add_provider(provider2.clone()).await;
+        
+        // Exclude provider1
+        let result = router.resolve_route_excluding("default", &["Provider1".to_string()]).await;
+        
+        assert!(result.is_some(), "Should find a route");
+        let (resolved_provider, _) = result.unwrap();
+        assert_eq!(resolved_provider.name(), "Provider2", "Should exclude explicitly excluded provider");
+    }
 }

@@ -698,7 +698,13 @@ pub async fn chat_completions_handler(
                 error = %e,
                 "Routing failed"
             );
-            Err((axum::http::StatusCode::BAD_REQUEST, e.to_string()))
+            let body = serde_json::json!({
+                "error": {
+                    "message": e.to_string(),
+                    "type": "router_error",
+                }
+            });
+            Err((axum::http::StatusCode::BAD_REQUEST, body.to_string()))
         }
     }
 }
@@ -736,7 +742,12 @@ pub async fn chat_completions_stream(
                                     "Streaming request failed"
                                 );
                                 yield Ok(Event::default()
-                                    .json_data(serde_json::json!({ "error": e.to_string() }))
+                                    .json_data(serde_json::json!({
+                                        "error": {
+                                            "message": e.to_string(),
+                                            "type": "router_error",
+                                        }
+                                    }))
                                     .unwrap_or_else(|_| Event::default()));
                             }
                         }
@@ -759,7 +770,12 @@ pub async fn chat_completions_stream(
                 );
                 let error_stream = async_stream::stream! {
                     yield Ok(Event::default()
-                        .json_data(serde_json::json!({ "error": e.to_string() }))
+                        .json_data(serde_json::json!({
+                            "error": {
+                                "message": e.to_string(),
+                                "type": "router_error",
+                            }
+                        }))
                         .unwrap_or_else(|_| Event::default()));
                 };
                 Box::pin(error_stream)
