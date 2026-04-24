@@ -15,7 +15,7 @@ export interface Model {
   owned_by: string
 }
 
-export interface ProviderMetrics {
+export interface ProviderMetricsSummary {
   provider: string
   p90_tokens_per_second: number | null
   p90_ttft_ms: number | null
@@ -24,8 +24,41 @@ export interface ProviderMetrics {
 }
 
 export interface MetricsResponse {
-  providers: ProviderMetrics[]
+  providers: ProviderMetricsSummary[]
   recent_events: Record<string, unknown>[]
+}
+
+// WebSocket real-time metrics event types (matching Rust backend)
+
+export interface WsProviderMetrics {
+  provider: string
+  model: string
+  timestamp_ms: number
+  event: WsMetricsEvent
+}
+
+export type WsMetricsEvent =
+  | { TTFT: number }
+  | { OutputTokensPerSecond: number }
+  | { InputTokensPerSecond: number }
+  | { TotalLatency: number }
+  | { InputTokens: number }
+  | { OutputTokens: number }
+  | 'Success'
+  | { Failure: WsFailureDetails }
+  | { ProviderLoad: { in_flight: number; max_concurrency: number | null } }
+
+export interface WsFailureDetails {
+  error_type: 'RateLimit' | 'ServerError' | 'Timeout' | 'Authentication' | 'NotFound' | 'Other'
+  error_code: string | null
+  error_message: string
+  retry_after_ms: number | null
+  status_code: number | null
+}
+
+export interface WsLagMessage {
+  type: 'lag'
+  skipped: number
 }
 
 export interface HealthResponse {

@@ -1,4 +1,5 @@
 use crate::api::handlers::{self, chat_handler};
+use crate::api::ws;
 use crate::auth::admin::SessionStore;
 use crate::config::AppConfig;
 use crate::metrics::{MetricsEmitter, MetricsStore};
@@ -117,6 +118,7 @@ pub async fn run_with_shutdown<F>(
 
     let app = Router::new()
         .nest("/api", public_auth_routes.merge(all_protected))
+        .route("/api/metrics/ws", get(ws::ws_metrics_handler))
         .merge(chat_completions_routes)
         .route("/v1/models", get(handlers::list_models))
         .route("/api/health", get(handlers::health_check))
@@ -205,6 +207,7 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .merge(chat_completions_routes)
         .route("/v1/models", get(handlers::list_models))
         .route("/api/health", get(handlers::health_check))
+        .route("/api/metrics/ws", get(ws::ws_metrics_handler))
         .nest("/api", public_auth_routes.merge(all_protected))
         .fallback(serve_admin_fallback)
         .layer(CorsLayer::permissive())
