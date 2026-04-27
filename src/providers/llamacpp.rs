@@ -1,4 +1,5 @@
 use super::*;
+use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
 use reqwest::Client as HttpClient;
 use std::collections::HashMap;
@@ -203,6 +204,13 @@ impl Provider for LlamaCppProvider {
         };
 
         Ok(Some(runtime_info))
+    }
+
+    async fn responses(
+        &self,
+        request: &CreateResponse,
+    ) -> Result<ApiResponse, ProviderError> {
+        self.inner.responses(request).await
     }
 }
 

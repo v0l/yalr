@@ -1,4 +1,5 @@
 use super::*;
+use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
 
 /// VllmProvider - A wrapper around OpenAiProvider for vLLM servers.
@@ -58,6 +59,13 @@ impl Provider for VllmProvider {
 
     async fn get_runtime_info(&self, model_id: &str) -> Result<Option<crate::router::ModelRuntimeInfo>, ProviderError> {
         self.inner.get_runtime_info(model_id).await
+    }
+
+    async fn responses(
+        &self,
+        request: &CreateResponse,
+    ) -> Result<ApiResponse, ProviderError> {
+        self.inner.responses(request).await
     }
 }
 
