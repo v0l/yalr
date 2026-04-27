@@ -4,7 +4,7 @@ use crate::providers::{create_provider, Provider};
 use crate::router::strategies::{ProviderEntry, RoutingStrategy};
 use crate::{ChatCompletionRequest, ChatCompletionResponse, ProviderError};
 use crate::providers::StreamingChunk;
-use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
+use async_openai::types::responses::{CreateResponse, Response as ApiResponse, InputParam, InputRole, MessageItem, InputMessage};
 use async_stream::stream;
 use futures::stream::BoxStream;
 use futures::StreamExt;
@@ -723,12 +723,50 @@ impl Router {
         )))
     }
 
+    fn transform_request(request: &CreateResponse, provider_name: &str) -> CreateResponse {
+        let mut transformed = request.clone();
+        
+        // Only transform developer role for providers that don't support it
+        // OpenAI supports developer role natively, but vLLM and other backends may not
+        let should_transform = !provider_name.to_lowercase().contains("openai");
+        
+        if should_transform {
+            if let InputParam::Items(items) = transformed.input {
+                let transformed_items: Vec<async_openai::types::responses::InputItem> = items
+                    .into_iter()
+                    .map(|item| {
+                        if let async_openai::types::responses::InputItem::Item(
+                            async_openai::types::responses::Item::Message(MessageItem::Input(InputMessage {
+                                role: InputRole::Developer,
+                                content,
+                                status,
+                            }))
+                        ) = item
+                        {
+                            async_openai::types::responses::InputItem::Item(
+                                async_openai::types::responses::Item::Message(MessageItem::Input(InputMessage {
+                                    role: InputRole::System,
+                                    content,
+                                    status,
+                                }))
+                            )
+                        } else {
+                            item
+                        }
+                    })
+                    .collect();
+                
+                transformed.input = InputParam::Items(transformed_items);
+            }
+        }
+        
+        transformed
+    }
+
     pub async fn responses(
         &self,
         request: &CreateResponse,
     ) -> Result<ApiResponse, RouterError> {
-        use async_openai::types::responses::CreateResponse;
-        
         let start = Instant::now();
         let original_model = request.model.clone().unwrap_or_default();
 
@@ -748,8 +786,7 @@ impl Router {
             };
             let provider_name = provider.name().to_string();
 
-            // Clone request and update model to resolved model
-            let mut actual_request = request.clone();
+            let mut actual_request = Self::transform_request(request, &provider_name);
             actual_request.model = Some(resolved_model.clone());
 
             let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
