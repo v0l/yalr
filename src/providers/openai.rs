@@ -1,6 +1,7 @@
 use super::*;
 use async_openai::config::OpenAIConfig;
 use async_openai::Client;
+use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
 use std::collections::HashMap;
 use crate::router::{Modality, ModelRuntimeInfo};
@@ -107,6 +108,11 @@ impl Provider for OpenAiProvider {
             Ok(_) => Ok(true),
             Err(_) => Ok(false),
         }
+    }
+
+    async fn responses(&self, request: &CreateResponse) -> Result<ApiResponse, ProviderError> {
+        let response = self.client.responses().create(request.clone()).await?;
+        Ok(response)
     }
 
     async fn get_runtime_info(&self, model_id: &str) -> Result<Option<ModelRuntimeInfo>, ProviderError> {

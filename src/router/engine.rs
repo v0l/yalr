@@ -4,6 +4,7 @@ use crate::providers::{create_provider, Provider};
 use crate::router::strategies::{ProviderEntry, RoutingStrategy};
 use crate::{ChatCompletionRequest, ChatCompletionResponse, ProviderError};
 use crate::providers::StreamingChunk;
+use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use async_stream::stream;
 use futures::stream::BoxStream;
 use futures::StreamExt;
@@ -703,6 +704,125 @@ impl Router {
                             attempt = attempt,
                             error = %e,
                             "Non-transient stream setup error, aborting"
+                        );
+                        return Err(last_error.unwrap());
+                    }
+
+                    let backoff = e
+                        .retry_after_ms()
+                        .map(|ms| Duration::from_millis(ms))
+                        .unwrap_or_else(|| Duration::from_secs(2_u64.saturating_pow(attempt)));
+
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or(RouterError::ProviderError(
+            ProviderError::Other("Max retries exceeded".to_string().into()),
+        )))
+    }
+
+    pub async fn responses(
+        &self,
+        request: &CreateResponse,
+    ) -> Result<ApiResponse, RouterError> {
+        
+        let start = Instant::now();
+        let original_model = request.model.clone().unwrap_or_default();
+
+        let mut excluded_providers: Vec<String> = Vec::new();
+        let mut last_error: Option<RouterError> = None;
+
+        for attempt in 0..self.max_retries {
+            let route_result = self
+                .resolve_route_excluding(&original_model, &excluded_providers)
+                .await;
+            
+            let (provider, _resolved_model) = match route_result {
+                Some(route) => route,
+                None => {
+                    return Err(last_error.unwrap_or(RouterError::NoAvailableProvider));
+                }
+            };
+            let provider_name = provider.name().to_string();
+
+            let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
+            let mut guard = InFlightGuard::new(
+                self.metrics_store.clone(),
+                provider_name.clone(),
+            );
+
+            // Check if provider supports responses API
+            if !self.metrics_store.is_provider_available(&provider_name).await {
+                let backoff = self.metrics_store.get_provider_backoff(&provider_name).await;
+                tracing::warn!(
+                    provider = &provider_name,
+                    attempt = attempt,
+                    backoff_ms = backoff.as_millis(),
+                    "Provider unavailable, waiting before retry"
+                );
+                guard.decrement();
+                drop(guard);
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+
+            let result = provider.responses(request).await;
+            let total_latency = start.elapsed();
+
+            match result {
+                Ok(response) => {
+                    guard.decrement();
+                    drop(guard);
+
+                    let latency_ms = total_latency.as_millis() as u32;
+                    self.metrics_store
+                        .emitter()
+                        .emit_total_latency(&provider_name, &original_model, latency_ms);
+                    self.metrics_store
+                        .emitter()
+                        .emit_success(&provider_name, &original_model);
+
+                    tracing::info!(
+                        provider = provider_name,
+                        model = original_model,
+                        latency_ms = latency_ms,
+                        "Responses API request completed successfully"
+                    );
+
+                    return Ok(response);
+                }
+                Err(e) => {
+                    guard.decrement();
+                    drop(guard);
+
+                    last_error = Some(RouterError::ProviderError(e.clone()));
+
+                    self.metrics_store.emitter().emit_failure_with_details(
+                        &provider_name,
+                        &original_model,
+                        e.error_type(),
+                        None,
+                        &e.to_string(),
+                        e.retry_after_ms(),
+                        e.status_code(),
+                    );
+
+                    if e.is_transient() {
+                        excluded_providers.push(provider_name.clone());
+                        tracing::warn!(
+                            provider = &provider_name,
+                            attempt = attempt,
+                            error = %e,
+                            "Transient responses error, failing over to another provider"
+                        );
+                    } else {
+                        tracing::warn!(
+                            provider = &provider_name,
+                            attempt = attempt,
+                            error = %e,
+                            "Non-transient responses error, aborting"
                         );
                         return Err(last_error.unwrap());
                     }

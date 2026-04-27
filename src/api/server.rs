@@ -116,10 +116,15 @@ pub async fn run_with_shutdown<F>(
         .route("/v1/chat/completions", post(chat_handler))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let responses_routes = Router::new()
+        .route("/v1/responses", post(handlers::create_response))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
     let app = Router::new()
         .nest("/api", public_auth_routes.merge(all_protected))
         .route("/api/metrics/ws", get(ws::ws_metrics_handler))
         .merge(chat_completions_routes)
+        .merge(responses_routes)
         .route("/v1/models", get(handlers::list_models))
         .route("/api/health", get(handlers::health_check))
         .fallback(serve_admin_fallback)
@@ -203,8 +208,13 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/v1/chat/completions", post(chat_handler))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let responses_routes = Router::new()
+        .route("/v1/responses", post(handlers::create_response))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
     Router::new()
         .merge(chat_completions_routes)
+        .merge(responses_routes)
         .route("/v1/models", get(handlers::list_models))
         .route("/api/health", get(handlers::health_check))
         .route("/api/metrics/ws", get(ws::ws_metrics_handler))

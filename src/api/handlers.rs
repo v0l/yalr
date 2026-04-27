@@ -12,6 +12,7 @@ use std::convert::Infallible;
 
 use crate::{ChatCompletionRequest, ChatCompletionResponse};
 use crate::router::{DbModelInfo, ModelInfoDetector};
+use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 
 #[derive(Serialize)]
 pub struct HealthResponse {
@@ -1051,6 +1052,49 @@ pub async fn sync_provider_models(
             }))
         }
         Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+// ============================================================================
+// Responses API Handlers
+// ============================================================================
+
+/// Create a response using the Responses API
+/// This endpoint uses the router's provider selection and retry logic
+#[axum::debug_handler]
+pub async fn create_response(
+    State(state): State<std::sync::Arc<AppState>>,
+    Json(request): Json<CreateResponse>,
+) -> Result<Json<ApiResponse>, (axum::http::StatusCode, String)> {
+    tracing::info!(
+        model = request.model.as_deref().unwrap_or("unknown"),
+        stream = false,
+        "Received Responses API request"
+    );
+
+    match state.config.router.responses(&request).await {
+        Ok(response) => {
+            tracing::info!(
+                model = request.model.as_deref().unwrap_or("unknown"),
+                response_id = response.id,
+                "Response created successfully"
+            );
+            Ok(Json(response))
+        },
+        Err(e) => {
+            tracing::error!(
+                model = request.model.as_deref().unwrap_or("unknown"),
+                error = %e,
+                "Response creation failed"
+            );
+            let body = serde_json::json!({
+                "error": {
+                    "message": e.to_string(),
+                    "type": "router_error",
+                }
+            });
+            Err((axum::http::StatusCode::BAD_REQUEST, body.to_string()))
+        }
     }
 }
 

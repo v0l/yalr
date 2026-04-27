@@ -2,6 +2,7 @@ use async_openai::error::OpenAIError;
 use async_openai::types::chat::{
     CreateChatCompletionRequest, CreateChatCompletionResponse,
 };
+use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use async_openai::types::models::Model;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -32,6 +33,15 @@ pub trait Provider: Send + Sync {
     >;
 
     async fn health_check(&self) -> Result<bool, ProviderError>;
+
+    /// Get the Responses API for this provider.
+    /// Returns None if the provider does not support the Responses API.
+    async fn responses(&self, request: &CreateResponse) -> Result<ApiResponse, ProviderError> {
+        let _ = request;
+        Err(ProviderError::Other(
+            "This provider does not support the Responses API".to_string().into()
+        ))
+    }
 
     async fn get_runtime_info(&self, model_id: &str) -> Result<Option<ModelRuntimeInfo>, ProviderError> {
         let _ = model_id;
