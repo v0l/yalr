@@ -727,6 +727,7 @@ impl Router {
         &self,
         request: &CreateResponse,
     ) -> Result<ApiResponse, RouterError> {
+        use async_openai::types::responses::CreateResponse;
         
         let start = Instant::now();
         let original_model = request.model.clone().unwrap_or_default();
@@ -739,13 +740,17 @@ impl Router {
                 .resolve_route_excluding(&original_model, &excluded_providers)
                 .await;
             
-            let (provider, _resolved_model) = match route_result {
+            let (provider, resolved_model) = match route_result {
                 Some(route) => route,
                 None => {
-                    return Err(last_error.unwrap_or(RouterError::NoAvailableProvider));
+                    return Err(last_error.clone().unwrap_or(RouterError::NoAvailableProvider));
                 }
             };
             let provider_name = provider.name().to_string();
+
+            // Clone request and update model to resolved model
+            let mut actual_request = request.clone();
+            actual_request.model = Some(resolved_model.clone());
 
             let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
             let mut guard = InFlightGuard::new(
@@ -753,7 +758,24 @@ impl Router {
                 provider_name.clone(),
             );
 
-            // Check if provider supports responses API
+            // Fetch and cache runtime info to get max_concurrency
+            let max_concurrency = self.metrics_store.get_provider_max_concurrency(&provider_name).await;
+            let max_concurrency = if max_concurrency.is_none() {
+                if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
+                    let max_conc = info.max_concurrency();
+                    self.metrics_store.set_provider_runtime_info(&provider_name, info).await;
+                    max_conc
+                } else {
+                    None
+                }
+            } else {
+                max_concurrency
+            };
+
+            self.metrics_store
+                .emitter()
+                .emit_provider_load(&provider_name, in_flight, max_concurrency);
+
             if !self.metrics_store.is_provider_available(&provider_name).await {
                 let backoff = self.metrics_store.get_provider_backoff(&provider_name).await;
                 tracing::warn!(
@@ -768,7 +790,7 @@ impl Router {
                 continue;
             }
 
-            let result = provider.responses(request).await;
+            let result = provider.responses(&actual_request).await;
             let total_latency = start.elapsed();
 
             match result {
@@ -824,7 +846,7 @@ impl Router {
                             error = %e,
                             "Non-transient responses error, aborting"
                         );
-                        return Err(last_error.unwrap());
+                        return Err(last_error.clone().unwrap());
                     }
 
                     let backoff = e
@@ -850,6 +872,15 @@ pub enum RouterError {
 
     #[error("Provider error: {0}")]
     ProviderError(ProviderError),
+}
+
+impl Clone for RouterError {
+    fn clone(&self) -> Self {
+        match self {
+            RouterError::NoAvailableProvider => RouterError::NoAvailableProvider,
+            RouterError::ProviderError(e) => RouterError::ProviderError(e.clone()),
+        }
+    }
 }
 
 #[cfg(test)]
