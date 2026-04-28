@@ -228,7 +228,6 @@ async fn chat_with_providers(db: Arc<Database>, message: &str, model: &str) {
     let metrics_store = metrics::MetricsStore::new(10000);
 
     let router = Router::new(
-        Arc::new(yalr::router::strategies::round_robin::RoundRobinStrategy::new()),
         metrics_store,
         db.clone(),
     );

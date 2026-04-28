@@ -59,7 +59,6 @@ impl AppConfig {
         let db = Arc::new(Database::new(&config.database.url).await?);
 
         let router = Arc::new(Router::new(
-            Arc::new(crate::router::strategies::round_robin::RoundRobinStrategy::new()),
             metrics_store,
             db.clone(),
         ));

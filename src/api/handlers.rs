@@ -1131,7 +1131,6 @@ mod tests {
         let app_config = crate::config::AppConfig {
             db: Arc::new(db.clone()),
             router: Arc::new(crate::router::engine::Router::new(
-                Arc::new(crate::router::strategies::round_robin::RoundRobinStrategy::new()),
                 metrics_store.clone(),
                 Arc::new(db.clone()),
             )),

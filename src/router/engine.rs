@@ -1,7 +1,7 @@
 use crate::db::Database;
 use crate::metrics::MetricsStore;
 use crate::providers::{create_provider, Provider};
-use crate::router::strategies::{ProviderEntry, RoutingStrategy};
+use crate::router::strategies::ProviderEntry;
 use crate::{ChatCompletionRequest, ChatCompletionResponse, ProviderError};
 use crate::providers::StreamingChunk;
 use async_openai::types::responses::{CreateResponse, Response as ApiResponse, InputParam, InputRole, MessageItem, InputMessage};
@@ -52,7 +52,6 @@ impl Drop for InFlightGuard {
 }
 
 struct RoutingTable {
-    strategy_name: String,
     entries: Vec<ProviderEntry>,
 }
 
@@ -61,25 +60,19 @@ pub struct Router {
     metrics_store: MetricsStore,
     providers: RwLock<HashMap<String, Arc<dyn Provider>>>,
     routing_tables: RwLock<HashMap<String, RoutingTable>>,
-    strategies: HashMap<String, Arc<dyn RoutingStrategy>>,
     max_retries: u32,
 }
 
 impl Router {
     pub fn new(
-        default_strategy: Arc<dyn RoutingStrategy>,
         metrics_store: MetricsStore,
         db: Arc<Database>,
     ) -> Self {
-        let mut strategies = HashMap::new();
-        strategies.insert(default_strategy.name().to_string(), default_strategy);
-
         Self {
             db,
             metrics_store,
             providers: RwLock::new(HashMap::new()),
             routing_tables: RwLock::new(HashMap::new()),
-            strategies,
             max_retries: 3,
         }
     }
@@ -136,7 +129,6 @@ impl Router {
             tables.insert(
                 rc.name.clone(),
                 RoutingTable {
-                    strategy_name: rc.strategy.clone(),
                     entries,
                 },
             );
@@ -176,7 +168,6 @@ impl Router {
             tables
                 .entry(model_name.clone())
                 .or_insert_with(|| RoutingTable {
-                    strategy_name: "round_robin".to_string(),
                     entries: Vec::new(),
                 })
                 .entries.push(ProviderEntry {
@@ -199,7 +190,6 @@ impl Router {
             tables.insert(
                 "default".to_string(),
                 RoutingTable {
-                    strategy_name: "round_robin".to_string(),
                     entries,
                 },
             );
@@ -233,7 +223,6 @@ impl Router {
         let default = tables
             .entry("default".to_string())
             .or_insert_with(|| RoutingTable {
-                strategy_name: "round_robin".to_string(),
                 entries: Vec::new(),
             });
         default.entries.push(ProviderEntry {
@@ -252,15 +241,13 @@ impl Router {
         }
     }
 
-    async fn resolve_route(&self, model: &str) -> Option<(Arc<dyn Provider>, String)> {
-        self.resolve_route_excluding(model, &[]).await
-    }
-
-    async fn resolve_route_excluding(
+    /// Collect all candidate (provider, resolved_model) pairs for a given model,
+    /// ordered by preference (available providers first, then unavailable as fallback).
+    async fn collect_candidates(
         &self,
         model: &str,
-        excluded_providers: &[String],
-    ) -> Option<(Arc<dyn Provider>, String)> {
+    ) -> Vec<(Arc<dyn Provider>, String)> {
+        // Handle prefixed model (provider-slug/model)
         if let Some((slug_prefix, actual_model)) = model.split_once('/') {
             let providers = self.providers.read().await;
             let provider = providers
@@ -273,99 +260,40 @@ impl Router {
                         .cloned()
                 });
             if let Some(provider) = provider {
-                tracing::info!(
-                    model = model,
-                    slug = slug_prefix,
-                    resolved_model = actual_model,
-                    provider = provider.name(),
-                    "Routed by provider prefix"
-                );
-                return Some((provider.clone(), actual_model.to_string()));
+                return vec![(provider, actual_model.to_string())];
             }
-            tracing::warn!(slug = slug_prefix, "No provider found for slug prefix");
-            return None;
+            return vec![];
         }
 
         let tables = self.routing_tables.read().await;
         let table = match tables.get(model).or_else(|| tables.get("default")) {
             Some(t) => t,
-            None => {
-                tracing::warn!(model = model, "No routing table found for model");
-                return None;
-            }
+            None => return vec![],
         };
 
         if table.entries.is_empty() {
-            tracing::warn!(model = model, "Routing table has no providers");
-            return None;
+            return vec![];
         }
 
-        let strategy_name = table.strategy_name.clone();
-
-        // Collect entries that are not explicitly excluded, then prefer available ones
-        let not_excluded: Vec<ProviderEntry> = table
-            .entries
-            .iter()
-            .filter(|e| !excluded_providers.contains(&e.provider.name().to_string()))
-            .cloned()
-            .collect();
-        drop(tables);
-
-        if not_excluded.is_empty() {
-            tracing::warn!(
-                model = model,
-                excluded = ?excluded_providers,
-                "All providers excluded, no fallback available"
-            );
-            return None;
-        }
-
-        // Prefer providers that are available (not in backoff/unhealthy state)
         let mut available = Vec::new();
         let mut unavailable = Vec::new();
-        for entry in not_excluded {
+
+        for entry in &table.entries {
+            let resolved_model = entry
+                .model_override
+                .clone()
+                .unwrap_or_else(|| model.to_string());
+            let pair = (entry.provider.clone(), resolved_model);
             if self.metrics_store.is_provider_available(entry.provider.name()).await {
-                available.push(entry);
+                available.push(pair);
             } else {
-                unavailable.push(entry);
+                unavailable.push(pair);
             }
         }
 
-        let entries = if !available.is_empty() {
-            available
-        } else {
-            tracing::warn!(
-                model = model,
-                "All non-excluded providers are unavailable, using fallback"
-            );
-            unavailable
-        };
-
-        let strategy = match self
-            .strategies
-            .get(&strategy_name)
-            .or_else(|| self.strategies.values().next())
-        {
-            Some(s) => s,
-            None => return None,
-        };
-
-        let idx = strategy.select(&entries, model).await?;
-        let entry = &entries[idx];
-        let resolved_model = entry
-            .model_override
-            .clone()
-            .unwrap_or_else(|| model.to_string());
-
-        tracing::info!(
-            model = model,
-            resolved_model = resolved_model,
-            provider = entry.provider.name(),
-            strategy = strategy.name(),
-            "Routed via routing table"
-        );
-
-        Some((entry.provider.clone(), resolved_model))
+        // Available providers first, then unavailable as fallback
+        available.extend(unavailable);
+        available
     }
 
     pub async fn chat_completions(
@@ -375,16 +303,20 @@ impl Router {
         let start = Instant::now();
         let original_model = request.model.clone();
 
-        let mut excluded_providers: Vec<String> = Vec::new();
-        let mut last_error: Option<RouterError> = None;
+        let candidates = self.collect_candidates(&request.model).await;
+        if candidates.is_empty() {
+            return Err(RouterError::NoAvailableProvider);
+        }
 
-        for attempt in 0..self.max_retries {
-            let (provider, resolved_model) = self
-                .resolve_route_excluding(&request.model, &excluded_providers)
-                .await
-                .ok_or_else(|| {
-                    last_error.unwrap_or(RouterError::NoAvailableProvider)
-                })?;
+        let mut last_error: Option<RouterError> = None;
+        let mut attempt: u32 = 0;
+
+        for (provider, resolved_model) in candidates {
+            if attempt >= self.max_retries {
+                break;
+            }
+            attempt += 1;
+
             let provider_name = provider.name().to_string();
 
             let mut actual_request = request.clone();
@@ -414,24 +346,12 @@ impl Router {
                 .emitter()
                 .emit_provider_load(&provider_name, in_flight, max_concurrency);
 
-            if !self.metrics_store.is_provider_available(&provider_name).await {
-                let backoff = self.metrics_store.get_provider_backoff(&provider_name).await;
-                tracing::warn!(
-                    provider = &provider_name,
-                    attempt = attempt,
-                    backoff_ms = backoff.as_millis(),
-                    "Provider unavailable, waiting before retry"
-                );
-                tokio::time::sleep(backoff).await;
-            }
-
             let result = provider.chat_completions(&actual_request).await;
             let total_latency = start.elapsed();
 
             match result {
                 Ok(response) => {
                     guard.decrement();
-                    drop(guard);
 
                     let latency_ms = total_latency.as_millis() as u32;
                     self.metrics_store
@@ -485,7 +405,6 @@ impl Router {
                 }
                 Err(e) => {
                     guard.decrement();
-                    drop(guard);
 
                     last_error = Some(RouterError::ProviderError(e.clone()));
 
@@ -500,8 +419,6 @@ impl Router {
                     );
 
                     if e.is_transient() {
-                        // Exclude this provider and try another on next iteration
-                        excluded_providers.push(provider_name.clone());
                         tracing::warn!(
                             provider = &provider_name,
                             attempt = attempt,
@@ -509,7 +426,6 @@ impl Router {
                             "Transient error, failing over to another provider"
                         );
                     } else {
-                        // Non-transient error (auth, not found) - don't retry
                         tracing::warn!(
                             provider = &provider_name,
                             attempt = attempt,
@@ -522,16 +438,14 @@ impl Router {
                     let backoff = e
                         .retry_after_ms()
                         .map(|ms| Duration::from_millis(ms))
-                        .unwrap_or_else(|| Duration::from_secs(2_u64.saturating_pow(attempt)));
+                        .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)));
 
                     tokio::time::sleep(backoff).await;
                 }
             }
         }
 
-        Err(last_error.unwrap_or(RouterError::ProviderError(
-            ProviderError::Other("Max retries exceeded".to_string().into()),
-        )))
+        Err(last_error.unwrap_or(RouterError::NoAvailableProvider))
     }
 
     pub async fn chat_completions_stream(
@@ -546,63 +460,63 @@ impl Router {
             "Routing streaming request"
         );
 
-        let mut excluded_providers: Vec<String> = Vec::new();
-        let mut last_error: Option<RouterError> = None;
+        let candidates = self.collect_candidates(&request.model).await;
+        if candidates.is_empty() {
+            return Err(RouterError::NoAvailableProvider);
+        }
 
-        for attempt in 0..self.max_retries {
-            let route_result = self
-                .resolve_route_excluding(&request.model, &excluded_providers)
-                .await;
-            
-            let (provider, resolved_model) = match route_result {
-                Some(route) => route,
-                None => {
-                    return Err(last_error.unwrap_or(RouterError::NoAvailableProvider));
+        let metrics_store = self.metrics_store.clone();
+        let max_retries = self.max_retries;
+        let request = request.clone();
+
+        let stream = stream! {
+            let mut last_error: Option<RouterError> = None;
+            let mut chunks_yielded = false;
+            let mut attempt: u32 = 0;
+
+            for (provider, resolved_model) in candidates {
+                if attempt >= max_retries {
+                    break;
                 }
-            };
-            let provider_name = provider.name().to_string();
+                attempt += 1;
 
-            let mut actual_request = request.clone();
-            actual_request.model = resolved_model.clone();
+                let provider_name = provider.name().to_string();
 
-            let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
-            let mut guard = InFlightGuard::new(
-                self.metrics_store.clone(),
-                provider_name.clone(),
-            );
+                let mut actual_request = request.clone();
+                actual_request.model = resolved_model.clone();
 
-            // Fetch and cache runtime info to get max_concurrency
-            let max_concurrency = self.metrics_store.get_provider_max_concurrency(&provider_name).await;
-            let max_concurrency = if max_concurrency.is_none() {
-                if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
-                    let max_conc = info.max_concurrency();
-                    self.metrics_store.set_provider_runtime_info(&provider_name, info).await;
-                    max_conc
+                let in_flight = metrics_store.increment_in_flight(&provider_name).await;
+                let mut guard = InFlightGuard::new(
+                    metrics_store.clone(),
+                    provider_name.clone(),
+                );
+
+                // Fetch and cache runtime info to get max_concurrency
+                let max_concurrency = metrics_store.get_provider_max_concurrency(&provider_name).await;
+                let max_concurrency = if max_concurrency.is_none() {
+                    if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
+                        let max_conc = info.max_concurrency();
+                        metrics_store.set_provider_runtime_info(&provider_name, info).await;
+                        max_conc
+                    } else {
+                        None
+                    }
                 } else {
-                    None
-                }
-            } else {
-                max_concurrency
-            };
+                    max_concurrency
+                };
 
-            self.metrics_store
-                .emitter()
-                .emit_provider_load(&provider_name, in_flight, max_concurrency);
+                metrics_store
+                    .emitter()
+                    .emit_provider_load(&provider_name, in_flight, max_concurrency);
 
-            let metrics_store = self.metrics_store.clone();
-            let provider_name_stream = provider_name.clone();
-
-            match provider.chat_completions_stream(&actual_request) {
-                Ok(provider_stream) => {
-                    // Stream created successfully - guard will be decremented when stream ends
-                    let stream = stream! {
+                match provider.chat_completions_stream(&actual_request) {
+                    Ok(provider_stream) => {
                         let start = Instant::now();
                         let mut first_token = true;
                         let mut total_tokens = 0u32;
                         let mut prompt_tokens = 0u32;
                         let mut completion_tokens = 0u32;
                         let mut ttft_ms = 0u32;
-                        let mut stream_error: Option<ProviderError> = None;
 
                         let mut stream: futures::stream::BoxStream<'static, Result<StreamingChunk, ProviderError>> = provider_stream;
 
@@ -621,10 +535,10 @@ impl Router {
                                         total_tokens = usage.total_tokens;
                                     }
 
+                                    chunks_yielded = true;
                                     yield Ok(chunk);
                                 }
                                 Err(e) => {
-                                    stream_error = Some(e.clone());
                                     metrics_store.emitter().emit_failure_with_details(
                                         &provider_name,
                                         &original_model,
@@ -634,13 +548,61 @@ impl Router {
                                         e.retry_after_ms(),
                                         e.status_code(),
                                     );
+
+                                    // If no chunks have been sent yet and the error is transient,
+                                    // fail over to the next provider instead of surfacing the error.
+                                    if !chunks_yielded && e.is_transient() {
+                                        tracing::warn!(
+                                            provider = &provider_name,
+                                            attempt = attempt,
+                                            error = %e,
+                                            "Transient stream error before any data, failing over to another provider"
+                                        );
+                                        last_error = Some(RouterError::ProviderError(e));
+                                        guard.decrement();
+
+                                        // Backoff before trying next provider
+                                        let backoff = last_error.as_ref().and_then(|e| {
+                                            if let RouterError::ProviderError(pe) = e {
+                                                pe.retry_after_ms()
+                                            } else {
+                                                None
+                                            }
+                                        }).map(|ms| Duration::from_millis(ms))
+                                          .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)));
+                                        tokio::time::sleep(backoff).await;
+
+                                        break; // Continue to next provider in the outer loop
+                                    }
+
+                                    // Either we already sent data (can't retry) or error is non-transient
+                                    if !e.is_transient() {
+                                        tracing::warn!(
+                                            provider = &provider_name,
+                                            attempt = attempt,
+                                            error = %e,
+                                            "Non-transient stream error, aborting"
+                                        );
+                                    } else {
+                                        tracing::warn!(
+                                            provider = &provider_name,
+                                            attempt = attempt,
+                                            chunks_yielded = chunks_yielded,
+                                            error = %e,
+                                            "Transient stream error after data already sent, cannot fail over"
+                                        );
+                                    }
                                     yield Err(RouterError::ProviderError(e));
+                                    guard.decrement();
+                                    // Prevent further retries
+                                    chunks_yielded = true;
                                     break;
                                 }
                             }
                         }
 
-                        if stream_error.is_none() && !first_token {
+                        // Stream completed normally (no error)
+                        if !first_token {
                             metrics_store.emitter().emit_success(&provider_name, &original_model);
                             let total_latency_ms = start.elapsed().as_millis() as u32;
                             metrics_store.emitter().emit_total_latency(&provider_name, &original_model, total_latency_ms);
@@ -667,60 +629,70 @@ impl Router {
                                 metrics_store.emitter().emit_input_tokens(&provider_name, &original_model, prompt_tokens);
                                 metrics_store.emitter().emit_output_tokens(&provider_name, &original_model, completion_tokens);
                             }
+
+                            guard.decrement();
+                            break; // Stream completed successfully, don't try more providers
                         }
 
+                        // Empty stream (no chunks, no error) — guard still needs decrement.
+                        // Continue to next provider.
                         guard.decrement();
-                    };
-
-                    return Ok(Box::pin(stream));
-                }
-                Err(e) => {
-                    guard.decrement();
-                    drop(guard);
-
-                    last_error = Some(RouterError::ProviderError(e.clone()));
-
-                    metrics_store.emitter().emit_failure_with_details(
-                        &provider_name,
-                        &original_model,
-                        e.error_type(),
-                        None,
-                        &e.to_string(),
-                        e.retry_after_ms(),
-                        e.status_code(),
-                    );
-
-                    if e.is_transient() {
-                        excluded_providers.push(provider_name.clone());
-                        tracing::warn!(
-                            provider = &provider_name,
-                            attempt = attempt,
-                            error = %e,
-                            "Transient stream setup error, failing over to another provider"
-                        );
-                    } else {
-                        tracing::warn!(
-                            provider = &provider_name,
-                            attempt = attempt,
-                            error = %e,
-                            "Non-transient stream setup error, aborting"
-                        );
-                        return Err(last_error.unwrap());
+                        continue;
                     }
+                    Err(e) => {
+                        guard.decrement();
 
-                    let backoff = e
-                        .retry_after_ms()
-                        .map(|ms| Duration::from_millis(ms))
-                        .unwrap_or_else(|| Duration::from_secs(2_u64.saturating_pow(attempt)));
+                        last_error = Some(RouterError::ProviderError(e.clone()));
 
-                    tokio::time::sleep(backoff).await;
+                        metrics_store.emitter().emit_failure_with_details(
+                            &provider_name,
+                            &original_model,
+                            e.error_type(),
+                            None,
+                            &e.to_string(),
+                            e.retry_after_ms(),
+                            e.status_code(),
+                        );
+
+                        if e.is_transient() {
+                            tracing::warn!(
+                                provider = &provider_name,
+                                attempt = attempt,
+                                error = %e,
+                                "Transient stream setup error, failing over to another provider"
+                            );
+
+                            // Backoff before trying next provider
+                            let backoff = e
+                                .retry_after_ms()
+                                .map(|ms| Duration::from_millis(ms))
+                                .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)));
+                            tokio::time::sleep(backoff).await;
+                        } else {
+                            tracing::warn!(
+                                provider = &provider_name,
+                                attempt = attempt,
+                                error = %e,
+                                "Non-transient stream setup error, aborting"
+                            );
+                            yield Err(last_error.clone().unwrap());
+                            break;
+                        }
+                    }
                 }
             }
-        }
 
-        Err(last_error.unwrap_or(RouterError::ProviderError(
-            ProviderError::Other("Max retries exceeded".to_string().into()),
-        )))
+            // If we exhausted all providers without yielding anything, emit the last error
+            if !chunks_yielded {
+                if let Some(e) = last_error {
+                    yield Err(e);
+                } else if attempt == 0 {
+                    yield Err(RouterError::NoAvailableProvider);
+                }
+            }
+        };
+
+        Ok(Box::pin(stream))
     }
 
     fn transform_request(request: &CreateResponse, provider_name: &str) -> CreateResponse {
@@ -770,20 +742,20 @@ impl Router {
         let start = Instant::now();
         let original_model = request.model.clone().unwrap_or_default();
 
-        let mut excluded_providers: Vec<String> = Vec::new();
-        let mut last_error: Option<RouterError> = None;
+        let candidates = self.collect_candidates(&original_model).await;
+        if candidates.is_empty() {
+            return Err(RouterError::NoAvailableProvider);
+        }
 
-        for attempt in 0..self.max_retries {
-            let route_result = self
-                .resolve_route_excluding(&original_model, &excluded_providers)
-                .await;
-            
-            let (provider, resolved_model) = match route_result {
-                Some(route) => route,
-                None => {
-                    return Err(last_error.clone().unwrap_or(RouterError::NoAvailableProvider));
-                }
-            };
+        let mut last_error: Option<RouterError> = None;
+        let mut attempt: u32 = 0;
+
+        for (provider, resolved_model) in candidates {
+            if attempt >= self.max_retries {
+                break;
+            }
+            attempt += 1;
+
             let provider_name = provider.name().to_string();
 
             let mut actual_request = Self::transform_request(request, &provider_name);
@@ -813,27 +785,12 @@ impl Router {
                 .emitter()
                 .emit_provider_load(&provider_name, in_flight, max_concurrency);
 
-            if !self.metrics_store.is_provider_available(&provider_name).await {
-                let backoff = self.metrics_store.get_provider_backoff(&provider_name).await;
-                tracing::warn!(
-                    provider = &provider_name,
-                    attempt = attempt,
-                    backoff_ms = backoff.as_millis(),
-                    "Provider unavailable, waiting before retry"
-                );
-                guard.decrement();
-                drop(guard);
-                tokio::time::sleep(backoff).await;
-                continue;
-            }
-
             let result = provider.responses(&actual_request).await;
             let total_latency = start.elapsed();
 
             match result {
                 Ok(response) => {
                     guard.decrement();
-                    drop(guard);
 
                     let latency_ms = total_latency.as_millis() as u32;
                     self.metrics_store
@@ -854,7 +811,6 @@ impl Router {
                 }
                 Err(e) => {
                     guard.decrement();
-                    drop(guard);
 
                     last_error = Some(RouterError::ProviderError(e.clone()));
 
@@ -869,7 +825,6 @@ impl Router {
                     );
 
                     if e.is_transient() {
-                        excluded_providers.push(provider_name.clone());
                         tracing::warn!(
                             provider = &provider_name,
                             attempt = attempt,
@@ -883,22 +838,20 @@ impl Router {
                             error = %e,
                             "Non-transient responses error, aborting"
                         );
-                        return Err(last_error.clone().unwrap());
+                        return Err(last_error.unwrap());
                     }
 
                     let backoff = e
                         .retry_after_ms()
                         .map(|ms| Duration::from_millis(ms))
-                        .unwrap_or_else(|| Duration::from_secs(2_u64.saturating_pow(attempt)));
+                        .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)));
 
                     tokio::time::sleep(backoff).await;
                 }
             }
         }
 
-        Err(last_error.unwrap_or(RouterError::ProviderError(
-            ProviderError::Other("Max retries exceeded".to_string().into()),
-        )))
+        Err(last_error.unwrap_or(RouterError::NoAvailableProvider))
     }
 }
 
@@ -924,7 +877,6 @@ impl Clone for RouterError {
 mod tests {
     use super::*;
     use crate::providers::openai::OpenAiProvider;
-    use crate::router::strategies::round_robin::RoundRobinStrategy;
     use crate::metrics::{MetricsStore, ProviderMetrics, MetricsEvent, FailureDetails, ErrorType};
     use std::sync::Arc;
 
@@ -933,7 +885,6 @@ mod tests {
         let metrics_store = MetricsStore::new(1000);
         
         let router = Router::new(
-            Arc::new(RoundRobinStrategy::new()),
             metrics_store.clone(),
             db.clone(),
         );
@@ -942,7 +893,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resolve_route_prefers_available_providers() {
+    async fn test_collect_candidates_prefers_available_providers() {
         let (router, metrics_store) = setup_test_router().await;
         
         // Create two providers
@@ -976,16 +927,15 @@ mod tests {
         assert!(!metrics_store.is_provider_available("Provider2").await);
         assert!(metrics_store.is_provider_available("Provider1").await);
         
-        // Resolve route for "default" model - should prefer provider1 (available)
-        let result = router.resolve_route_excluding("default", &[]).await;
+        // Collect candidates for "default" model - should list provider1 first
+        let candidates = router.collect_candidates("default").await;
         
-        assert!(result.is_some(), "Should find a route");
-        let (resolved_provider, _) = result.unwrap();
-        assert_eq!(resolved_provider.name(), "Provider1", "Should prefer available provider");
+        assert!(!candidates.is_empty(), "Should find candidates");
+        assert_eq!(candidates[0].0.name(), "Provider1", "Should list available provider first");
     }
 
     #[tokio::test]
-    async fn test_resolve_route_fallback_to_unavailable_when_all_excluded() {
+    async fn test_collect_candidates_includes_unavailable_as_fallback() {
         let (router, metrics_store) = setup_test_router().await;
         
         let provider1 = Arc::new(OpenAiProvider::new("Provider1", Some("provider1"), "http://localhost:8001", Some("key")));
@@ -1029,16 +979,14 @@ mod tests {
             }).await;
         }
         
-        // Exclude provider1 - should still fall back to provider2 (unavailable but not excluded)
-        let result = router.resolve_route_excluding("default", &["Provider1".to_string()]).await;
+        // Even though both are unavailable, they should still be returned as candidates
+        let candidates = router.collect_candidates("default").await;
         
-        assert!(result.is_some(), "Should find a fallback route even if unavailable");
-        let (resolved_provider, _) = result.unwrap();
-        assert_eq!(resolved_provider.name(), "Provider2", "Should fall back to unavailable but not-excluded provider");
+        assert_eq!(candidates.len(), 2, "Should include unavailable providers as fallback");
     }
 
     #[tokio::test]
-    async fn test_resolve_route_excludes_explicitly_excluded_providers() {
+    async fn test_collect_candidates_prefixed_model() {
         let (router, _metrics_store) = setup_test_router().await;
         
         let provider1 = Arc::new(OpenAiProvider::new("Provider1", Some("provider1"), "http://localhost:8001", Some("key")));
@@ -1047,11 +995,21 @@ mod tests {
         router.add_provider(provider1.clone()).await;
         router.add_provider(provider2.clone()).await;
         
-        // Exclude provider1
-        let result = router.resolve_route_excluding("default", &["Provider1".to_string()]).await;
+        // Prefixed model should route to the specific provider only
+        let candidates = router.collect_candidates("provider2/gpt-4").await;
         
-        assert!(result.is_some(), "Should find a route");
-        let (resolved_provider, _) = result.unwrap();
-        assert_eq!(resolved_provider.name(), "Provider2", "Should exclude explicitly excluded provider");
+        assert_eq!(candidates.len(), 1, "Should return exactly one candidate for prefixed model");
+        assert_eq!(candidates[0].0.name(), "Provider2", "Should route to the prefixed provider");
+        assert_eq!(candidates[0].1, "gpt-4", "Should extract the actual model name");
+    }
+
+    #[tokio::test]
+    async fn test_collect_candidates_empty_when_no_providers() {
+        let (router, _metrics_store) = setup_test_router().await;
+        
+        // No providers added
+        let candidates = router.collect_candidates("gpt-4").await;
+        
+        assert!(candidates.is_empty(), "Should return empty when no providers configured");
     }
 }
