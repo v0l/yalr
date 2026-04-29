@@ -1,6 +1,6 @@
 use crate::db::Database;
 use crate::metrics::MetricsStore;
-use crate::providers::{create_provider, Provider};
+use crate::providers::{create_provider, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
 use crate::router::strategies::ProviderEntry;
 use crate::{ChatCompletionRequest, ChatCompletionResponse, ProviderError};
 use crate::providers::StreamingChunk;
@@ -296,6 +296,60 @@ impl Router {
         available
     }
 
+    /// Normalize chat request messages for a given provider:
+    /// 1. Convert `developer` role to `system` for providers that don't support it.
+    /// 2. Move all system messages to the beginning of the array.
+    ///
+    /// Some providers (e.g. OpenAI) reject requests where system messages
+    /// appear after user/assistant messages, and many backends don't support
+    /// the `developer` role at all.
+    fn normalize_chat_request(request: &mut ChatCompletionRequest, provider_name: &str) {
+        let should_convert_developer = !provider_name.to_lowercase().contains("openai");
+
+        if should_convert_developer {
+            request.messages = std::mem::take(&mut request.messages)
+                .into_iter()
+                .map(|m| match m {
+                    ChatCompletionRequestMessage::Developer(dev) => {
+                        let content = match dev.content {
+                            async_openai::types::chat::ChatCompletionRequestDeveloperMessageContent::Text(t) => {
+                                ChatCompletionRequestSystemMessageContent::Text(t)
+                            }
+                            async_openai::types::chat::ChatCompletionRequestDeveloperMessageContent::Array(parts) => {
+                                ChatCompletionRequestSystemMessageContent::Array(
+                                    parts.into_iter().map(|p| match p {
+                                        async_openai::types::chat::ChatCompletionRequestDeveloperMessageContentPart::Text(t) => {
+                                            async_openai::types::chat::ChatCompletionRequestSystemMessageContentPart::Text(t)
+                                        }
+                                    }).collect()
+                                )
+                            }
+                        };
+                        ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+                            content,
+                            name: dev.name,
+                        })
+                    }
+                    other => other,
+                })
+                .collect();
+        }
+
+        // Move system messages to the beginning
+        let messages = &mut request.messages;
+        let first_non_system = messages.iter().position(|m| !matches!(m, ChatCompletionRequestMessage::System(_)));
+        if let Some(first_non_system_idx) = first_non_system {
+            let has_misplaced = messages[first_non_system_idx..]
+                .iter()
+                .any(|m| matches!(m, ChatCompletionRequestMessage::System(_)));
+            if has_misplaced {
+                let (system_msgs, other_msgs): (Vec<_>, Vec<_>) =
+                    std::mem::take(messages).into_iter().partition(|m| matches!(m, ChatCompletionRequestMessage::System(_)));
+                *messages = system_msgs.into_iter().chain(other_msgs.into_iter()).collect();
+            }
+        }
+    }
+
     pub async fn chat_completions(
         &self,
         request: &ChatCompletionRequest,
@@ -321,6 +375,7 @@ impl Router {
 
             let mut actual_request = request.clone();
             actual_request.model = resolved_model.clone();
+            Self::normalize_chat_request(&mut actual_request, &provider_name);
 
             let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
             let mut guard = InFlightGuard::new(
@@ -484,6 +539,7 @@ impl Router {
 
                 let mut actual_request = request.clone();
                 actual_request.model = resolved_model.clone();
+                Self::normalize_chat_request(&mut actual_request, &provider_name);
 
                 let in_flight = metrics_store.increment_in_flight(&provider_name).await;
                 let mut guard = InFlightGuard::new(
@@ -1011,5 +1067,161 @@ mod tests {
         let candidates = router.collect_candidates("gpt-4").await;
         
         assert!(candidates.is_empty(), "Should return empty when no providers configured");
+    }
+
+    #[test]
+    fn test_normalize_moves_system_messages_to_front() {
+        use crate::providers::{
+            ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
+        };
+
+        let mut request = ChatCompletionRequest {
+            model: "test".to_string(),
+            messages: vec![
+                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Text("hello".to_string()),
+                    name: None,
+                }),
+                ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+                    content: ChatCompletionRequestSystemMessageContent::Text("system prompt".to_string()),
+                    name: None,
+                }),
+                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Text("world".to_string()),
+                    name: None,
+                }),
+            ],
+            ..Default::default()
+        };
+
+        Router::normalize_chat_request(&mut request, "vllm");
+
+        assert!(matches!(&request.messages[0], ChatCompletionRequestMessage::System(_)));
+        assert!(matches!(&request.messages[1], ChatCompletionRequestMessage::User(_)));
+        assert!(matches!(&request.messages[2], ChatCompletionRequestMessage::User(_)));
+    }
+
+    #[test]
+    fn test_normalize_converts_developer_to_system_for_non_openai() {
+        use async_openai::types::chat::{
+            ChatCompletionRequestDeveloperMessage,
+            ChatCompletionRequestDeveloperMessageContent,
+            ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
+        };
+
+        let mut request = ChatCompletionRequest {
+            model: "test".to_string(),
+            messages: vec![
+                ChatCompletionRequestMessage::Developer(ChatCompletionRequestDeveloperMessage {
+                    content: ChatCompletionRequestDeveloperMessageContent::Text("dev instructions".to_string()),
+                    name: None,
+                }),
+                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Text("hello".to_string()),
+                    name: None,
+                }),
+            ],
+            ..Default::default()
+        };
+
+        Router::normalize_chat_request(&mut request, "vllm-backend");
+
+        // Developer should be converted to System
+        assert!(matches!(&request.messages[0], ChatCompletionRequestMessage::System(_)));
+        assert!(matches!(&request.messages[1], ChatCompletionRequestMessage::User(_)));
+        // No Developer messages remain
+        assert!(!request.messages.iter().any(|m| matches!(m, ChatCompletionRequestMessage::Developer(_))));
+    }
+
+    #[test]
+    fn test_normalize_preserves_developer_for_openai() {
+        use async_openai::types::chat::{
+            ChatCompletionRequestDeveloperMessage,
+            ChatCompletionRequestDeveloperMessageContent,
+            ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
+        };
+
+        let mut request = ChatCompletionRequest {
+            model: "test".to_string(),
+            messages: vec![
+                ChatCompletionRequestMessage::Developer(ChatCompletionRequestDeveloperMessage {
+                    content: ChatCompletionRequestDeveloperMessageContent::Text("dev instructions".to_string()),
+                    name: None,
+                }),
+                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Text("hello".to_string()),
+                    name: None,
+                }),
+            ],
+            ..Default::default()
+        };
+
+        Router::normalize_chat_request(&mut request, "OpenAI");
+
+        // Developer message should be preserved for OpenAI
+        assert!(matches!(&request.messages[0], ChatCompletionRequestMessage::Developer(_)));
+        assert!(matches!(&request.messages[1], ChatCompletionRequestMessage::User(_)));
+    }
+
+    #[test]
+    fn test_normalize_developer_in_middle_moved_to_front_as_system() {
+        use async_openai::types::chat::{
+            ChatCompletionRequestDeveloperMessage,
+            ChatCompletionRequestDeveloperMessageContent,
+            ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
+        };
+
+        let mut request = ChatCompletionRequest {
+            model: "test".to_string(),
+            messages: vec![
+                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Text("hello".to_string()),
+                    name: None,
+                }),
+                ChatCompletionRequestMessage::Developer(ChatCompletionRequestDeveloperMessage {
+                    content: ChatCompletionRequestDeveloperMessageContent::Text("dev prompt".to_string()),
+                    name: None,
+                }),
+                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Text("world".to_string()),
+                    name: None,
+                }),
+            ],
+            ..Default::default()
+        };
+
+        Router::normalize_chat_request(&mut request, "my-vllm");
+
+        // Developer converted to System and moved to front
+        assert!(matches!(&request.messages[0], ChatCompletionRequestMessage::System(_)));
+        assert!(matches!(&request.messages[1], ChatCompletionRequestMessage::User(_)));
+        assert!(matches!(&request.messages[2], ChatCompletionRequestMessage::User(_)));
+    }
+
+    #[test]
+    fn test_normalize_no_change_when_already_correct() {
+        use crate::providers::{
+            ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
+        };
+
+        let mut request = ChatCompletionRequest {
+            model: "test".to_string(),
+            messages: vec![
+                ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+                    content: ChatCompletionRequestSystemMessageContent::Text("system".to_string()),
+                    name: None,
+                }),
+                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Text("hello".to_string()),
+                    name: None,
+                }),
+            ],
+            ..Default::default()
+        };
+
+        Router::normalize_chat_request(&mut request, "vllm");
+
+        assert!(matches!(&request.messages[0], ChatCompletionRequestMessage::System(_)));
+        assert!(matches!(&request.messages[1], ChatCompletionRequestMessage::User(_)));
     }
 }
