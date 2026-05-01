@@ -12,6 +12,8 @@ interface AggregatedProvider {
   latencyValues: number[]
   outputTpsValues: number[]
   lastEvent: number
+  inFlight: number
+  maxConcurrency: number | null
 }
 
 interface ModelStats {
@@ -82,16 +84,21 @@ export default function Metrics() {
 
       const p: AggregatedProvider = existing
         ? { ...existing, lastEvent: m.timestamp_ms }
-        : { name: m.provider, models: new Map(), totalRequests: 0, successes: 0, failures: 0, ttftValues: [], latencyValues: [], outputTpsValues: [], lastEvent: m.timestamp_ms }
+        : { name: m.provider, models: new Map(), totalRequests: 0, successes: 0, failures: 0, ttftValues: [], latencyValues: [], outputTpsValues: [], lastEvent: m.timestamp_ms, inFlight: 0, maxConcurrency: null }
 
       if (isOutcome) {
         p.totalRequests++
         if (m.event === 'Success') p.successes++
         if (hasKey(m.event, 'Failure')) p.failures++
       }
-      if (isTtft) p.ttftValues = [...p.ttftValues, (m.event as Record<string, number>).TTFT].slice(-MAX_AGGREGATION_EVENTS)
-      if (isLatency) p.latencyValues = [...p.latencyValues, (m.event as Record<string, number>).TotalLatency].slice(-MAX_AGGREGATION_EVENTS)
-      if (isOutTps) p.outputTpsValues = [...p.outputTpsValues, (m.event as Record<string, number>).OutputTokensPerSecond].slice(-MAX_AGGREGATION_EVENTS)
+       if (isTtft) p.ttftValues = [...p.ttftValues, (m.event as Record<string, number>).TTFT].slice(-MAX_AGGREGATION_EVENTS)
+       if (isLatency) p.latencyValues = [...p.latencyValues, (m.event as Record<string, number>).TotalLatency].slice(-MAX_AGGREGATION_EVENTS)
+       if (isOutTps) p.outputTpsValues = [...p.outputTpsValues, (m.event as Record<string, number>).OutputTokensPerSecond].slice(-MAX_AGGREGATION_EVENTS)
+       if (m.event && hasKey(m.event, 'ProviderLoad')) {
+         const load = (m.event as Record<string, unknown>).ProviderLoad as { in_flight: number; max_concurrency: number | null }
+         p.inFlight = load.in_flight
+         p.maxConcurrency = load.max_concurrency
+       }
 
       // Model-level aggregation
       if (m.model) {
@@ -137,6 +144,8 @@ export default function Metrics() {
               latencyValues: p.avg_latency_ms != null ? [p.avg_latency_ms] : [],
               outputTpsValues: p.p90_tokens_per_second != null ? [p.p90_tokens_per_second] : [],
               lastEvent: Date.now(),
+              inFlight: 0,
+              maxConcurrency: null,
             })
           }
         }
@@ -154,22 +163,27 @@ export default function Metrics() {
           const isLatency = hasKey(ev.event, 'TotalLatency')
           const isOutTps = hasKey(ev.event, 'OutputTokensPerSecond')
 
-          let p = map.get(ev.provider)
-          if (!p) {
-            p = { name: ev.provider, models: new Map(), totalRequests: 0, successes: 0, failures: 0, ttftValues: [], latencyValues: [], outputTpsValues: [], lastEvent: ev.timestamp_ms }
-            map.set(ev.provider, p)
-          } else {
-            p.lastEvent = ev.timestamp_ms
-          }
+           let p = map.get(ev.provider)
+           if (!p) {
+             p = { name: ev.provider, models: new Map(), totalRequests: 0, successes: 0, failures: 0, ttftValues: [], latencyValues: [], outputTpsValues: [], lastEvent: ev.timestamp_ms, inFlight: 0, maxConcurrency: null }
+             map.set(ev.provider, p)
+           } else {
+             p.lastEvent = ev.timestamp_ms
+           }
 
           if (isOutcome) {
             p.totalRequests++
             if (ev.event === 'Success') p.successes++
             if (hasKey(ev.event, 'Failure')) p.failures++
           }
-          if (isTtft) p.ttftValues.push((ev.event as Record<string, number>).TTFT)
-          if (isLatency) p.latencyValues.push((ev.event as Record<string, number>).TotalLatency)
-          if (isOutTps) p.outputTpsValues.push((ev.event as Record<string, number>).OutputTokensPerSecond)
+           if (isTtft) p.ttftValues.push((ev.event as Record<string, number>).TTFT)
+           if (isLatency) p.latencyValues.push((ev.event as Record<string, number>).TotalLatency)
+           if (isOutTps) p.outputTpsValues.push((ev.event as Record<string, number>).OutputTokensPerSecond)
+           if (ev.event && hasKey(ev.event, 'ProviderLoad')) {
+             const load = (ev.event as Record<string, unknown>).ProviderLoad as { in_flight: number; max_concurrency: number | null }
+             p.inFlight = load.in_flight
+             p.maxConcurrency = load.max_concurrency
+           }
 
           // Model-level aggregation
           if (ev.model) {
@@ -284,7 +298,7 @@ export default function Metrics() {
     }
   }, [liveEvents.length])
 
-  const providerList = Array.from(providers.values()).sort((a, b) => b.lastEvent - a.lastEvent)
+  const providerList = Array.from(providers.values()).sort((a, b) => a.name.localeCompare(b.name))
   const selectedData = selectedProvider ? providers.get(selectedProvider) : null
 
   return (
@@ -343,12 +357,18 @@ export default function Metrics() {
                 className={`text-left p-5 bg-layer-3 rounded-lg border transition-colors ${
                   isSelected ? 'border-accent ring-1 ring-accent/30' : 'border-border hover:border-accent/50'
                 }`}
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-base font-semibold text-text-primary">{p.name}</h3>
-                  <span className="text-xs text-text-secondary">{p.models.size} model{p.models.size !== 1 ? 's' : ''}</span>
-                </div>
-                <div className="grid grid-cols-2 gap-3 text-sm">
+               >
+                 <div className="flex items-center justify-between mb-3">
+                   <h3 className="text-base font-semibold text-text-primary">{p.name}</h3>
+                   <span className="text-xs text-text-secondary">{p.models.size} model{p.models.size !== 1 ? 's' : ''}</span>
+                 </div>
+                 <div className="mb-3">
+                   <div className="text-text-secondary text-xs">Load</div>
+                   <div className="font-mono font-medium text-text-primary">
+                     {p.inFlight}{p.maxConcurrency !== null ? `/${p.maxConcurrency}` : ''}
+                   </div>
+                 </div>
+                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div>
                     <div className="text-text-secondary text-xs">Success Rate</div>
                     <div className={`font-mono font-medium ${successRate !== null ? (successRate >= 95 ? 'text-green-600 dark:text-green-400' : successRate >= 80 ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-600 dark:text-red-400') : 'text-text-secondary'}`}>

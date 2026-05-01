@@ -86,7 +86,7 @@ impl Provider for OpenAiProvider {
                             })
                     })) as BoxStream<'static, Result<StreamingChunk, ProviderError>>
                 }
-                Err(e) => {
+            Err(e) => {
                     Box::pin(futures::stream::once(async move {
                         Err(ProviderError::OpenAIError(e))
                     })) as BoxStream<'static, Result<StreamingChunk, ProviderError>>
@@ -137,7 +137,12 @@ impl Provider for OpenAiProvider {
                 
                 Ok(Some(runtime_info))
             }
-            Err(e) => Err(ProviderError::OpenAIError(e)),
+            Err(_e) => {
+                // Some providers (e.g., vLLM) don't support the retrieve endpoint
+                // or may not recognize certain model names. Return None gracefully.
+                tracing::debug!("Model retrieve not supported or model not found: {}", model_id);
+                Ok(None)
+            }
         }
     }
 }
