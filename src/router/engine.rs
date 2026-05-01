@@ -297,12 +297,10 @@ impl Router {
     }
 
     /// Normalize chat request messages for a given provider:
-    /// 1. Convert `developer` role to `system` for providers that don't support it.
-    /// 2. Move all system messages to the beginning of the array.
+    /// Convert `developer` role to `system` for providers that don't support it.
     ///
-    /// Some providers (e.g. OpenAI) reject requests where system messages
-    /// appear after user/assistant messages, and many backends don't support
-    /// the `developer` role at all.
+    /// Many backends don't support the `developer` role at all.
+    /// Message ordering is the caller's responsibility.
     fn normalize_chat_request(request: &mut ChatCompletionRequest, provider_name: &str) {
         let should_convert_developer = !provider_name.to_lowercase().contains("openai");
 
@@ -333,20 +331,6 @@ impl Router {
                     other => other,
                 })
                 .collect();
-        }
-
-        // Move system messages to the beginning
-        let messages = &mut request.messages;
-        let first_non_system = messages.iter().position(|m| !matches!(m, ChatCompletionRequestMessage::System(_)));
-        if let Some(first_non_system_idx) = first_non_system {
-            let has_misplaced = messages[first_non_system_idx..]
-                .iter()
-                .any(|m| matches!(m, ChatCompletionRequestMessage::System(_)));
-            if has_misplaced {
-                let (system_msgs, other_msgs): (Vec<_>, Vec<_>) =
-                    std::mem::take(messages).into_iter().partition(|m| matches!(m, ChatCompletionRequestMessage::System(_)));
-                *messages = system_msgs.into_iter().chain(other_msgs.into_iter()).collect();
-            }
         }
     }
 
@@ -756,38 +740,45 @@ impl Router {
         
         // Only transform developer role for providers that don't support it
         // OpenAI supports developer role natively, but vLLM and other backends may not
+        // Message ordering is the caller's responsibility.
         let should_transform = !provider_name.to_lowercase().contains("openai");
+
+        let items = match std::mem::replace(&mut transformed.input, InputParam::Items(vec![])) {
+            InputParam::Items(items) => items,
+            other => {
+                transformed.input = other;
+                return transformed;
+            }
+        };
         
-        if should_transform {
-            if let InputParam::Items(items) = transformed.input {
-                let transformed_items: Vec<async_openai::types::responses::InputItem> = items
-                    .into_iter()
-                    .map(|item| {
-                        if let async_openai::types::responses::InputItem::Item(
+        let items: Vec<async_openai::types::responses::InputItem> = if should_transform {
+            items.into_iter()
+                .map(|item| {
+                    if let async_openai::types::responses::InputItem::Item(
+                        async_openai::types::responses::Item::Message(MessageItem::Input(InputMessage {
+                            role: InputRole::Developer,
+                            content,
+                            status,
+                        }))
+                    ) = item
+                    {
+                        async_openai::types::responses::InputItem::Item(
                             async_openai::types::responses::Item::Message(MessageItem::Input(InputMessage {
-                                role: InputRole::Developer,
+                                role: InputRole::System,
                                 content,
                                 status,
                             }))
-                        ) = item
-                        {
-                            async_openai::types::responses::InputItem::Item(
-                                async_openai::types::responses::Item::Message(MessageItem::Input(InputMessage {
-                                    role: InputRole::System,
-                                    content,
-                                    status,
-                                }))
-                            )
-                        } else {
-                            item
-                        }
-                    })
-                    .collect();
-                
-                transformed.input = InputParam::Items(transformed_items);
-            }
-        }
+                        )
+                    } else {
+                        item
+                    }
+                })
+                .collect()
+        } else {
+            items
+        };
         
+        transformed.input = InputParam::Items(items);
         transformed
     }
 
@@ -1070,38 +1061,6 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_moves_system_messages_to_front() {
-        use crate::providers::{
-            ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
-        };
-
-        let mut request = ChatCompletionRequest {
-            model: "test".to_string(),
-            messages: vec![
-                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
-                    content: ChatCompletionRequestUserMessageContent::Text("hello".to_string()),
-                    name: None,
-                }),
-                ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
-                    content: ChatCompletionRequestSystemMessageContent::Text("system prompt".to_string()),
-                    name: None,
-                }),
-                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
-                    content: ChatCompletionRequestUserMessageContent::Text("world".to_string()),
-                    name: None,
-                }),
-            ],
-            ..Default::default()
-        };
-
-        Router::normalize_chat_request(&mut request, "vllm");
-
-        assert!(matches!(&request.messages[0], ChatCompletionRequestMessage::System(_)));
-        assert!(matches!(&request.messages[1], ChatCompletionRequestMessage::User(_)));
-        assert!(matches!(&request.messages[2], ChatCompletionRequestMessage::User(_)));
-    }
-
-    #[test]
     fn test_normalize_converts_developer_to_system_for_non_openai() {
         use async_openai::types::chat::{
             ChatCompletionRequestDeveloperMessage,
@@ -1164,7 +1123,42 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_developer_in_middle_moved_to_front_as_system() {
+    fn test_normalize_developer_in_middle_preserves_position_for_openai() {
+        use async_openai::types::chat::{
+            ChatCompletionRequestDeveloperMessage,
+            ChatCompletionRequestDeveloperMessageContent,
+            ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
+        };
+
+        let mut request = ChatCompletionRequest {
+            model: "test".to_string(),
+            messages: vec![
+                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Text("hello".to_string()),
+                    name: None,
+                }),
+                ChatCompletionRequestMessage::Developer(ChatCompletionRequestDeveloperMessage {
+                    content: ChatCompletionRequestDeveloperMessageContent::Text("dev prompt".to_string()),
+                    name: None,
+                }),
+                ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Text("world".to_string()),
+                    name: None,
+                }),
+            ],
+            ..Default::default()
+        };
+
+        Router::normalize_chat_request(&mut request, "OpenAI");
+
+        // Developer preserved in place — not converted, not moved
+        assert!(matches!(&request.messages[0], ChatCompletionRequestMessage::User(_)));
+        assert!(matches!(&request.messages[1], ChatCompletionRequestMessage::Developer(_)));
+        assert!(matches!(&request.messages[2], ChatCompletionRequestMessage::User(_)));
+    }
+
+    #[test]
+    fn test_normalize_developer_in_middle_converts_preserves_position_for_non_openai() {
         use async_openai::types::chat::{
             ChatCompletionRequestDeveloperMessage,
             ChatCompletionRequestDeveloperMessageContent,
@@ -1192,9 +1186,9 @@ mod tests {
 
         Router::normalize_chat_request(&mut request, "my-vllm");
 
-        // Developer converted to System and moved to front
-        assert!(matches!(&request.messages[0], ChatCompletionRequestMessage::System(_)));
-        assert!(matches!(&request.messages[1], ChatCompletionRequestMessage::User(_)));
+        // Developer converted to System but stays in place
+        assert!(matches!(&request.messages[0], ChatCompletionRequestMessage::User(_)));
+        assert!(matches!(&request.messages[1], ChatCompletionRequestMessage::System(_)));
         assert!(matches!(&request.messages[2], ChatCompletionRequestMessage::User(_)));
     }
 
