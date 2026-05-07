@@ -8,6 +8,7 @@ use async_openai::types::responses::{CreateResponse, Response as ApiResponse, In
 use async_stream::stream;
 use futures::stream::BoxStream;
 use futures::StreamExt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -53,6 +54,67 @@ impl Drop for InFlightGuard {
 
 struct RoutingTable {
     entries: Vec<ProviderEntry>,
+    /// Counter for weighted round-robin. Each call to `collect_candidates`
+    /// advances this so that over many requests the distribution matches the
+    /// configured weights.
+    rr_counter: AtomicUsize,
+}
+
+impl RoutingTable {
+    fn new(entries: Vec<ProviderEntry>) -> Self {
+        Self {
+            entries,
+            rr_counter: AtomicUsize::new(0),
+        }
+    }
+
+    /// Return entries reordered for a single weighted round-robin step.
+    ///
+    /// Weighted round-robin works by expanding each entry into `weight` virtual
+    /// slots, then cycling through those slots.  A 3:1 split produces the
+    /// repeating sequence A A A B — so A gets 75 % of traffic, B gets 25 %.
+    fn weighted_rr_order(&self) -> Vec<&ProviderEntry> {
+        if self.entries.is_empty() {
+            return vec![];
+        }
+
+        // If all weights are equal (or zero/negative), fall back to plain RR
+        let first_weight = self.entries[0].weight.max(1);
+        let all_equal = self.entries.iter().all(|e| e.weight.max(1) == first_weight);
+
+        if all_equal {
+            let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % self.entries.len();
+            // Rotate so the chosen index is first
+            let mut ordered: Vec<&ProviderEntry> = self.entries.iter().collect();
+            ordered.rotate_left(idx);
+            return ordered;
+        }
+
+        // Weighted: expand into virtual slots, pick the next slot
+        let total_weight: i32 = self.entries.iter().map(|e| e.weight.max(1)).sum();
+        let slot = self.rr_counter.fetch_add(1, Ordering::Relaxed) % (total_weight as usize);
+
+        // Determine which entry the slot belongs to
+        let mut accumulated = 0i32;
+        let mut primary_idx = 0;
+        for (i, entry) in self.entries.iter().enumerate() {
+            accumulated += entry.weight.max(1);
+            if slot < accumulated as usize {
+                primary_idx = i;
+                break;
+            }
+        }
+
+        // Rotate so the selected entry is first (the rest follow as fallbacks)
+        let mut ordered: Vec<&ProviderEntry> = self.entries.iter().collect();
+        ordered.rotate_left(primary_idx);
+        ordered
+    }
+}
+
+/// Helper struct for health check tasks that only needs metrics access
+struct HealthCheckRouter {
+    metrics_store: MetricsStore,
 }
 
 pub struct Router {
@@ -61,6 +123,7 @@ pub struct Router {
     providers: RwLock<HashMap<String, Arc<dyn Provider>>>,
     routing_tables: RwLock<HashMap<String, RoutingTable>>,
     max_retries: u32,
+    health_check_handles: RwLock<HashMap<String, tokio::task::JoinHandle<()>>>,
 }
 
 impl Router {
@@ -74,6 +137,7 @@ impl Router {
             providers: RwLock::new(HashMap::new()),
             routing_tables: RwLock::new(HashMap::new()),
             max_retries: 3,
+            health_check_handles: RwLock::new(HashMap::new()),
         }
     }
 
@@ -128,9 +192,7 @@ impl Router {
 
             tables.insert(
                 rc.name.clone(),
-                RoutingTable {
-                    entries,
-                },
+                RoutingTable::new(entries),
             );
         }
 
@@ -167,9 +229,7 @@ impl Router {
 
             tables
                 .entry(model_name.clone())
-                .or_insert_with(|| RoutingTable {
-                    entries: Vec::new(),
-                })
+                .or_insert_with(|| RoutingTable::new(Vec::new()))
                 .entries.push(ProviderEntry {
                     provider: provider.clone(),
                     model_override: None,
@@ -189,9 +249,7 @@ impl Router {
 
             tables.insert(
                 "default".to_string(),
-                RoutingTable {
-                    entries,
-                },
+                RoutingTable::new(entries),
             );
         }
 
@@ -206,7 +264,147 @@ impl Router {
             "Router config reloaded"
         );
 
+        // Restart health checks with the new config
+        if let Err(e) = self.start_health_checks().await {
+            tracing::warn!(error = %e, "Failed to start health checks after config reload");
+        }
+
         Ok(())
+    }
+
+    /// Start background health check tasks for routing configs that have health checks enabled
+    pub async fn start_health_checks(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut handles = self.health_check_handles.write().await;
+        
+        // Cancel existing health check tasks
+        for (_, handle) in handles.drain() {
+            handle.abort();
+        }
+        
+        // Get all routing configs with health checks enabled
+        let routing_configs = self.db.list_routing_configs().await?;
+        
+        for rc in routing_configs {
+            if !rc.health_check_enabled {
+                continue;
+            }
+            
+            let interval = Duration::from_secs(rc.health_check_interval_seconds as u64);
+            let timeout = Duration::from_secs(rc.health_check_timeout_seconds as u64);
+            
+            // Get providers for this routing config
+            let rcp_records = self.db.list_active_routing_config_providers(rc.id).await?;
+            let mut providers_to_check = Vec::new();
+            
+            let id_to_slug = self.get_provider_slug_map().await;
+            
+            for rcp in rcp_records {
+                if let Some(slug) = id_to_slug.get(&rcp.provider_id) {
+                    if let Some(provider) = self.providers.read().await.get(slug) {
+                        // Only check providers that are currently unavailable
+                        let is_available = self.metrics_store.is_provider_available(provider.name()).await;
+                        if !is_available {
+                            providers_to_check.push((provider.clone(), rc.name.clone()));
+                        }
+                    }
+                }
+            }
+            
+            if providers_to_check.is_empty() {
+                continue;
+            }
+            
+            let router = self.clone_for_health_checks();
+            let providers_to_check_for_logging = providers_to_check.clone();
+            
+            let handle = tokio::spawn(async move {
+                let mut interval_tick = tokio::time::interval(interval);
+                
+                loop {
+                    interval_tick.tick().await;
+                    
+                    for (provider, config_name) in &providers_to_check {
+                        let provider_name = provider.name().to_string();
+                        
+                        // Check if provider is still unavailable before probing
+                        let is_available = router.metrics_store.is_provider_available(&provider_name).await;
+                        if is_available {
+                            continue;
+                        }
+                        
+                        tracing::debug!(
+                            provider = %provider_name,
+                            config = %config_name,
+                            "Running health check probe"
+                        );
+                        
+                        // Run health check with timeout
+                        let health_check_result = tokio::time::timeout(
+                            timeout,
+                            provider.health_check()
+                        ).await;
+                        
+                        match health_check_result {
+                            Ok(Ok(true)) => {
+                                tracing::info!(
+                                    provider = %provider_name,
+                                    config = %config_name,
+                                    "Health check passed, marking provider as available"
+                                );
+                                // Emit success event to reset health state
+                                let emitter = router.metrics_store.emitter().clone();
+                                tokio::spawn(async move {
+                                    emitter.emit_success(&provider_name, &String::new());
+                                });
+                            }
+                            Ok(Ok(false)) => {
+                                tracing::debug!(
+                                    provider = %provider_name,
+                                    config = %config_name,
+                                    "Health check failed, provider still unavailable"
+                                );
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!(
+                                    provider = %provider_name,
+                                    config = %config_name,
+                                    error = %e,
+                                    "Health check error"
+                                );
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    provider = %provider_name,
+                                    config = %config_name,
+                                    "Health check timed out"
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+            
+            handles.insert(rc.name.clone(), handle);
+            tracing::info!(
+                config = rc.name,
+                interval_seconds = rc.health_check_interval_seconds,
+                providers_to_check = providers_to_check_for_logging.len(),
+                "Started health check task"
+            );
+        }
+        
+        Ok(())
+    }
+
+    fn clone_for_health_checks(&self) -> HealthCheckRouter {
+        HealthCheckRouter {
+            metrics_store: self.metrics_store.clone(),
+        }
+    }
+
+    async fn get_provider_slug_map(&self) -> HashMap<i64, String> {
+        let provider_records = self.db.list_providers().await.unwrap_or_default();
+        provider_records.into_iter().map(|p| (p.id, p.slug.clone())).collect()
     }
 
     pub async fn get_providers(&self) -> Vec<Arc<dyn Provider>> {
@@ -222,9 +420,7 @@ impl Router {
         let mut tables = self.routing_tables.write().await;
         let default = tables
             .entry("default".to_string())
-            .or_insert_with(|| RoutingTable {
-                entries: Vec::new(),
-            });
+            .or_insert_with(|| RoutingTable::new(Vec::new()));
         default.entries.push(ProviderEntry {
             provider,
             model_override: None,
@@ -275,10 +471,13 @@ impl Router {
             return vec![];
         }
 
+        // Get entries in weighted round-robin order
+        let ordered = table.weighted_rr_order();
+
         let mut available = Vec::new();
         let mut unavailable = Vec::new();
 
-        for entry in &table.entries {
+        for entry in ordered {
             let resolved_model = entry
                 .model_override
                 .clone()
@@ -1217,5 +1416,107 @@ mod tests {
 
         assert!(matches!(&request.messages[0], ChatCompletionRequestMessage::System(_)));
         assert!(matches!(&request.messages[1], ChatCompletionRequestMessage::User(_)));
+    }
+
+    #[tokio::test]
+    async fn test_weighted_round_robin_3_to_1_distribution() {
+        let (router, _metrics_store) = setup_test_router().await;
+
+        let provider1 = Arc::new(OpenAiProvider::new("Heavy", Some("heavy"), "http://localhost:8001", Some("key")));
+        let provider2 = Arc::new(OpenAiProvider::new("Light", Some("light"), "http://localhost:8002", Some("key")));
+
+        // Manually build a routing table with 3:1 weights
+        {
+            let mut tables = router.routing_tables.write().await;
+            tables.insert(
+                "test-model".to_string(),
+                RoutingTable::new(vec![
+                    ProviderEntry {
+                        provider: provider1.clone(),
+                        model_override: None,
+                        weight: 3,
+                    },
+                    ProviderEntry {
+                        provider: provider2.clone(),
+                        model_override: None,
+                        weight: 1,
+                    },
+                ]),
+            );
+        }
+
+        // Collect candidates many times and count which provider is picked first
+        let mut heavy_count = 0usize;
+        let mut light_count = 0usize;
+
+        for _ in 0..40 {
+            let candidates = router.collect_candidates("test-model").await;
+            match candidates[0].0.name() {
+                "Heavy" => heavy_count += 1,
+                "Light" => light_count += 1,
+                other => panic!("Unexpected provider: {other}"),
+            }
+        }
+
+        // With 3:1 weights, expect ~30 heavy and ~10 light (±some tolerance)
+        assert_eq!(heavy_count + light_count, 40, "All 40 requests should have a first candidate");
+        assert!(
+            heavy_count >= 25 && heavy_count <= 35,
+            "Expected ~30 heavy selections, got {heavy_count}"
+        );
+        assert!(
+            light_count >= 5 && light_count <= 15,
+            "Expected ~10 light selections, got {light_count}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_equal_weights_rotates_fairly() {
+        let (router, _metrics_store) = setup_test_router().await;
+
+        let provider1 = Arc::new(OpenAiProvider::new("P1", Some("p1"), "http://localhost:8001", Some("key")));
+        let provider2 = Arc::new(OpenAiProvider::new("P2", Some("p2"), "http://localhost:8002", Some("key")));
+
+        {
+            let mut tables = router.routing_tables.write().await;
+            tables.insert(
+                "equal-model".to_string(),
+                RoutingTable::new(vec![
+                    ProviderEntry {
+                        provider: provider1.clone(),
+                        model_override: None,
+                        weight: 100,
+                    },
+                    ProviderEntry {
+                        provider: provider2.clone(),
+                        model_override: None,
+                        weight: 100,
+                    },
+                ]),
+            );
+        }
+
+        let mut p1_count = 0usize;
+        let mut p2_count = 0usize;
+
+        for _ in 0..20 {
+            let candidates = router.collect_candidates("equal-model").await;
+            match candidates[0].0.name() {
+                "P1" => p1_count += 1,
+                "P2" => p2_count += 1,
+                other => panic!("Unexpected provider: {other}"),
+            }
+        }
+
+        // With equal weights, should be roughly 10:10
+        assert_eq!(p1_count + p2_count, 20);
+        assert!(
+            p1_count >= 7 && p1_count <= 13,
+            "Expected ~10 P1 selections, got {p1_count}"
+        );
+        assert!(
+            p2_count >= 7 && p2_count <= 13,
+            "Expected ~10 P2 selections, got {p2_count}"
+        );
     }
 }
