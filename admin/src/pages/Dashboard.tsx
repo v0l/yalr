@@ -47,7 +47,9 @@ export default function Dashboard() {
     )
   }
 
-  const totalRequests = metrics?.recent_events.length || 0
+  const totalRequests = metrics?.total_requests ?? 0
+  const totalSuccesses = metrics?.total_successes ?? 0
+  const totalFailures = metrics?.total_failures ?? 0
   const activeProviders = providers.length
   const avgLatency = metrics?.providers.reduce((sum, p) => sum + (p.avg_latency_ms || 0), 0)
     ? (metrics?.providers.reduce((sum, p) => sum + (p.avg_latency_ms || 0), 0) || 0) /
@@ -60,7 +62,11 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="p-6 bg-layer-3 rounded-lg border border-border">
           <h2 className="text-lg font-semibold text-text-secondary">Total Requests</h2>
-          <p className="text-4xl font-bold mt-2 text-accent">{totalRequests}</p>
+          <p className="text-4xl font-bold mt-2 text-accent">{totalRequests.toLocaleString()}</p>
+          <div className="flex gap-3 mt-1 text-sm text-text-secondary">
+            <span className="text-green-600 dark:text-green-400">{totalSuccesses.toLocaleString()} ok</span>
+            {totalFailures > 0 && <span className="text-red-600 dark:text-red-400">{totalFailures.toLocaleString()} fail</span>}
+          </div>
         </div>
         <div className="p-6 bg-layer-3 rounded-lg border border-border">
           <h2 className="text-lg font-semibold text-text-secondary">Active Providers</h2>

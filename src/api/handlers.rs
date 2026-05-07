@@ -33,6 +33,9 @@ pub struct ProviderMetrics {
 pub struct MetricsResponse {
     pub providers: Vec<ProviderMetrics>,
     pub recent_events: Vec<serde_json::Value>,
+    pub total_requests: u64,
+    pub total_successes: u64,
+    pub total_failures: u64,
 }
 
 pub async fn health_check() -> Json<HealthResponse> {
@@ -652,9 +655,14 @@ pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<
         .map(|e| serde_json::to_value(e).unwrap_or_default())
         .collect();
 
+    let (total_requests, total_successes, total_failures) = state.metrics_store.get_total_requests();
+
     Json(MetricsResponse {
         providers: provider_metrics,
         recent_events,
+        total_requests,
+        total_successes,
+        total_failures,
     })
 }
 

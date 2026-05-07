@@ -3,6 +3,7 @@
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::{broadcast, RwLock};
 use crate::router::ModelRuntimeInfo;
@@ -266,6 +267,10 @@ pub struct MetricsStore {
     provider_runtime_info: Arc<RwLock<std::collections::HashMap<String, ModelRuntimeInfo>>>,
     max_events: usize,
     health_config: HealthConfig,
+    /// Monotonic counters for total requests (success + failure)
+    total_requests: Arc<AtomicU64>,
+    total_successes: Arc<AtomicU64>,
+    total_failures: Arc<AtomicU64>,
 }
 
 /// Type alias for MetricsStore - now cloneable with internal Arc<Mutex>
@@ -287,6 +292,9 @@ impl MetricsStore {
             provider_runtime_info: Arc::new(RwLock::new(std::collections::HashMap::new())),
             max_events,
             health_config: health_config.unwrap_or_default(),
+            total_requests: Arc::new(AtomicU64::new(0)),
+            total_successes: Arc::new(AtomicU64::new(0)),
+            total_failures: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -398,11 +406,15 @@ impl MetricsStore {
         match &event.event {
             MetricsEvent::Success => {
                 provider_health.record_success();
+                self.total_requests.fetch_add(1, AtomicOrdering::Relaxed);
+                self.total_successes.fetch_add(1, AtomicOrdering::Relaxed);
             }
             MetricsEvent::Failure(details) => {
                 let retry_after = details.retry_after_ms
                     .map(|ms| Duration::from_millis(ms));
                 provider_health.record_failure(retry_after);
+                self.total_requests.fetch_add(1, AtomicOrdering::Relaxed);
+                self.total_failures.fetch_add(1, AtomicOrdering::Relaxed);
             }
             _ => {}
         }
@@ -691,6 +703,15 @@ impl MetricsStore {
             .get(provider)
             .map(|h| h.consecutive_failures)
             .unwrap_or(0)
+    }
+
+    /// Get total request counts (success + failure) since process start
+    pub fn get_total_requests(&self) -> (u64, u64, u64) {
+        (
+            self.total_requests.load(AtomicOrdering::Relaxed),
+            self.total_successes.load(AtomicOrdering::Relaxed),
+            self.total_failures.load(AtomicOrdering::Relaxed),
+        )
     }
 
     /// Get current provider load (in-flight requests)

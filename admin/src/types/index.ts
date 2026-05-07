@@ -26,6 +26,9 @@ export interface ProviderMetricsSummary {
 export interface MetricsResponse {
   providers: ProviderMetricsSummary[]
   recent_events: Record<string, unknown>[]
+  total_requests: number
+  total_successes: number
+  total_failures: number
 }
 
 // WebSocket real-time metrics event types (matching Rust backend)
