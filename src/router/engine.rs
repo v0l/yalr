@@ -620,10 +620,9 @@ impl Router {
                         .emit_success(&provider_name, &original_model);
 
                     if let Some(tokens) = response.usage.as_ref() {
-                        let output_tokens_per_sec = tokens.completion_tokens as f32
-                            / (total_latency.as_secs_f64().max(0.001)) as f32;
-                        let input_tokens_per_sec = tokens.prompt_tokens as f32
-                            / (total_latency.as_secs_f64().max(0.001)) as f32;
+                        let latency_secs = total_latency.as_secs_f64().max(0.001);
+                        let output_tokens_per_sec = tokens.completion_tokens as f32 / latency_secs as f32;
+                        let input_tokens_per_sec = tokens.prompt_tokens as f32 / latency_secs as f32;
 
                         tracing::info!(
                             provider = %provider_name,
@@ -868,7 +867,15 @@ impl Router {
 
                             if total_tokens > 0 {
                                 let generation_time_ms = total_latency_ms.saturating_sub(ttft_ms) as f32;
-                                let output_tokens_per_sec = completion_tokens as f32 / (generation_time_ms / 1000.0).max(0.001);
+                                // Use total latency for output tok/s when generation time
+                                // is negligible (< 100ms). Short responses finish so fast
+                                // that generation_time ≈ 0 produces meaningless numbers.
+                                let effective_output_time_secs = if generation_time_ms > 100.0 {
+                                    generation_time_ms / 1000.0
+                                } else {
+                                    total_latency_ms as f32 / 1000.0
+                                };
+                                let output_tokens_per_sec = completion_tokens as f32 / effective_output_time_secs.max(0.001);
                                 let input_tokens_per_sec = prompt_tokens as f32 / (start.elapsed().as_secs_f64().max(0.001)) as f32;
 
                                 tracing::info!(
