@@ -11,22 +11,36 @@ RUN apt-get update && \
     cmake \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy manifests
+# Copy manifests first for dependency caching
 COPY Cargo.toml Cargo.lock ./
 
-# Create dummy source to cache dependencies
+# Fetch and cache dependencies (persisted via BuildKit cache mount)
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo fetch --locked
+
+# Create dummy source to build dependency artifacts
 RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/bin/server.rs && \
     echo "fn main() {}" > src/bin/cli.rs && \
-    echo "#[path = \"../lib.rs\"] mod lib {}" > src/lib.rs
+    echo "" > src/lib.rs
 
-# Build dependencies
-RUN cargo build --release
+# Pre-compile dependencies (cached across builds)
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --bin yalr-server --bin yalr-cli && \
+    rm -rf src
 
-# Copy actual source, touch to update mtimes so Cargo detects changes, then rebuild
+# Copy actual source and rebuild only the application crates
 COPY . .
-RUN find src -type f -exec touch {} + && \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    touch src/bin/server.rs src/bin/cli.rs src/lib.rs && \
     cargo build --release --bin yalr-server --bin yalr-cli
+
+# Copy built binaries out of the cache mount so they're available to later stages
+RUN --mount=type=cache,target=/app/target \
+    cp /app/target/release/yalr-server /app/target/release/yalr-cli /tmp/
 
 # Build the admin UI
 FROM oven/bun:1 AS admin-builder
@@ -50,8 +64,8 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/yalr-server /usr/local/bin/
-COPY --from=builder /app/target/release/yalr-cli /usr/local/bin/
+COPY --from=builder /tmp/yalr-server /usr/local/bin/
+COPY --from=builder /tmp/yalr-cli /usr/local/bin/
 COPY --from=admin-builder /app/admin/dist /app/admin/dist
 
 # Verify binary can run (check for missing libraries)
