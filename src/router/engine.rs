@@ -439,6 +439,11 @@ impl Router {
 
     /// Collect all candidate (provider, resolved_model) pairs for a given model,
     /// ordered by preference (available providers first, then unavailable as fallback).
+    ///
+    /// Within available providers, candidates are sorted by load: providers with
+    /// fewer in-flight requests (relative to their weight) are preferred. This
+    /// prevents a slow provider from absorbing all traffic just because the
+    /// round-robin counter keeps cycling back to it while it's still processing.
     async fn collect_candidates(
         &self,
         model: &str,
@@ -474,7 +479,9 @@ impl Router {
         // Get entries in weighted round-robin order
         let ordered = table.weighted_rr_order();
 
-        let mut available = Vec::new();
+        // Build candidate list with load information for available providers.
+        // Load score = in_flight / max(weight, 1). Lower is better.
+        let mut available: Vec<(f32, (Arc<dyn Provider>, String))> = Vec::new();
         let mut unavailable = Vec::new();
 
         for entry in ordered {
@@ -484,15 +491,28 @@ impl Router {
                 .unwrap_or_else(|| model.to_string());
             let pair = (entry.provider.clone(), resolved_model);
             if self.metrics_store.is_provider_available(entry.provider.name()).await {
-                available.push(pair);
+                let in_flight = self.metrics_store.get_in_flight(entry.provider.name()).await;
+                let weight = entry.weight.max(1) as f32;
+                let load_score = in_flight as f32 / weight;
+                available.push((load_score, pair));
             } else {
                 unavailable.push(pair);
             }
         }
 
-        // Available providers first, then unavailable as fallback
-        available.extend(unavailable);
-        available
+        // Sort available providers by load score (ascending) — least loaded first.
+        // This means a slow provider with many in-flight requests gets naturally
+        // deprioritized even if the round-robin counter picked it as primary.
+        available.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut candidates: Vec<(Arc<dyn Provider>, String)> = available
+            .into_iter()
+            .map(|(_, pair)| pair)
+            .collect();
+
+        // Unavailable providers as fallback
+        candidates.extend(unavailable);
+        candidates
     }
 
     /// Normalize chat request messages for a given provider:
@@ -1467,6 +1487,100 @@ mod tests {
         assert!(
             light_count >= 5 && light_count <= 15,
             "Expected ~10 light selections, got {light_count}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_collect_candidates_deprioritizes_loaded_provider() {
+        let (router, metrics_store) = setup_test_router().await;
+
+        let provider1 = Arc::new(OpenAiProvider::new("Slow", Some("slow"), "http://localhost:8001", Some("key")));
+        let provider2 = Arc::new(OpenAiProvider::new("Fast", Some("fast"), "http://localhost:8002", Some("key")));
+
+        // Build routing table with 3:3 weights (equal preference)
+        {
+            let mut tables = router.routing_tables.write().await;
+            tables.insert(
+                "load-test".to_string(),
+                RoutingTable::new(vec![
+                    ProviderEntry {
+                        provider: provider1.clone(),
+                        model_override: None,
+                        weight: 3,
+                    },
+                    ProviderEntry {
+                        provider: provider2.clone(),
+                        model_override: None,
+                        weight: 3,
+                    },
+                ]),
+            );
+        }
+
+        // Simulate 10 in-flight requests on "Slow" provider
+        for _ in 0..10 {
+            metrics_store.increment_in_flight("Slow").await;
+        }
+
+        // "Fast" has 0 in-flight, "Slow" has 10.
+        // Load score: Slow = 10/3 ≈ 3.33, Fast = 0/3 = 0.0
+        // Fast should always be picked first.
+        for _ in 0..10 {
+            let candidates = router.collect_candidates("load-test").await;
+            assert_eq!(
+                candidates[0].0.name(), "Fast",
+                "Less-loaded provider should be preferred over heavily loaded one"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_collect_candidates_weight_adjusts_load_tolerance() {
+        let (router, metrics_store) = setup_test_router().await;
+
+        let heavy = Arc::new(OpenAiProvider::new("Heavy", Some("heavy"), "http://localhost:8001", Some("key")));
+        let light = Arc::new(OpenAiProvider::new("Light", Some("light"), "http://localhost:8002", Some("key")));
+
+        // Heavy has weight 3, Light has weight 1
+        {
+            let mut tables = router.routing_tables.write().await;
+            tables.insert(
+                "weight-load-test".to_string(),
+                RoutingTable::new(vec![
+                    ProviderEntry {
+                        provider: heavy.clone(),
+                        model_override: None,
+                        weight: 3,
+                    },
+                    ProviderEntry {
+                        provider: light.clone(),
+                        model_override: None,
+                        weight: 1,
+                    },
+                ]),
+            );
+        }
+
+        // Heavy has 2 in-flight (load_score = 2/3 ≈ 0.67)
+        // Light has 0 in-flight (load_score = 0/1 = 0.0)
+        // Light should be preferred since it's less loaded relative to its weight
+        metrics_store.increment_in_flight("Heavy").await;
+        metrics_store.increment_in_flight("Heavy").await;
+
+        let candidates = router.collect_candidates("weight-load-test").await;
+        assert_eq!(
+            candidates[0].0.name(), "Light",
+            "Provider with lower load/weight ratio should be preferred"
+        );
+
+        // Now: Heavy has 2 in-flight (0.67), Light has 1 in-flight (1.0)
+        // Heavy should now be preferred since its load/weight is lower
+        metrics_store.increment_in_flight("Light").await;
+
+        let candidates = router.collect_candidates("weight-load-test").await;
+        assert_eq!(
+            candidates[0].0.name(), "Heavy",
+            "Provider with lower load/weight ratio should be preferred even with higher absolute in-flight"
         );
     }
 
