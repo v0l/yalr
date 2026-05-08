@@ -1,23 +1,33 @@
 use super::*;
 use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
+use reqwest::Client as HttpClient;
+use url::Url;
+use crate::router::{Modality, ModelRuntimeInfo};
 
-/// VllmProvider - A wrapper around OpenAiProvider for vLLM servers.
-/// 
-/// vLLM provides a 100% OpenAI-compatible API, so we reuse the OpenAiProvider
-/// implementation and just change the name/slug for identification.
-/// 
+/// VllmProvider - A wrapper around OpenAiProvider with vLLM-specific runtime info.
+///
+/// vLLM provides an OpenAI-compatible API but does NOT support
+/// `GET /v1/models/{model_id}` (the retrieve endpoint). Instead we fetch
+/// `GET /v1/models` and find the matching entry.
+///
 /// For more information on vLLM:
 /// - API Documentation: https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html
 #[derive(Clone)]
 pub struct VllmProvider {
     inner: OpenAiProvider,
+    http_client: HttpClient,
+    base_url: Url,
 }
 
 impl VllmProvider {
     pub fn new(name: &str, slug: Option<&str>, base_url: &str, api_key: Option<&str>) -> Self {
+        let base_url = Url::parse(base_url).expect("Invalid vLLM base URL");
+
         Self {
-            inner: OpenAiProvider::new(name, slug, base_url, api_key),
+            inner: OpenAiProvider::new(name, slug, base_url.as_str(), api_key),
+            http_client: HttpClient::new(),
+            base_url,
         }
     }
 }
@@ -57,8 +67,78 @@ impl Provider for VllmProvider {
         self.inner.health_check().await
     }
 
-    async fn get_runtime_info(&self, model_id: &str) -> Result<Option<crate::router::ModelRuntimeInfo>, ProviderError> {
-        self.inner.get_runtime_info(model_id).await
+    async fn get_runtime_info(&self, model_id: &str) -> Result<Option<ModelRuntimeInfo>, ProviderError> {
+        // vLLM doesn't support GET /v1/models/{id}, so we fetch the full
+        // model list and find the matching entry.
+        let models_url = self.base_url.join("v1/models")
+            .map_err(|e| ProviderError::Other(e.into()))?;
+
+        let response = self.http_client
+            .get(models_url.as_str())
+            .send()
+            .await
+            .map_err(|e| ProviderError::Other(e.into()))?;
+
+        if !response.status().is_success() {
+            tracing::debug!(
+                provider = self.name(),
+                status = %response.status(),
+                "vLLM /v1/models request failed"
+            );
+            return Ok(None);
+        }
+
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| ProviderError::Other(e.into()))?;
+
+        // Find the model in the list
+        let empty = Vec::new();
+        let models = body.get("data")
+            .and_then(|d| d.as_array())
+            .unwrap_or(&empty);
+
+        let model_entry = models.iter().find(|m| {
+            m.get("id").and_then(|id| id.as_str()) == Some(model_id)
+        });
+
+        let mut additional_fields = std::collections::HashMap::new();
+
+        if let Some(entry) = model_entry {
+            if let Some(obj) = entry.as_object() {
+                for (key, value) in obj {
+                    if key != "id" {
+                        additional_fields.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+
+        // Extract max_concurrency from vLLM model metadata if present
+        let max_concurrency = model_entry
+            .and_then(|m| m.get("max_concurrency"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32);
+
+        let context_length = model_entry
+            .and_then(|m| m.get("context_length"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32);
+
+        let runtime_info = ModelRuntimeInfo {
+            model_id: model_id.to_string(),
+            context_length,
+            quantization: None,
+            variant: None,
+            parameter_size: None,
+            max_output_tokens: None,
+            max_concurrency,
+            modalities: vec![Modality::Text],
+            additional_fields,
+        };
+
+        Ok(Some(runtime_info))
     }
 
     async fn responses(
