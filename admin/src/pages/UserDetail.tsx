@@ -2,6 +2,19 @@ import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { UserDetailResponse } from '../types'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Badge } from '@/components/ui/badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Separator } from '@/components/ui/separator'
+import { ArrowLeftIcon, PencilIcon, PlusIcon, CopyIcon, BanIcon, TrashIcon } from 'lucide-react'
 
 export default function UserDetail() {
   const { id } = useParams<{ id: string }>()
@@ -9,37 +22,27 @@ export default function UserDetail() {
   const [data, setData] = useState<UserDetailResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [showCreateModal, setShowCreateModal] = useState(false)
-  const [showEditModal, setShowEditModal] = useState(false)
-  const [newKeyName, setNewKeyName] = useState('')
-  const [expiresInDays, setExpiresInDays] = useState('')
-  const [creating, setCreating] = useState(false)
-  const [createdKey, setCreatedKey] = useState<string | null>(null)
-  const [editFormData, setEditFormData] = useState<{ username: string; password: string; is_admin: boolean }>({
-    username: '',
-    password: '',
-    is_admin: false,
-  })
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (id) {
-      loadUser()
-    }
-  }, [id])
+  const [editDialog, setEditDialog] = useState(false)
+  const [createKeyDialog, setCreateKeyDialog] = useState(false)
+  const [deleteKeyTarget, setDeleteKeyTarget] = useState<{ id: number; name: string } | null>(null)
+
+  const [editForm, setEditForm] = useState({ username: '', password: '', is_admin: false })
+  const [keyForm, setKeyForm] = useState({ name: '', expiresInDays: '' })
+  const [createdKey, setCreatedKey] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => { if (id) loadUser() }, [id])
 
   async function loadUser() {
     try {
       setLoading(true)
-      const userId = parseInt(id!)
-      const result = await api.getUser(userId)
+      const result = await api.getUser(parseInt(id!))
       setData(result)
       setError(null)
       if (result.user) {
-        setEditFormData({
-          username: result.user.username || '',
-          password: '',
-          is_admin: result.user.is_admin,
-        })
+        setEditForm({ username: result.user.username || '', password: '', is_admin: result.user.is_admin })
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load user')
@@ -51,75 +54,61 @@ export default function UserDetail() {
   async function handleEditSave(e: React.FormEvent) {
     e.preventDefault()
     if (!id) return
+    setSaving(true)
     try {
-      await api.updateUser(parseInt(id!), editFormData)
-      setShowEditModal(false)
-      loadUser()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update user')
-    }
-  }
-
-  async function handleDisable(keyId: number) {
-    if (!confirm('Are you sure you want to disable this API key?')) return
-    try {
-      await api.disableApiKey(keyId)
+      await api.updateUser(parseInt(id), editForm)
+      setEditDialog(false)
+      setSuccessMessage('User updated')
       loadUser()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to disable API key')
-    }
+      setError(e instanceof Error ? e.message : 'Failed to update user')
+    } finally { setSaving(false) }
   }
 
-  async function handleEnable(keyId: number) {
+  async function handleCreateKey(e: React.FormEvent) {
+    e.preventDefault()
+    if (!id) return
+    setSaving(true)
     try {
-      await api.enableApiKey(keyId)
+      const result = await api.createApiKey(keyForm.name, keyForm.expiresInDays ? parseInt(keyForm.expiresInDays) : undefined, parseInt(id))
+      setCreatedKey(result.key || null)
+      setCreateKeyDialog(false)
+      setKeyForm({ name: '', expiresInDays: '' })
+      setSuccessMessage('API key created')
       loadUser()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to enable API key')
-    }
+      setError(e instanceof Error ? e.message : 'Failed to create API key')
+    } finally { setSaving(false) }
   }
 
-  async function handleDelete(keyId: number) {
-    if (!confirm('Are you sure you want to permanently delete this API key?')) return
+  async function handleKeyAction(keyId: number, action: 'disable' | 'enable' | 'delete') {
     try {
-      await api.deleteApiKey(keyId)
+      if (action === 'disable') await api.disableApiKey(keyId)
+      else if (action === 'enable') await api.enableApiKey(keyId)
+      else await api.deleteApiKey(keyId)
+      if (action === 'delete') setDeleteKeyTarget(null)
+      setSuccessMessage(`API key ${action}d`)
       loadUser()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete API key')
-    }
-  }
-
-  function getUserTypeLabel(type: string) {
-    switch (type) {
-      case 'internal': return 'Internal'
-      case 'nostr': return 'Nostr'
-      case 'oauth': return 'OAuth'
-      default: return type
+      setError(e instanceof Error ? e.message : `Failed to ${action} API key`)
     }
   }
 
   if (loading) {
     return (
-      <div className="p-8">
-        <h1 className="text-2xl font-bold mb-6 text-text-primary">User Details</h1>
-        <p className="text-text-secondary">Loading...</p>
+      <div className="flex flex-col gap-6 p-6">
+        <div className="flex items-center gap-2"><Skeleton className="h-7 w-32" /></div>
+        <Skeleton className="h-32 w-full" />
+        <Skeleton className="h-48 w-full" />
       </div>
     )
   }
 
   if (error || !data) {
     return (
-      <div className="p-8">
-        <h1 className="text-2xl font-bold mb-6 text-text-primary">User Details</h1>
-        <div className="p-4 bg-red-100 border border-red-400 text-red-700 rounded">
-          {error || 'User not found'}
-        </div>
-        <button
-          onClick={() => navigate('/users')}
-          className="mt-4 px-4 py-2 bg-accent text-white rounded hover:bg-accent-hover"
-        >
-          Back to Users
-        </button>
+      <div className="p-6">
+        <Alert variant="destructive"><AlertDescription>{error || 'User not found'}</AlertDescription></Alert>
+        <Button variant="outline" className="mt-4" onClick={() => navigate('/users')}><ArrowLeftIcon /> Back to Users</Button>
       </div>
     )
   }
@@ -127,350 +116,168 @@ export default function UserDetail() {
   const { user, api_keys } = data
 
   return (
-    <div className="p-8">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-text-primary">User Details</h1>
-        <div className="flex gap-2">
-          <button
-            onClick={() => {
-              if (data?.user) {
-                setEditFormData({
-                  username: data.user.username || '',
-                  password: '',
-                  is_admin: data.user.is_admin,
-                })
-              }
-              setShowEditModal(true)
-            }}
-            className="px-4 py-2 bg-layer-2 text-text-primary rounded hover:bg-layer-3 border border-border"
-          >
-            Edit User
-          </button>
-          <button
-            onClick={() => navigate('/users')}
-            className="px-4 py-2 bg-layer-2 text-text-primary rounded hover:bg-layer-3 border border-border"
-          >
-            Back to Users
-          </button>
+    <div className="flex flex-col gap-6 p-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Button variant="outline" size="sm" onClick={() => navigate('/users')}><ArrowLeftIcon /> Back</Button>
+          <div>
+            <h1 className="text-2xl font-bold text-foreground">{user.username || 'User Details'}</h1>
+            <p className="text-sm text-muted-foreground">Manage user and their API keys</p>
+          </div>
         </div>
+        <Button variant="outline" size="sm" onClick={() => { setEditForm({ username: user.username || '', password: '', is_admin: user.is_admin }); setEditDialog(true) }}>
+          <PencilIcon /> Edit User
+        </Button>
       </div>
 
-      {/* User Info Card */}
-      <div className="bg-layer-3 rounded-lg border border-border p-6 mb-8">
-        <h2 className="text-lg font-semibold mb-4 text-text-primary">User Information</h2>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">ID</label>
-            <p className="text-text-primary">{user.id}</p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Username</label>
-            <p className="text-text-primary">{user.username || <span className="text-text-secondary">N/A</span>}</p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">External ID</label>
-            <p className="text-text-primary font-mono text-sm truncate" title={user.external_id || ''}>
-              {user.external_id || <span className="text-text-secondary">N/A</span>}
-            </p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">User Type</label>
-            <span className={`px-2 py-1 rounded text-xs ${
-              user.user_type === 'internal' ? 'bg-blue-100 text-blue-800' :
-              user.user_type === 'nostr' ? 'bg-purple-100 text-purple-800' :
-              'bg-green-100 text-green-800'
-            }`}>
-              {getUserTypeLabel(user.user_type)}
-            </span>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Admin</label>
-            <p className="text-text-primary">
-              {user.is_admin ? (
-                <span className="px-2 py-1 rounded text-xs bg-yellow-100 text-yellow-800">Yes</span>
-              ) : (
-                <span className="text-text-secondary">No</span>
-              )}
-            </p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Created</label>
-            <p className="text-text-primary">{new Date(user.created_at).toLocaleString()}</p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Last Updated</label>
-            <p className="text-text-primary">{new Date(user.updated_at).toLocaleString()}</p>
-          </div>
-        </div>
-      </div>
+      {successMessage && (
+        <Alert><AlertDescription className="flex items-center justify-between">{successMessage}<Button variant="ghost" size="icon-xs" onClick={() => setSuccessMessage(null)}>×</Button></AlertDescription></Alert>
+      )}
+      {error && (
+        <Alert variant="destructive"><AlertDescription className="flex items-center justify-between">{error}<Button variant="ghost" size="icon-xs" onClick={() => setError(null)}>×</Button></AlertDescription></Alert>
+      )}
 
-      {/* API Keys Card */}
-      <div className="bg-layer-3 rounded-lg border border-border p-6">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-lg font-semibold text-text-primary">API Keys</h2>
-          <button
-            onClick={() => {
-              setCreatedKey(null)
-              setNewKeyName('')
-              setExpiresInDays('')
-              setShowCreateModal(true)
-            }}
-            className="px-3 py-1 text-sm bg-accent text-white rounded hover:bg-accent-hover"
-          >
-            Create Key
-          </button>
-        </div>
+      {/* User Info */}
+      <Card>
+        <CardHeader><CardTitle>User Information</CardTitle></CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div><Label className="text-xs text-muted-foreground">ID</Label><p className="text-sm">{user.id}</p></div>
+            <div><Label className="text-xs text-muted-foreground">Username</Label><p className="text-sm">{user.username || '—'}</p></div>
+            <div><Label className="text-xs text-muted-foreground">Type</Label><Badge variant="secondary">{user.user_type}</Badge></div>
+            <div><Label className="text-xs text-muted-foreground">Admin</Label><p className="text-sm">{user.is_admin ? <Badge>Yes</Badge> : 'No'}</p></div>
+            <div><Label className="text-xs text-muted-foreground">External ID</Label><p className="text-sm font-mono truncate max-w-48" title={user.external_id || ''}>{user.external_id || '—'}</p></div>
+            <div><Label className="text-xs text-muted-foreground">Created</Label><p className="text-sm">{new Date(user.created_at).toLocaleString()}</p></div>
+            <div><Label className="text-xs text-muted-foreground">Updated</Label><p className="text-sm">{new Date(user.updated_at).toLocaleString()}</p></div>
+          </div>
+        </CardContent>
+      </Card>
 
-        {api_keys.length === 0 ? (
-          <p className="text-text-secondary text-center py-8">No API keys for this user</p>
-        ) : (
-          <div className="overflow-hidden rounded border border-border">
-            <table className="w-full">
-              <thead className="bg-layer-2 border-b border-border">
-                <tr>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-text-secondary">Name</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-text-secondary">Last Four</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-text-secondary">Created</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-text-secondary">Expires</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-text-secondary">Status</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-text-secondary">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {api_keys.map((key) => (
-                  <tr key={key.id}>
-                    <td className="px-4 py-3 text-sm font-medium text-text-primary">{key.name}</td>
-                    <td className="px-4 py-3 text-sm font-mono text-text-secondary">...{key.last_four}</td>
-                    <td className="px-4 py-3 text-sm text-text-secondary">
-                      {new Date(key.created_at).toLocaleDateString()}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-text-secondary">
-                      {key.expires_at ? new Date(key.expires_at).toLocaleDateString() : 'Never'}
-                    </td>
-                    <td className="px-4 py-3 text-sm">
-                      <span className={`px-2 py-1 rounded text-xs ${
-                        key.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                      }`}>
-                        {key.is_active ? 'Active' : 'Inactive'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-sm">
-                      <div className="flex gap-2">
-                        {key.is_active ? (
+      <Separator />
+
+      {/* API Keys */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>API Keys</CardTitle>
+          <Button size="sm" onClick={() => { setCreateKeyDialog(true); setCreatedKey(null); setKeyForm({ name: '', expiresInDays: '' }) }}>
+            <PlusIcon /> Create Key
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {api_keys.length === 0 ? (
+            <p className="text-muted-foreground text-sm text-center py-8">No API keys for this user</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Last Four</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead>Expires</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="w-28 text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {api_keys.map((k) => (
+                  <TableRow key={k.id}>
+                    <TableCell className="font-medium">{k.name}</TableCell>
+                    <TableCell className="font-mono text-sm text-muted-foreground">...{k.last_four}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{new Date(k.created_at).toLocaleDateString()}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{k.expires_at ? new Date(k.expires_at).toLocaleDateString() : 'Never'}</TableCell>
+                    <TableCell><Badge variant={k.is_active ? 'default' : 'secondary'}>{k.is_active ? 'Active' : 'Inactive'}</Badge></TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        {k.is_active ? (
                           <>
-                            <button
-                              onClick={() => handleDisable(key.id)}
-                              className="px-2 py-1 text-xs bg-yellow-500 text-white rounded hover:bg-yellow-600"
-                            >
-                              Disable
-                            </button>
-                            <button
-                              onClick={() => handleDelete(key.id)}
-                              className="px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600"
-                            >
-                              Delete
-                            </button>
+                            <Button variant="ghost" size="icon-xs" onClick={() => handleKeyAction(k.id, 'disable')} title="Disable"><BanIcon /></Button>
+                            <Button variant="ghost" size="icon-xs" onClick={() => { setDeleteKeyTarget({ id: k.id, name: k.name }) }} title="Delete"><TrashIcon /></Button>
                           </>
                         ) : (
                           <>
-                            <button
-                              onClick={() => handleEnable(key.id)}
-                              className="px-2 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600"
-                            >
-                              Enable
-                            </button>
-                            <button
-                              onClick={() => handleDelete(key.id)}
-                              className="px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600"
-                            >
-                              Delete
-                            </button>
+                            <Button variant="ghost" size="icon-xs" onClick={() => handleKeyAction(k.id, 'enable')} title="Enable"><BanIcon /></Button>
+                            <Button variant="ghost" size="icon-xs" onClick={() => { setDeleteKeyTarget({ id: k.id, name: k.name }) }} title="Delete"><TrashIcon /></Button>
                           </>
                         )}
                       </div>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
 
-      {/* Create API Key Modal */}
-      {showCreateModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-layer-3 rounded-lg p-6 w-full max-w-md border border-border">
-            <h2 className="text-xl font-bold mb-4 text-text-primary">Create API Key</h2>
-            
-            <form onSubmit={async (e) => {
-              e.preventDefault()
-              if (!id) return
-              setCreating(true)
-              try {
-                const key = await api.createApiKey(newKeyName, expiresInDays ? parseInt(expiresInDays) : undefined, parseInt(id!))
-                setCreatedKey(key.key || null)
-                setShowCreateModal(false)
-                setNewKeyName('')
-                setExpiresInDays('')
-                loadUser()
-              } catch (err) {
-                setError(err instanceof Error ? err.message : 'Failed to create API key')
-              } finally {
-                setCreating(false)
-              }
-            }}>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-text-secondary mb-1">Key Name</label>
-                  <input
-                    type="text"
-                    value={newKeyName}
-                    onChange={(e) => setNewKeyName(e.target.value)}
-                    className="w-full px-3 py-2 bg-layer-1 border border-border rounded text-text-primary focus:outline-none focus:ring-2 focus:ring-accent"
-                    placeholder="My API Key"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-text-secondary mb-1">Expires In (days, optional)</label>
-                  <input
-                    type="number"
-                    value={expiresInDays}
-                    onChange={(e) => setExpiresInDays(e.target.value)}
-                    className="w-full px-3 py-2 bg-layer-1 border border-border rounded text-text-primary focus:outline-none focus:ring-2 focus:ring-accent"
-                    placeholder="30"
-                    min="1"
-                  />
-                </div>
-              </div>
+      {/* Edit User Dialog */}
+      <Dialog open={editDialog} onOpenChange={(o) => { if (!o) setEditDialog(false) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit User</DialogTitle>
+            <DialogDescription>Update user settings.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleEditSave} className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5"><Label htmlFor="ed-name">Username</Label><Input id="ed-name" value={editForm.username} onChange={(e) => setEditForm({ ...editForm, username: e.target.value })} /></div>
+            <div className="flex flex-col gap-1.5"><Label htmlFor="ed-pass">New Password</Label><Input id="ed-pass" type="password" value={editForm.password} onChange={(e) => setEditForm({ ...editForm, password: e.target.value })} placeholder="Leave empty to keep current" /></div>
+            <div className="flex items-center gap-2"><Checkbox id="ed-admin" checked={editForm.is_admin} onCheckedChange={(c) => setEditForm({ ...editForm, is_admin: !!c })} /><Label htmlFor="ed-admin">Admin user</Label></div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setEditDialog(false)} disabled={saving}>Cancel</Button>
+              <Button type="submit" disabled={saving}>{saving ? 'Saving...' : 'Update'}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
-              <div className="flex justify-end gap-3 mt-6">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowCreateModal(false)
-                    setCreatedKey(null)
-                    setNewKeyName('')
-                    setExpiresInDays('')
-                  }}
-                  className="px-4 py-2 text-text-secondary hover:text-text-primary"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={creating}
-                  className="px-4 py-2 bg-accent text-white rounded hover:bg-accent-hover disabled:opacity-50"
-                >
-                  {creating ? 'Creating...' : 'Create Key'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {/* Create API Key Dialog */}
+      <Dialog open={createKeyDialog} onOpenChange={(o) => { if (!o) setCreateKeyDialog(false) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create API Key</DialogTitle>
+            <DialogDescription>Create a new API key for this user.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleCreateKey} className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5"><Label htmlFor="k-name">Key Name</Label><Input id="k-name" value={keyForm.name} onChange={(e) => setKeyForm({ ...keyForm, name: e.target.value })} required /></div>
+            <div className="flex flex-col gap-1.5"><Label htmlFor="k-exp">Expires In (days)</Label><Input id="k-exp" type="number" min={1} value={keyForm.expiresInDays} onChange={(e) => setKeyForm({ ...keyForm, expiresInDays: e.target.value })} placeholder="Optional" /></div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setCreateKeyDialog(false)} disabled={saving}>Cancel</Button>
+              <Button type="submit" disabled={saving}>{saving ? 'Creating...' : 'Create Key'}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
-      {/* Edit User Modal */}
-      {showEditModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-layer-3 rounded-lg p-6 w-full max-w-md border border-border">
-            <h2 className="text-xl font-bold mb-4 text-text-primary">Edit User</h2>
-            
-            <form onSubmit={handleEditSave}>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-text-secondary mb-1">
-                    Username
-                  </label>
-                  <input
-                    type="text"
-                    value={editFormData.username}
-                    onChange={(e) => setEditFormData({ ...editFormData, username: e.target.value })}
-                    className="w-full px-3 py-2 bg-layer-1 border border-border rounded text-text-primary focus:outline-none focus:ring-2 focus:ring-accent"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-text-secondary mb-1">
-                    New Password (leave empty to keep current)
-                  </label>
-                  <input
-                    type="password"
-                    value={editFormData.password}
-                    onChange={(e) => setEditFormData({ ...editFormData, password: e.target.value })}
-                    className="w-full px-3 py-2 bg-layer-1 border border-border rounded text-text-primary focus:outline-none focus:ring-2 focus:ring-accent"
-                    placeholder="Enter new password"
-                  />
-                </div>
-
-                <div className="flex items-center">
-                  <input
-                    type="checkbox"
-                    id="edit_is_admin"
-                    checked={editFormData.is_admin}
-                    onChange={(e) => setEditFormData({ ...editFormData, is_admin: e.target.checked })}
-                    className="mr-2"
-                  />
-                  <label htmlFor="edit_is_admin" className="text-sm font-medium text-text-secondary">
-                    Admin user
-                  </label>
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-3 mt-6">
-                <button
-                  type="button"
-                  onClick={() => setShowEditModal(false)}
-                  className="px-4 py-2 text-text-secondary hover:text-text-primary"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-accent text-white rounded hover:bg-accent-hover"
-                >
-                  Update
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {/* Delete Key Confirmation */}
+      <AlertDialog open={!!deleteKeyTarget} onOpenChange={(o) => { if (!o) setDeleteKeyTarget(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete API Key</AlertDialogTitle>
+            <AlertDialogDescription>Permanently delete API key <span className="font-medium text-foreground">{deleteKeyTarget?.name}</span>?</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => handleKeyAction(deleteKeyTarget!.id, 'delete')}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Show created key */}
       {createdKey && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-layer-3 rounded-lg p-6 w-full max-w-md border border-border">
-            <h2 className="text-xl font-bold mb-4 text-text-primary">API Key Created</h2>
-            <div className="mb-4 p-4 bg-green-100 border border-green-400 text-green-700 rounded">
-              <p className="font-semibold mb-2">Your new API key:</p>
+        <Dialog open={!!createdKey} onOpenChange={() => setCreatedKey(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>API Key Created</DialogTitle>
+              <DialogDescription>Copy this key now — it won&apos;t be shown again.</DialogDescription>
+            </DialogHeader>
+            <div className="flex flex-col gap-4">
               <div className="flex items-center gap-2">
-                <code className="flex-1 p-2 bg-white rounded font-mono text-sm">{createdKey}</code>
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(createdKey)
-                    alert('Copied!')
-                  }}
-                  className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 text-sm"
-                >
-                  Copy
-                </button>
+                <code className="flex-1 rounded border bg-muted p-2 font-mono text-sm break-all">{createdKey}</code>
+                <Button variant="outline" size="icon-sm" onClick={() => { navigator.clipboard.writeText(createdKey); setSuccessMessage('Copied!') }}><CopyIcon /></Button>
               </div>
-              <p className="text-sm mt-2 text-green-600">
-                Copy this key now - it won't be shown again!
-              </p>
+              <Button onClick={() => setCreatedKey(null)}>Done</Button>
             </div>
-            <div className="flex justify-end">
-              <button
-                onClick={() => setCreatedKey(null)}
-                className="px-4 py-2 bg-accent text-white rounded hover:bg-accent-hover"
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   )

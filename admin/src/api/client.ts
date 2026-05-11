@@ -151,6 +151,36 @@ export const api = {
     return request('/v1/models')
   },
 
+  async getHealthOverview(): Promise<import('../types').HealthOverviewResponse> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/metrics/health`, { headers })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to fetch health overview')
+    }
+    
+    return response.json()
+  },
+
+  async getMetricsHistory(): Promise<import('../types').MetricsSnapshot[]> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/metrics/history`, { headers })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to fetch metrics history')
+    }
+    
+    return response.json()
+  },
+
   async getMetrics(): Promise<MetricsResponse> {
     const headers = await getAuthHeaders()
     const response = await fetch(`${API_BASE_URL}/api/metrics`, { headers })
@@ -372,6 +402,21 @@ export const api = {
     
     const data = await response.json()
     return data.providers
+  },
+
+  async getProviderModels(slug: string): Promise<{ provider: string; models: { id: string; created: number; owned_by: string }[]; total_count: number }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/providers/${slug}/models`, { headers })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new Error('Failed to fetch provider models')
+    }
+    
+    return response.json()
   },
 
   async addProviderToConfig(data: RoutingConfigProviderCreateRequest): Promise<{ message: string }> {

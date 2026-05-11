@@ -1,6 +1,11 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 
 export default function Setup() {
   const navigate = useNavigate()
@@ -30,57 +35,37 @@ export default function Setup() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-layer-1">
-      <div className="max-w-md w-full p-8 bg-layer-3 rounded-lg border border-border shadow-lg">
-        <h1 className="text-2xl font-bold mb-2 text-text-primary text-center">YALR Admin</h1>
-        <h2 className="text-lg font-semibold mb-6 text-text-secondary text-center">Setup Admin User</h2>
-        
-        {error && (
-          <div className="mb-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded text-sm">
-            {error}
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Username</label>
-            <input
-              type="text"
-              value={formData.username}
-              onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-              className="w-full px-3 py-2 bg-layer-4 border border-border rounded text-text-primary focus:outline-none focus:ring-2 focus:ring-accent"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Password</label>
-            <input
-              type="password"
-              value={formData.password}
-              onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-              className="w-full px-3 py-2 bg-layer-4 border border-border rounded text-text-primary focus:outline-none focus:ring-2 focus:ring-accent"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Confirm Password</label>
-            <input
-              type="password"
-              value={formData.confirmPassword}
-              onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
-              className="w-full px-3 py-2 bg-layer-4 border border-border rounded text-text-primary focus:outline-none focus:ring-2 focus:ring-accent"
-              required
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full px-4 py-2 bg-accent text-white rounded hover:bg-accent-hover disabled:opacity-50"
-          >
-            {loading ? 'Creating user...' : 'Create Admin User'}
-          </button>
-        </form>
-      </div>
+    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+      <Card className="w-full max-w-sm">
+        <CardHeader className="text-center">
+          <CardTitle className="text-xl">YALR Admin</CardTitle>
+          <CardDescription>Setup your admin account</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {error && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="s-username">Username</Label>
+              <Input id="s-username" type="text" value={formData.username} onChange={(e) => setFormData({ ...formData, username: e.target.value })} required />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="s-password">Password</Label>
+              <Input id="s-password" type="password" value={formData.password} onChange={(e) => setFormData({ ...formData, password: e.target.value })} required />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="s-confirm">Confirm Password</Label>
+              <Input id="s-confirm" type="password" value={formData.confirmPassword} onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })} required />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? 'Creating user...' : 'Create Admin User'}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
     </div>
   )
 }

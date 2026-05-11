@@ -4,8 +4,19 @@ use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use tokio::sync::{broadcast, RwLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::{RwLock, broadcast};
+use tokio::task::JoinHandle;
 use crate::router::ModelRuntimeInfo;
+
+type InstantMillis = u64;
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
 
 /// Provider metrics data point with timestamp and event
 #[derive(Debug, Clone, Serialize)]
@@ -103,10 +114,7 @@ impl MetricsEmitter {
 
     fn emit(&self, provider: String, model: String, event: MetricsEvent) {
         let metrics = ProviderMetrics {
-            timestamp_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
+            timestamp_ms: now_ms(),
             provider: provider.clone(),
             model: model.clone(),
             event: event.clone(),
@@ -256,8 +264,6 @@ impl MetricsReceiver {
     }
 }
 
-use std::time::{Duration, Instant};
-
 /// Summary of provider metrics for routing decisions
 #[derive(Debug, Clone)]
 pub struct ProviderMetricsSummary {
@@ -286,7 +292,7 @@ pub struct ModelMetricsSummary {
 pub struct MetricsStore {
     emitter: MetricsEmitter,
     /// Store recent events for percentile calculations (wrapped in Arc<Mutex> for shared access)
-    events: Arc<Mutex<VecDeque<ProviderMetrics>>>,
+    pub(crate) events: Arc<Mutex<VecDeque<ProviderMetrics>>>,
     /// Track provider health states
     provider_health: Arc<RwLock<std::collections::HashMap<String, ProviderHealthState>>>,
     /// Track per-provider in-flight request counts
@@ -295,10 +301,34 @@ pub struct MetricsStore {
     provider_runtime_info: Arc<RwLock<std::collections::HashMap<String, ModelRuntimeInfo>>>,
     max_events: usize,
     health_config: HealthConfig,
+    /// History snapshots for graphing (timestamp -> list of provider+model metric snapshots)
+    history: Arc<RwLock<VecDeque<MetricsSnapshot>>>,
+    max_history_snapshots: usize,
 }
 
 /// Type alias for MetricsStore - now cloneable with internal Arc<Mutex>
 pub type SharedMetricsStore = MetricsStore;
+
+/// Snapshot of provider+model metrics at a point in time (for history/graphing)
+#[derive(Debug, Clone, Serialize)]
+pub struct MetricsSnapshot {
+    pub timestamp_ms: u64,
+    pub providers: Vec<ProviderMetricSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderMetricSnapshot {
+    pub provider: String,
+    pub model: String,
+    pub p50_ttft_ms: Option<u32>,
+    pub p90_ttft_ms: Option<u32>,
+    pub p50_output_tps: Option<f32>,
+    pub p90_output_tps: Option<f32>,
+    pub p50_input_tps: Option<f32>,
+    pub p90_input_tps: Option<f32>,
+    pub avg_latency_ms: Option<f32>,
+    pub success_rate: Option<f32>,
+}
 
 impl MetricsStore {
     pub fn new(max_events: usize) -> Self {
@@ -308,6 +338,7 @@ impl MetricsStore {
     pub fn with_health_config(max_events: usize, health_config: Option<HealthConfig>) -> Self {
         let events = Arc::new(Mutex::new(VecDeque::with_capacity(max_events)));
         let emitter = MetricsEmitter::with_store(10000, events.clone(), max_events);
+        let history_max = 288; // 24 hours at 5-minute intervals
         Self {
             emitter,
             events,
@@ -316,6 +347,8 @@ impl MetricsStore {
             provider_runtime_info: Arc::new(RwLock::new(std::collections::HashMap::new())),
             max_events,
             health_config: health_config.unwrap_or_default(),
+            history: Arc::new(RwLock::new(VecDeque::with_capacity(history_max))),
+            max_history_snapshots: history_max,
         }
     }
 
@@ -541,6 +574,79 @@ impl MetricsStore {
             .take(n)
             .cloned()
             .collect()
+    }
+
+    /// Take a snapshot of current provider+model metrics and append to history
+    pub async fn take_snapshot(&self) {
+        let now = now_ms();
+        
+        let provider_snapshots: Vec<ProviderMetricSnapshot> = {
+            let events = self.events.lock().unwrap();
+            let mut groups: std::collections::HashMap<String, Vec<&ProviderMetrics>> = std::collections::HashMap::new();
+            for e in events.iter() {
+                let key = format!("{}\0{}", e.provider, e.model);
+                groups.entry(key).or_default().push(e);
+            }
+            
+            groups.into_iter().filter_map(|(key, evts)| {
+                let parts: Vec<&str> = key.splitn(2, '\0').collect();
+                if parts.len() != 2 { return None; }
+                let provider = parts[0].to_string();
+                let model = parts[1].to_string();
+                
+                let ttft_vals: Vec<u32> = evts.iter().filter_map(|e| match &e.event { MetricsEvent::TTFT(v) => Some(*v), _ => None }).collect();
+                let out_tps_vals: Vec<f32> = evts.iter().filter_map(|e| match &e.event { MetricsEvent::OutputTokensPerSecond(v) => Some(*v), _ => None }).collect();
+                let in_tps_vals: Vec<f32> = evts.iter().filter_map(|e| match &e.event { MetricsEvent::InputTokensPerSecond(v) => Some(*v), _ => None }).collect();
+                let lat_vals: Vec<f32> = evts.iter().filter_map(|e| match &e.event { MetricsEvent::TotalLatency(v) => Some(*v as f32), _ => None }).collect();
+                
+                let outcomes: Vec<&&ProviderMetrics> = evts.iter().filter(|e| matches!(e.event, MetricsEvent::Success | MetricsEvent::Failure(_))).collect();
+                let successes = outcomes.iter().filter(|e| matches!(e.event, MetricsEvent::Success)).count();
+                let total_outcomes = outcomes.len();
+                
+                if outcomes.is_empty() {
+                    return None;
+                }
+                
+                Some(ProviderMetricSnapshot {
+                    provider,
+                    model,
+                    p50_ttft_ms: percentile(&ttft_vals, 0.50),
+                    p90_ttft_ms: percentile(&ttft_vals, 0.90),
+                    p50_output_tps: percentile(&out_tps_vals, 0.50),
+                    p90_output_tps: percentile(&out_tps_vals, 0.90),
+                    p50_input_tps: percentile(&in_tps_vals, 0.50),
+                    p90_input_tps: percentile(&in_tps_vals, 0.90),
+                    avg_latency_ms: if lat_vals.is_empty() { None } else { Some(lat_vals.iter().sum::<f32>() / lat_vals.len() as f32) },
+                    success_rate: if total_outcomes == 0 { None } else { Some(successes as f32 / total_outcomes as f32) },
+                })
+            }).collect()
+        };
+        
+        let snapshot = MetricsSnapshot { timestamp_ms: now, providers: provider_snapshots };
+        let mut history = self.history.write().await;
+        history.push_back(snapshot);
+        while history.len() > self.max_history_snapshots {
+            history.pop_front();
+        }
+    }
+
+    /// Get history snapshots (for graphing in admin UI)
+    pub async fn get_history(&self) -> Vec<MetricsSnapshot> {
+        let history = self.history.read().await;
+        history.iter().cloned().collect()
+    }
+
+    /// Start background task to take periodic snapshots for history
+    pub fn start_history_snapshots(&self, interval_secs: u64) -> JoinHandle<()> {
+        let store = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                store.take_snapshot().await;
+            }
+        })
     }
 
     /// Compute metrics summary from events (internal helper)
@@ -903,7 +1009,8 @@ mod health_tests {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum HealthState {
     Healthy,
     Degraded,

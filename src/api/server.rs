@@ -52,7 +52,7 @@ pub async fn run_with_shutdown<F>(
     config: AppConfig, 
     addr: &str,
     metrics_emitter: MetricsEmitter,
-    metrics_store: MetricsStore,
+    metrics_store: std::sync::Arc<MetricsStore>,
     _shutdown: F,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_store = Arc::new(SessionStore::new());
@@ -87,6 +87,8 @@ pub async fn run_with_shutdown<F>(
         .route("/providers/:slug", put(handlers::update_provider))
         .route("/providers/:slug", delete(handlers::delete_provider))
         .route("/metrics", get(handlers::get_metrics))
+        .route("/metrics/history", get(handlers::get_metrics_history))
+        .route("/metrics/health", get(handlers::get_health_overview))
         .route("/config", get(handlers::get_router_config))
         .route("/routing-configs", get(handlers::list_routing_configs))
         .route("/routing-configs", post(handlers::create_routing_config))
@@ -95,6 +97,7 @@ pub async fn run_with_shutdown<F>(
         .route("/routing-configs/providers", post(handlers::create_routing_config_provider))
         .route("/routing-configs/providers/:id", put(handlers::update_routing_config_provider))
         .route("/routing-configs/providers/:id", delete(handlers::delete_routing_config_provider))
+        .route("/providers/:slug/models", get(handlers::list_provider_models))
         .route("/models/sync/:provider_slug", get(handlers::sync_provider_models))
         .route("/models/discrepancies", post(handlers::detect_model_discrepancies))
         .route("/api-keys", get(list_api_keys))
@@ -147,7 +150,7 @@ pub async fn run(
     config: AppConfig, 
     addr: &str,
     metrics_emitter: MetricsEmitter,
-    metrics_store: MetricsStore,
+    metrics_store: std::sync::Arc<MetricsStore>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use tokio::signal;
     let shutdown = signal::ctrl_c();
@@ -179,6 +182,8 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/providers/:slug", put(handlers::update_provider))
         .route("/providers/:slug", delete(handlers::delete_provider))
         .route("/metrics", get(handlers::get_metrics))
+        .route("/metrics/history", get(handlers::get_metrics_history))
+        .route("/metrics/health", get(handlers::get_health_overview))
         .route("/config", get(handlers::get_router_config))
         .route("/routing-configs", get(handlers::list_routing_configs))
         .route("/routing-configs", post(handlers::create_routing_config))
@@ -187,6 +192,7 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/routing-configs/providers", post(handlers::create_routing_config_provider))
         .route("/routing-configs/providers/:id", put(handlers::update_routing_config_provider))
         .route("/routing-configs/providers/:id", delete(handlers::delete_routing_config_provider))
+        .route("/providers/:slug/models", get(handlers::list_provider_models))
         .route("/models/sync/:provider_slug", get(handlers::sync_provider_models))
         .route("/models/discrepancies", post(handlers::detect_model_discrepancies))
         .route("/api-keys", get(list_api_keys))

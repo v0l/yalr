@@ -1,33 +1,55 @@
 import { useEffect, useState } from 'react'
+import { PlusIcon, PencilIcon, TrashIcon } from 'lucide-react'
 import { api } from '../api/client'
 import type { Provider } from '../types'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Badge } from '@/components/ui/badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Card, CardContent } from '@/components/ui/card'
+
+type ProviderFormData = {
+  name: string
+  slug: string
+  base_url: string
+  api_key: string
+  provider_type: string
+}
+
+const emptyForm: ProviderFormData = {
+  name: '',
+  slug: '',
+  base_url: '',
+  api_key: '',
+  provider_type: 'openai',
+}
 
 export default function Providers() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [formData, setFormData] = useState({
-    name: '',
-    slug: '',
-    base_url: '',
-    api_key: '',
-    provider_type: 'openai',
-  })
-  const [editingProvider, setEditingProvider] = useState<Provider | null>(null)
-  const [editFormData, setEditFormData] = useState({
-    name: '',
-    slug: '',
-    base_url: '',
-    api_key: '',
-    provider_type: 'openai',
-  })
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
 
-  useEffect(() => {
-    loadProviders()
-  }, [])
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [editingProvider, setEditingProvider] = useState<Provider | null>(null)
+  const [form, setForm] = useState<ProviderFormData>({ ...emptyForm })
+  const [saving, setSaving] = useState(false)
+
+  const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null)
+  const [deleting, setDeleting] = useState(false)
+
+  useEffect(() => { loadProviders() }, [])
 
   async function loadProviders() {
     try {
+      setLoading(true)
+      setError(null)
       const data = await api.getProviders()
       setProviders(data.providers)
     } catch (e) {
@@ -37,284 +59,263 @@ export default function Providers() {
     }
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    try {
-      await api.createProvider(formData)
-      setFormData({ name: '', slug: '', base_url: '', api_key: '', provider_type: 'openai' })
-      loadProviders()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create provider')
-    }
+  function openCreate() {
+    setEditingProvider(null)
+    setForm({ ...emptyForm })
+    setDialogOpen(true)
   }
 
-  async function handleDelete(slug: string) {
-    try {
-      await api.deleteProvider(slug)
-      loadProviders()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete provider')
-    }
-  }
-
-  function startEdit(provider: Provider) {
+  function openEdit(provider: Provider) {
     setEditingProvider(provider)
-    setEditFormData({
+    setForm({
       name: provider.name,
       slug: provider.slug,
       base_url: provider.base_url,
       api_key: '',
       provider_type: provider.provider_type,
     })
+    setDialogOpen(true)
   }
 
-  function cancelEdit() {
-    setEditingProvider(null)
-    setEditFormData({
-      name: '',
-      slug: '',
-      base_url: '',
-      api_key: '',
-      provider_type: 'openai',
-    })
-  }
-
-  async function handleUpdate(e: React.FormEvent) {
+  async function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    if (!editingProvider) return
+    setSaving(true)
+    setError(null)
     try {
-      const updateData: Record<string, string> = {}
-      if (editFormData.name !== editingProvider.name) updateData.name = editFormData.name
-      if (editFormData.slug !== editingProvider.slug) updateData.slug = editFormData.slug
-      if (editFormData.base_url !== editingProvider.base_url) updateData.base_url = editFormData.base_url
-      if (editFormData.api_key) updateData.api_key = editFormData.api_key
-      if (editFormData.provider_type !== editingProvider.provider_type) updateData.provider_type = editFormData.provider_type
-
-      await api.updateProvider(editingProvider.slug, updateData)
-      setEditingProvider(null)
+      if (editingProvider) {
+        const updateData: Record<string, string> = {}
+        if (form.name !== editingProvider.name) updateData.name = form.name
+        if (form.slug !== editingProvider.slug) updateData.slug = form.slug
+        if (form.base_url !== editingProvider.base_url) updateData.base_url = form.base_url
+        if (form.api_key) updateData.api_key = form.api_key
+        if (form.provider_type !== editingProvider.provider_type) updateData.provider_type = form.provider_type
+        await api.updateProvider(editingProvider.slug, updateData)
+        setSuccessMessage('Provider updated successfully')
+      } else {
+        await api.createProvider(form)
+        setSuccessMessage('Provider created successfully')
+      }
+      setDialogOpen(false)
       loadProviders()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update provider')
+      setError(e instanceof Error ? e.message : 'Failed to save provider')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      await api.deleteProvider(deleteTarget.slug)
+      setDeleteTarget(null)
+      setSuccessMessage('Provider deleted successfully')
+      loadProviders()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete provider')
+    } finally {
+      setDeleting(false)
     }
   }
 
   if (loading) {
     return (
-      <div className="p-8">
-        <h1 className="text-2xl font-bold mb-6 text-text-primary">Providers</h1>
-        <p className="text-text-secondary">Loading...</p>
+      <div className="flex flex-col gap-6 p-6">
+        <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-1">
+            <Skeleton className="h-7 w-28" />
+            <Skeleton className="h-4 w-48" />
+          </div>
+          <Skeleton className="h-8 w-32" />
+        </div>
+        <Skeleton className="h-64 w-full" />
       </div>
     )
   }
 
   return (
-    <div className="p-8">
-      <h1 className="text-2xl font-bold mb-6 text-text-primary">Providers</h1>
-
-      {error && (
-        <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded">
-          Error: {error}
+    <div className="flex flex-col gap-6 p-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Providers</h1>
+          <p className="text-sm text-muted-foreground">Manage LLM provider connections</p>
         </div>
-      )}
-
-      <form onSubmit={handleSubmit} className="mb-8 p-6 bg-layer-3 rounded-lg border border-border">
-        <h2 className="text-lg font-semibold mb-4 text-text-primary">Add Provider</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Name</label>
-            <input
-              type="text"
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              className="w-full px-3 py-2 bg-layer-4 border border-border rounded text-text-primary"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Slug</label>
-            <input
-              type="text"
-              value={formData.slug}
-              onChange={(e) => setFormData({ ...formData, slug: e.target.value })}
-              className="w-full px-3 py-2 bg-layer-4 border border-border rounded text-text-primary"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Provider Type</label>
-            <select
-              value={formData.provider_type}
-              onChange={(e) => setFormData({ ...formData, provider_type: e.target.value })}
-              className="w-full px-3 py-2 bg-layer-4 border border-border rounded text-text-primary"
-              required
-            >
-              <option value="openai">OpenAI</option>
-              <option value="llamacpp">LlamaCpp</option>
-              <option value="vllm">vLLM</option>
-              <option value="ollama">Ollama</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Base URL</label>
-            <input
-              type="url"
-              value={formData.base_url}
-              onChange={(e) => setFormData({ ...formData, base_url: e.target.value })}
-              className="w-full px-3 py-2 bg-layer-4 border border-border rounded text-text-primary"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">API Key</label>
-            <input
-              type="password"
-              value={formData.api_key}
-              onChange={(e) => setFormData({ ...formData, api_key: e.target.value })}
-              className="w-full px-3 py-2 bg-layer-4 border border-border rounded text-text-primary"
-              required
-            />
-          </div>
-        </div>
-        <button
-          type="submit"
-          className="mt-4 px-4 py-2 bg-accent text-white rounded hover:bg-accent-hover"
-        >
+        <Button onClick={openCreate}>
+          <PlusIcon />
           Add Provider
-        </button>
-      </form>
+        </Button>
+      </div>
 
-      {editingProvider && (
-        <form onSubmit={handleUpdate} className="mb-8 p-6 bg-layer-3 rounded-lg border border-border border-yellow-500">
-          <h2 className="text-lg font-semibold mb-4 text-text-primary">Edit Provider</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-text-secondary mb-1">Name</label>
-              <input
-                type="text"
-                value={editFormData.name}
-                onChange={(e) => setEditFormData({ ...editFormData, name: e.target.value })}
-                className="w-full px-3 py-2 bg-layer-4 border border-border rounded text-text-primary"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-text-secondary mb-1">Slug</label>
-              <input
-                type="text"
-                value={editFormData.slug}
-                onChange={(e) => setEditFormData({ ...editFormData, slug: e.target.value })}
-                className="w-full px-3 py-2 bg-layer-4 border border-border rounded text-text-primary"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-text-secondary mb-1">Provider Type</label>
-              <select
-                value={editFormData.provider_type}
-                onChange={(e) => setEditFormData({ ...editFormData, provider_type: e.target.value })}
-                className="w-full px-3 py-2 bg-layer-4 border border-border rounded text-text-primary"
-                required
-              >
-                <option value="openai">OpenAI</option>
-                <option value="llamacpp">LlamaCpp</option>
-                <option value="vllm">vLLM</option>
-                <option value="ollama">Ollama</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-text-secondary mb-1">Base URL</label>
-              <input
-                type="url"
-                value={editFormData.base_url}
-                onChange={(e) => setEditFormData({ ...editFormData, base_url: e.target.value })}
-                className="w-full px-3 py-2 bg-layer-4 border border-border rounded text-text-primary"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-text-secondary mb-1">API Key (leave blank to keep current)</label>
-              <input
-                type="password"
-                value={editFormData.api_key}
-                onChange={(e) => setEditFormData({ ...editFormData, api_key: e.target.value })}
-                className="w-full px-3 py-2 bg-layer-4 border border-border rounded text-text-primary"
-                placeholder="Leave blank to keep current API key"
-              />
-            </div>
-          </div>
-          <div className="mt-4 flex gap-2">
-            <button
-              type="submit"
-              className="px-4 py-2 bg-accent text-white rounded hover:bg-accent-hover"
-            >
-              Update Provider
-            </button>
-            <button
-              type="button"
-              onClick={cancelEdit}
-              className="px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
+      {/* Messages */}
+      {successMessage && (
+        <Alert>
+          <AlertDescription className="flex items-center justify-between">
+            {successMessage}
+            <Button variant="ghost" size="icon-xs" onClick={() => setSuccessMessage(null)}>×</Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription className="flex items-center justify-between">
+            {error}
+            <Button variant="ghost" size="icon-xs" onClick={() => setError(null)}>×</Button>
+          </AlertDescription>
+        </Alert>
       )}
 
-      <div className="bg-layer-3 rounded-lg border border-border overflow-hidden">
-        <table className="min-w-full divide-y divide-border">
-          <thead className="bg-layer-2">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
-                Name
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
-                Slug
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
-                Type
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
-                Base URL
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
-                Actions
-              </th>
-            </tr>
-          </thead>
-          <tbody className="bg-layer-3 divide-y divide-border">
-            {providers.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-6 py-4 text-center text-text-secondary">
-                  No providers configured
-                </td>
-              </tr>
-            ) : (
-              providers.map((provider) => (
-                <tr key={provider.slug}>
-                  <td className="px-6 py-4 text-text-primary">{provider.name}</td>
-                  <td className="px-6 py-4 text-text-secondary">{provider.slug}</td>
-                  <td className="px-6 py-4 text-text-secondary">{provider.provider_type}</td>
-                  <td className="px-6 py-4 text-text-secondary">{provider.base_url}</td>
-                  <td className="px-6 py-4">
-                    <button
-                      onClick={() => startEdit(provider)}
-                      className="px-3 py-1 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 mr-2"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => handleDelete(provider.slug)}
-                      className="px-3 py-1 text-sm bg-red-500 text-white rounded hover:bg-red-600"
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      {/* Table */}
+      <Card>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Slug</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Base URL</TableHead>
+                <TableHead className="w-20 text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {providers.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-center text-muted-foreground py-12">
+                    No providers configured. Add one to get started.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                providers.map((provider) => (
+                  <TableRow key={provider.slug}>
+                    <TableCell className="font-medium">{provider.name}</TableCell>
+                    <TableCell className="font-mono text-muted-foreground">{provider.slug}</TableCell>
+                    <TableCell>
+                      <Badge variant="secondary">{provider.provider_type}</Badge>
+                    </TableCell>
+                    <TableCell className="font-mono text-muted-foreground">{provider.base_url}</TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <Button variant="ghost" size="icon-xs" onClick={() => openEdit(provider)}>
+                          <PencilIcon />
+                        </Button>
+                        <Button variant="ghost" size="icon-xs" onClick={() => setDeleteTarget(provider)}>
+                          <TrashIcon />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      {/* Create/Edit Dialog */}
+      <Dialog open={dialogOpen} onOpenChange={(open) => { if (!open) setDialogOpen(false) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editingProvider ? 'Edit Provider' : 'Add Provider'}</DialogTitle>
+            <DialogDescription>
+              {editingProvider ? 'Update the provider configuration.' : 'Connect a new LLM provider.'}
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleSave} className="flex flex-col gap-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="p-name">Name</Label>
+                <Input
+                  id="p-name"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="My OpenAI"
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="p-slug">Slug</Label>
+                <Input
+                  id="p-slug"
+                  value={form.slug}
+                  onChange={(e) => setForm({ ...form, slug: e.target.value })}
+                  placeholder="my-openai"
+                  className="font-mono"
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="p-type">Provider Type</Label>
+                <Select value={form.provider_type} onValueChange={(v) => setForm({ ...form, provider_type: v })}>
+                  <SelectTrigger id="p-type" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="openai">OpenAI</SelectItem>
+                      <SelectItem value="llamacpp">LlamaCpp</SelectItem>
+                      <SelectItem value="vllm">vLLM</SelectItem>
+                      <SelectItem value="ollama">Ollama</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="p-url">Base URL</Label>
+                <Input
+                  id="p-url"
+                  type="url"
+                  value={form.base_url}
+                  onChange={(e) => setForm({ ...form, base_url: e.target.value })}
+                  placeholder="https://api.openai.com"
+                  required
+                />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="p-key">
+                API Key{editingProvider && <span className="font-normal text-muted-foreground"> (leave blank to keep current)</span>}
+              </Label>
+              <Input
+                id="p-key"
+                type="password"
+                value={form.api_key}
+                onChange={(e) => setForm({ ...form, api_key: e.target.value })}
+                placeholder={editingProvider ? 'Leave blank to keep current API key' : 'sk-...'}
+                required={!editingProvider}
+              />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)} disabled={saving}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={saving}>
+                {saving ? 'Saving...' : editingProvider ? 'Update Provider' : 'Create Provider'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Provider</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete <span className="font-medium text-foreground">{deleteTarget?.name}</span>?
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={handleDelete} disabled={deleting}>
+              {deleting ? 'Deleting...' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

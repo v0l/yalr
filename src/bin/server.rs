@@ -5,8 +5,10 @@ use std::env;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
-    let metrics_store = metrics::MetricsStore::new(10000);
+    let metrics_store = std::sync::Arc::new(metrics::MetricsStore::new(10000));
     let emitter = metrics_store.emitter().clone();
+    
+    metrics_store.start_history_snapshots(300); // 5-minute intervals
     
     let config = config::AppConfig::load(metrics_store.clone()).await.expect("Failed to load config");
     config.load_providers().await.expect("Failed to load providers");

@@ -146,7 +146,7 @@ mod tests {
         let state = Arc::new(AppState {
             config: app_config,
             metrics_emitter: metrics_store.emitter().clone(),
-            metrics_store: metrics_store.clone(),
+            metrics_store: metrics_store.clone().into(),
             session_store,
             db: Arc::new(db),
         });

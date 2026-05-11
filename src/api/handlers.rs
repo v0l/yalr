@@ -24,9 +24,39 @@ pub struct HealthResponse {
 pub struct ProviderMetrics {
     pub provider: String,
     pub p90_tokens_per_second: Option<f32>,
+    pub p90_input_tokens_per_second: Option<f32>,
     pub p90_ttft_ms: Option<u32>,
     pub avg_latency_ms: Option<f32>,
     pub success_rate: Option<f32>,
+    pub health_state: Option<String>,
+    pub consecutive_failures: Option<u32>,
+    pub in_flight: Option<u32>,
+    pub max_concurrency: Option<u32>,
+    pub backoff_ms: Option<u64>,
+    pub load_score: Option<f32>,
+    pub available: Option<bool>,
+}
+
+#[derive(Serialize)]
+pub struct ProviderHealthEntry {
+    pub provider: String,
+    pub health_state: String,
+    pub consecutive_failures: u32,
+    pub in_flight: u32,
+    pub max_concurrency: Option<u32>,
+    pub load_score: Option<f32>,
+    pub backoff_ms: u64,
+    pub available: bool,
+    pub last_failure_ago_ms: Option<u64>,
+    pub rate_limited: bool,
+}
+
+#[derive(Serialize)]
+pub struct HealthOverviewResponse {
+    pub providers: Vec<ProviderHealthEntry>,
+    pub provider_count: usize,
+    pub unhealthy_count: usize,
+    pub degraded_count: usize,
 }
 
 #[derive(Serialize)]
@@ -638,12 +668,27 @@ pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<
     for provider in &providers {
         let provider_name = provider.name();
         let summary = state.metrics_store.get_provider_summary(provider_name).await;
+        let health = state.metrics_store.get_provider_health(provider_name).await;
+        let failures = state.metrics_store.get_recent_failures(provider_name).await;
+        let backoff = state.metrics_store.get_provider_backoff(provider_name).await;
+        let load_score = state.metrics_store.get_provider_load_score(provider_name).await;
+        let available = state.metrics_store.is_provider_available(provider_name).await;
+        let (in_flight, max_concurrency): (u32, Option<u32>) = state.metrics_store.get_provider_load(provider_name).await.unwrap_or((0, None));
+        
         provider_metrics.push(ProviderMetrics {
             provider: summary.provider,
             p90_tokens_per_second: summary.p90_output_tokens_per_second,
+            p90_input_tokens_per_second: summary.p90_input_tokens_per_second,
             p90_ttft_ms: summary.p90_ttft,
             avg_latency_ms: summary.avg_latency,
             success_rate: summary.success_rate,
+            health_state: Some(format!("{:?}", health).to_lowercase()),
+            consecutive_failures: Some(failures),
+            in_flight: Some(in_flight),
+            max_concurrency,
+            backoff_ms: Some(backoff.as_millis() as u64),
+            load_score,
+            available: Some(available),
         });
     }
 
@@ -664,6 +709,77 @@ pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<
         total_successes,
         total_failures,
     })
+}
+
+pub async fn get_health_overview(State(state): State<std::sync::Arc<AppState>>) -> Json<HealthOverviewResponse> {
+    use std::time::Instant;
+    let providers = state.config.router.get_providers().await;
+    let mut health_entries = Vec::new();
+    let mut unhealthy = 0;
+    let mut degraded = 0;
+
+    for provider in &providers {
+        let name = provider.name();
+        let health = state.metrics_store.get_provider_health(name).await;
+        let failures = state.metrics_store.get_recent_failures(name).await;
+        let backoff = state.metrics_store.get_provider_backoff(name).await;
+        let load_score = state.metrics_store.get_provider_load_score(name).await;
+        let available = state.metrics_store.is_provider_available(name).await;
+        let (in_flight, max_concurrency): (u32, Option<u32>) = state.metrics_store.get_provider_load(name).await.unwrap_or((0, None));
+        let health_str = format!("{:?}", health).to_lowercase();
+        if health_str == "unhealthy" { unhealthy += 1; }
+        else if health_str == "degraded" { degraded += 1; }
+
+        let now = Instant::now();
+        let last_failure_ago_ms = {
+            let events = state.metrics_store.events.lock().ok();
+            events.and_then(|ev| {
+                ev.iter().rev()
+                    .find(|e| e.provider == name && matches!(e.event, crate::metrics::MetricsEvent::Failure(_)))
+                    .map(|_e| {
+                        now.elapsed().as_millis() as u64
+                    })
+            })
+        };
+        let rate_limited = {
+            let events = std::sync::Mutex::try_lock(&state.metrics_store.events).ok();
+            events.map_or(false, |ev| {
+                ev.iter().rev().find_map(|e| {
+                    if e.provider == name {
+                        match &e.event {
+                            crate::metrics::MetricsEvent::Failure(d) if d.error_type == crate::metrics::ErrorType::RateLimit => Some(true),
+                            _ => None,
+                        }
+                    } else { None }
+                }).unwrap_or(false)
+            })
+        };
+
+        health_entries.push(ProviderHealthEntry {
+            provider: name.to_string(),
+            health_state: health_str,
+            consecutive_failures: failures,
+            in_flight,
+            max_concurrency,
+            load_score,
+            backoff_ms: backoff.as_millis() as u64,
+            available,
+            last_failure_ago_ms,
+            rate_limited,
+        });
+    }
+
+    Json(HealthOverviewResponse {
+        providers: health_entries,
+        provider_count: providers.len(),
+        unhealthy_count: unhealthy,
+        degraded_count: degraded,
+    })
+}
+
+pub async fn get_metrics_history(State(state): State<std::sync::Arc<AppState>>) -> Json<serde_json::Value> {
+    let history = state.metrics_store.get_history().await;
+    Json(serde_json::to_value(history).unwrap_or_default())
 }
 
 #[axum::debug_handler]
@@ -1064,6 +1180,57 @@ pub async fn sync_provider_models(
 }
 
 // ============================================================================
+// Provider Models Listing
+// ============================================================================
+
+#[derive(Serialize)]
+pub struct ProviderModelItem {
+    pub id: String,
+    pub created: u32,
+    pub owned_by: String,
+}
+
+#[derive(Serialize)]
+pub struct ProviderModelsResponse {
+    pub provider: String,
+    pub models: Vec<ProviderModelItem>,
+    pub total_count: usize,
+}
+
+#[axum::debug_handler]
+pub async fn list_provider_models(
+    Path(provider_slug): Path<String>,
+    State(state): State<std::sync::Arc<AppState>>,
+) -> Result<Json<ProviderModelsResponse>, (axum::http::StatusCode, String)> {
+    let providers = state.config.router.get_providers().await;
+    let provider = providers
+        .iter()
+        .find(|p| p.slug() == provider_slug)
+        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, format!("Provider '{}' not found", provider_slug)))?;
+
+    match provider.list_models().await {
+        Ok(models) => {
+            let model_items: Vec<ProviderModelItem> = models
+                .into_iter()
+                .map(|m| ProviderModelItem {
+                    id: m.id,
+                    created: m.created,
+                    owned_by: m.owned_by,
+                })
+                .collect();
+
+            let total = model_items.len();
+            Ok(Json(ProviderModelsResponse {
+                provider: provider_slug,
+                models: model_items,
+                total_count: total,
+            }))
+        }
+        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+// ============================================================================
 // Responses API Handlers
 // ============================================================================
 
@@ -1149,7 +1316,7 @@ mod tests {
         let state = Arc::new(AppState {
             config: app_config,
             metrics_emitter: metrics_store.emitter().clone(),
-            metrics_store: metrics_store.clone(),
+            metrics_store: metrics_store.clone().into(),
             session_store,
             db: Arc::new(db),
         });

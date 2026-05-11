@@ -50,7 +50,7 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    pub async fn load(metrics_store: MetricsStore) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn load(metrics_store: std::sync::Arc<MetricsStore>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let config: Config = config::Config::builder()
             .add_source(config::File::with_name("config").required(false).format(config::FileFormat::Yaml))
             .build()?
@@ -59,7 +59,7 @@ impl AppConfig {
         let db = Arc::new(Database::new(&config.database.url).await?);
 
         let router = Arc::new(Router::new(
-            metrics_store,
+            (*metrics_store).clone(),
             db.clone(),
         ));
 

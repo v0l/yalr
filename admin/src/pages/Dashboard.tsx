@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { MetricsResponse, Provider } from '../types'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 
 export default function Dashboard() {
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null)
@@ -23,26 +26,31 @@ export default function Dashboard() {
         setLoading(false)
       }
     }
-
     fetchData()
   }, [])
 
   if (loading) {
     return (
-      <div className="p-8">
-        <h1 className="text-2xl font-bold mb-6 text-text-primary">Dashboard</h1>
-        <p className="text-text-secondary">Loading...</p>
+      <div className="flex flex-col gap-6 p-6">
+        <div className="flex flex-col gap-1">
+          <Skeleton className="h-7 w-32" />
+          <Skeleton className="h-4 w-48" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Skeleton className="h-32" />
+          <Skeleton className="h-32" />
+          <Skeleton className="h-32" />
+        </div>
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="p-8">
-        <h1 className="text-2xl font-bold mb-6 text-text-primary">Dashboard</h1>
-        <div className="p-4 bg-red-100 border border-red-400 text-red-700 rounded">
-          Error: {error}
-        </div>
+      <div className="p-6">
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
       </div>
     )
   }
@@ -51,33 +59,46 @@ export default function Dashboard() {
   const totalSuccesses = metrics?.total_successes ?? 0
   const totalFailures = metrics?.total_failures ?? 0
   const activeProviders = providers.length
-  const avgLatency = metrics?.providers.reduce((sum, p) => sum + (p.avg_latency_ms || 0), 0)
-    ? (metrics?.providers.reduce((sum, p) => sum + (p.avg_latency_ms || 0), 0) || 0) /
-      (metrics?.providers.length || 1)
+  const avgLatency = metrics?.providers.length
+    ? (metrics.providers.reduce((sum, p) => sum + (p.avg_latency_ms || 0), 0) || 0) / metrics.providers.length
     : 0
 
   return (
-    <div className="p-8">
-      <h1 className="text-2xl font-bold mb-6 text-text-primary">Dashboard</h1>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="p-6 bg-layer-3 rounded-lg border border-border">
-          <h2 className="text-lg font-semibold text-text-secondary">Total Requests</h2>
-          <p className="text-4xl font-bold mt-2 text-accent">{totalRequests.toLocaleString()}</p>
-          <div className="flex gap-3 mt-1 text-sm text-text-secondary">
-            <span className="text-green-600 dark:text-green-400">{totalSuccesses.toLocaleString()} ok</span>
-            {totalFailures > 0 && <span className="text-red-600 dark:text-red-400">{totalFailures.toLocaleString()} fail</span>}
-          </div>
-        </div>
-        <div className="p-6 bg-layer-3 rounded-lg border border-border">
-          <h2 className="text-lg font-semibold text-text-secondary">Active Providers</h2>
-          <p className="text-4xl font-bold mt-2 text-accent">{activeProviders}</p>
-        </div>
-        <div className="p-6 bg-layer-3 rounded-lg border border-border">
-          <h2 className="text-lg font-semibold text-text-secondary">Avg Latency</h2>
-          <p className="text-4xl font-bold mt-2 text-accent">
-            {avgLatency.toFixed(0)}ms
-          </p>
-        </div>
+    <div className="flex flex-col gap-6 p-6">
+      <div>
+        <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
+        <p className="text-sm text-muted-foreground">Overview of your YALR instance</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Total Requests</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold">{totalRequests.toLocaleString()}</p>
+            <div className="flex gap-3 mt-1 text-sm">
+              <span className="text-emerald-600 dark:text-emerald-400">{totalSuccesses.toLocaleString()} ok</span>
+              {totalFailures > 0 && <span className="text-destructive">{totalFailures.toLocaleString()} fail</span>}
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Active Providers</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold">{activeProviders}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Avg Latency</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold">{avgLatency.toFixed(0)}ms</p>
+          </CardContent>
+        </Card>
       </div>
     </div>
   )

@@ -18,9 +18,55 @@ export interface Model {
 export interface ProviderMetricsSummary {
   provider: string
   p90_tokens_per_second: number | null
+  p90_input_tokens_per_second: number | null
   p90_ttft_ms: number | null
   avg_latency_ms: number | null
   success_rate: number | null
+  health_state: string | null
+  consecutive_failures: number | null
+  in_flight: number | null
+  max_concurrency: number | null
+  backoff_ms: number | null
+  load_score: number | null
+  available: boolean | null
+}
+
+export interface ProviderHealthEntry {
+  provider: string
+  health_state: string
+  consecutive_failures: number
+  in_flight: number
+  max_concurrency: number | null
+  load_score: number | null
+  backoff_ms: number
+  available: boolean
+  last_failure_ago_ms: number | null
+  rate_limited: boolean
+}
+
+export interface HealthOverviewResponse {
+  providers: ProviderHealthEntry[]
+  provider_count: number
+  unhealthy_count: number
+  degraded_count: number
+}
+
+export interface MetricsSnapshotEntry {
+  provider: string
+  model: string
+  p50_ttft_ms: number | null
+  p90_ttft_ms: number | null
+  p50_output_tps: number | null
+  p90_output_tps: number | null
+  p50_input_tps: number | null
+  p90_input_tps: number | null
+  avg_latency_ms: number | null
+  success_rate: number | null
+}
+
+export interface MetricsSnapshot {
+  timestamp_ms: number
+  providers: MetricsSnapshotEntry[]
 }
 
 export interface MetricsResponse {

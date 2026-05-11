@@ -82,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let metrics_store = metrics::MetricsStore::new(10000);
             let emitter = metrics_store.emitter().clone();
 
-            let config = config::AppConfig::load(metrics_store.clone())
+            let config = config::AppConfig::load(std::sync::Arc::new(metrics_store.clone()))
                 .await
                 .expect("Failed to load config");
             config
@@ -92,14 +92,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             tracing::info!("Starting YALR on {}", addr);
 
-            api::server::run(config, &addr, emitter, metrics_store).await?;
+            api::server::run(config, &addr, emitter, std::sync::Arc::new(metrics_store)).await?;
         }
         Commands::Version => {
             println!("yalr-cli 0.1.0");
         }
         Commands::CheckConfig => {
             let metrics_store = metrics::MetricsStore::new(10000);
-            let _config = config::AppConfig::load(metrics_store.clone())
+            let _config = config::AppConfig::load(std::sync::Arc::new(metrics_store.clone()))
                 .await
                 .expect("Failed to load config");
             println!("Configuration loaded successfully");
@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Provider(provider_cmd) => {
             let metrics_store = metrics::MetricsStore::new(10000);
-            let config = config::AppConfig::load(metrics_store.clone())
+            let config = config::AppConfig::load(std::sync::Arc::new(metrics_store.clone()))
                 .await
                 .expect("Failed to load config");
             let db = config.db;
@@ -134,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             model,
         } => {
             let metrics_store = metrics::MetricsStore::new(10000);
-            let config = config::AppConfig::load(metrics_store.clone())
+            let config = config::AppConfig::load(std::sync::Arc::new(metrics_store.clone()))
                 .await
                 .expect("Failed to load config");
             let db = config.db.clone();

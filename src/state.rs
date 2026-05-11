@@ -8,7 +8,7 @@ use crate::auth::admin::SessionStore;
 pub struct AppState {
     pub config: AppConfig,
     pub metrics_emitter: MetricsEmitter,
-    pub metrics_store: MetricsStore,
+    pub metrics_store: std::sync::Arc<MetricsStore>,
     pub session_store: Arc<SessionStore>,
     pub db: Arc<Database>,
 }
