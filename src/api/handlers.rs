@@ -855,7 +855,7 @@ pub async fn get_metrics_history(State(state): State<std::sync::Arc<AppState>>) 
 #[axum::debug_handler]
 pub async fn chat_handler(
     State(state): State<std::sync::Arc<AppState>>,
-    Extension(user): Extension<Option<crate::db::User>>,
+    Extension(user): Extension<crate::db::User>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, String)> {
     if request.stream.unwrap_or(false) {
@@ -870,7 +870,7 @@ pub async fn chat_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_handler(
     State(state): State<std::sync::Arc<AppState>>,
-    Extension(user): Extension<Option<crate::db::User>>,
+    Extension(user): Extension<crate::db::User>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Json<ChatCompletionResponse>, (axum::http::StatusCode, String)> {
     tracing::info!(
@@ -882,7 +882,7 @@ pub async fn chat_completions_handler(
 
     // ── Billing ──────────────────────────────────────────────
     let billing_guard = if state.payments_state.is_some() {
-        let user_id = user.as_ref().map(|u| u.id);
+        let user_id = Some(user.id);
         match crate::payments::guard::BillingGuard::try_create(
             &state,
             user_id,
@@ -950,7 +950,7 @@ pub async fn chat_completions_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_stream(
     State(state): State<std::sync::Arc<AppState>>,
-    Extension(user): Extension<Option<crate::db::User>>,
+    Extension(user): Extension<crate::db::User>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>> + Send + 'static>, (axum::http::StatusCode, String)> {
     tracing::info!(
@@ -962,7 +962,7 @@ pub async fn chat_completions_stream(
 
     // ── Billing ──────────────────────────────────────────────
     let billing_guard = if state.payments_state.is_some() {
-        let user_id = user.as_ref().map(|u| u.id);
+        let user_id = Some(user.id);
         match crate::payments::guard::BillingGuard::try_create(
             &state,
             user_id,
