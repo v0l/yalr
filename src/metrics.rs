@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
 use crate::router::ModelRuntimeInfo;
+use crate::providers::CurrencyAmount;
 
 type InstantMillis = u64;
 
@@ -51,6 +52,8 @@ pub enum MetricsEvent {
         in_flight: u32,
         max_concurrency: Option<u32>,
     },
+    /// Provider balance snapshot (account credit, upstream cost tracking)
+    Balance(CurrencyAmount),
 }
 
 /// Error details for failure events
@@ -247,6 +250,11 @@ impl MetricsEmitter {
             },
         );
     }
+
+    /// Emit a balance snapshot for a provider.
+    pub fn emit_balance(&self, provider: &str, amount: CurrencyAmount) {
+        self.emit(provider.to_string(), String::new(), MetricsEvent::Balance(amount));
+    }
 }
 
 /// Receiver for metrics events
@@ -433,19 +441,22 @@ impl MetricsStore {
         let model = event.model.clone();
         let event_type = format!("{:?}", event.event);
         
-        let mut events = self.events.lock().unwrap();
-        events.push_back(event.clone());
-        if events.len() > self.max_events {
-            events.pop_front();
-        }
-        
+        let total = {
+            let mut events = self.events.lock().unwrap();
+            events.push_back(event.clone());
+            if events.len() > self.max_events {
+                events.pop_front();
+            }
+            events.len()
+        };
+
         self.update_health_from_event(&event).await;
-        
+
         tracing::info!(
             provider = %provider,
             model = %model,
             event_type = %event_type,
-            total_events = events.len(),
+            total,
             "Metrics event recorded"
         );
     }
@@ -463,7 +474,7 @@ impl MetricsStore {
             }
             MetricsEvent::Failure(details) => {
                 let retry_after = details.retry_after_ms
-                    .map(|ms| Duration::from_millis(ms));
+                    .map(Duration::from_millis);
                 provider_health.record_failure(retry_after);
             }
             _ => {}
@@ -477,7 +488,7 @@ impl MetricsStore {
             .iter()
             .filter(|e| {
                 let provider_match = e.provider == provider;
-                let model_match = model.map_or(true, |m| e.model == m);
+                let model_match = model.is_none_or(|m| e.model == m);
                 provider_match && model_match
             })
             .cloned()
@@ -865,6 +876,24 @@ impl MetricsStore {
         } else {
             Some(1.0)
         }
+    }
+
+    /// Get the most recent balance snapshot for a provider.
+    pub async fn get_balance(&self, provider: &str) -> Option<CurrencyAmount> {
+        let events = self.events.lock().unwrap();
+        events
+            .iter()
+            .rev()
+            .find_map(|e| {
+                if e.provider == provider {
+                    match &e.event {
+                        MetricsEvent::Balance(amount) => Some(*amount),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            })
     }
 
     /// Compute health from recent metrics (for external health calculation)

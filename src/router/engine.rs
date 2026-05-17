@@ -117,6 +117,40 @@ struct HealthCheckRouter {
     metrics_store: MetricsStore,
 }
 
+impl HealthCheckRouter {
+    async fn record_success(&self, provider_name: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        self.metrics_store.record(crate::metrics::ProviderMetrics {
+            provider: provider_name.to_string(),
+            model: String::new(),
+            timestamp_ms: now,
+            event: crate::metrics::MetricsEvent::Success,
+        }).await;
+    }
+
+    async fn record_failure(&self, provider_name: &str, error_type: crate::metrics::ErrorType, message: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        self.metrics_store.record(crate::metrics::ProviderMetrics {
+            provider: provider_name.to_string(),
+            model: String::new(),
+            timestamp_ms: now,
+            event: crate::metrics::MetricsEvent::Failure(crate::metrics::FailureDetails {
+                error_type,
+                error_code: None,
+                error_message: message.to_string(),
+                retry_after_ms: None,
+                status_code: None,
+            }),
+        }).await;
+    }
+}
+
 pub struct Router {
     db: Arc<Database>,
     metrics_store: MetricsStore,
@@ -292,103 +326,82 @@ impl Router {
             let interval = Duration::from_secs(rc.health_check_interval_seconds as u64);
             let timeout = Duration::from_secs(rc.health_check_timeout_seconds as u64);
             
-            // Get providers for this routing config
+            // Get providers for this routing config (deduplicated)
             let rcp_records = self.db.list_active_routing_config_providers(rc.id).await?;
-            let mut providers_to_check = Vec::new();
+            let mut all_providers = Vec::new();
+            let mut seen = std::collections::HashSet::new();
             
             let id_to_slug = self.get_provider_slug_map().await;
+            let provs = self.providers.read().await;
             
             for rcp in rcp_records {
                 if let Some(slug) = id_to_slug.get(&rcp.provider_id) {
-                    if let Some(provider) = self.providers.read().await.get(slug) {
-                        // Only check providers that are currently unavailable
-                        let is_available = self.metrics_store.is_provider_available(provider.name()).await;
-                        if !is_available {
-                            providers_to_check.push((provider.clone(), rc.name.clone()));
+                    if let Some(provider) = provs.get(slug) {
+                        if seen.insert(provider.name().to_string()) {
+                            all_providers.push(provider.clone());
                         }
                     }
                 }
             }
-            
-            if providers_to_check.is_empty() {
+            drop(provs);
+
+            if all_providers.is_empty() {
                 continue;
             }
-            
+
+            let count = all_providers.len();
             let router = self.clone_for_health_checks();
-            let providers_to_check_for_logging = providers_to_check.clone();
-            
+
             let handle = tokio::spawn(async move {
                 let mut interval_tick = tokio::time::interval(interval);
-                
+
                 loop {
                     interval_tick.tick().await;
-                    
-                    for (provider, config_name) in &providers_to_check {
+
+                    for provider in &all_providers {
                         let provider_name = provider.name().to_string();
-                        
-                        // Check if provider is still unavailable before probing
-                        let is_available = router.metrics_store.is_provider_available(&provider_name).await;
-                        if is_available {
-                            continue;
+
+                        // Fetch and emit balance snapshot
+                        if let Some(amount) = provider.fetch_balance().await {
+                            router.metrics_store.emitter().emit_balance(&provider_name, amount);
                         }
-                        
-                        tracing::debug!(
-                            provider = %provider_name,
-                            config = %config_name,
-                            "Running health check probe"
-                        );
-                        
-                        // Run health check with timeout
-                        let health_check_result = tokio::time::timeout(
-                            timeout,
-                            provider.health_check()
-                        ).await;
-                        
-                        match health_check_result {
+
+                        // Health check with timeout
+                        let result = tokio::time::timeout(timeout, provider.health_check()).await;
+                        match result {
                             Ok(Ok(true)) => {
-                                tracing::info!(
-                                    provider = %provider_name,
-                                    config = %config_name,
-                                    "Health check passed, marking provider as available"
-                                );
-                                // Emit success event to reset health state
-                                let emitter = router.metrics_store.emitter().clone();
-                                tokio::spawn(async move {
-                                    emitter.emit_success(&provider_name, &String::new());
-                                });
+                                let was_down = !router.metrics_store.is_provider_available(&provider_name).await;
+                                if was_down {
+                                    tracing::info!(provider = %provider_name, "Health check recovered");
+                                }
+                                router.record_success(&provider_name).await;
                             }
                             Ok(Ok(false)) => {
-                                tracing::debug!(
-                                    provider = %provider_name,
-                                    config = %config_name,
-                                    "Health check failed, provider still unavailable"
-                                );
+                                tracing::warn!(provider = %provider_name, "Health check unhealthy");
+                                router.record_failure(
+                                    &provider_name,
+                                    crate::metrics::ErrorType::ServerError,
+                                    "Health check returned unhealthy",
+                                ).await;
                             }
                             Ok(Err(e)) => {
-                                tracing::warn!(
-                                    provider = %provider_name,
-                                    config = %config_name,
-                                    error = %e,
-                                    "Health check error"
-                                );
+                                tracing::warn!(provider = %provider_name, error = %e, "Health check error");
+                                router.record_failure(&provider_name, e.error_type(), &e.to_string()).await;
                             }
                             Err(_) => {
-                                tracing::warn!(
-                                    provider = %provider_name,
-                                    config = %config_name,
-                                    "Health check timed out"
-                                );
+                                tracing::warn!(provider = %provider_name, "Health check timeout");
+                                router.record_failure(&provider_name, crate::metrics::ErrorType::Timeout, "Health check timed out").await;
                             }
                         }
                     }
                 }
             });
-            
+
             handles.insert(rc.name.clone(), handle);
             tracing::info!(
                 config = rc.name,
                 interval_seconds = rc.health_check_interval_seconds,
-                providers_to_check = providers_to_check_for_logging.len(),
+                total_providers = count,
                 "Started health check task"
             );
         }
@@ -510,8 +523,16 @@ impl Router {
             .map(|(_, pair)| pair)
             .collect();
 
-        // Unavailable providers as fallback
-        candidates.extend(unavailable);
+        // Only fall back to unavailable providers if there are no healthy ones at all.
+        // This avoids hammering providers that are known to be down/dead/gone.
+        if candidates.is_empty() {
+            tracing::warn!(
+                model = %model,
+                fallback_count = unavailable.len(),
+                "No available providers, falling back to unavailable providers"
+            );
+            candidates.extend(unavailable);
+        }
         candidates
     }
 
@@ -649,12 +670,12 @@ impl Router {
                         self.metrics_store.emitter().emit_input_tokens(
                             &provider_name,
                             &original_model,
-                            tokens.prompt_tokens as u32,
+                            tokens.prompt_tokens,
                         );
                         self.metrics_store.emitter().emit_output_tokens(
                             &provider_name,
                             &original_model,
-                            tokens.completion_tokens as u32,
+                            tokens.completion_tokens,
                         );
                     }
 
@@ -694,7 +715,7 @@ impl Router {
 
                     let backoff = e
                         .retry_after_ms()
-                        .map(|ms| Duration::from_millis(ms))
+                        .map(Duration::from_millis)
                         .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)));
 
                     tokio::time::sleep(backoff).await;
@@ -826,7 +847,7 @@ impl Router {
                                             } else {
                                                 None
                                             }
-                                        }).map(|ms| Duration::from_millis(ms))
+                                        }).map(Duration::from_millis)
                                           .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)));
                                         tokio::time::sleep(backoff).await;
 
@@ -931,7 +952,7 @@ impl Router {
                             // Backoff before trying next provider
                             let backoff = e
                                 .retry_after_ms()
-                                .map(|ms| Duration::from_millis(ms))
+                                .map(Duration::from_millis)
                                 .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)));
                             tokio::time::sleep(backoff).await;
                         } else {
@@ -1116,7 +1137,7 @@ impl Router {
 
                     let backoff = e
                         .retry_after_ms()
-                        .map(|ms| Duration::from_millis(ms))
+                        .map(Duration::from_millis)
                         .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)));
 
                     tokio::time::sleep(backoff).await;

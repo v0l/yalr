@@ -1,9 +1,36 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
-import type { MetricsResponse, Provider } from '../types'
+import type { MetricsResponse, Provider, ProviderHealthEntry } from '../types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+
+function HealthBadge({ state }: { state: string }) {
+  switch (state) {
+    case 'healthy':
+      return <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400">Healthy</Badge>
+    case 'degraded':
+      return <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">Degraded</Badge>
+    case 'unhealthy':
+      return <Badge className="bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400">Down</Badge>
+    default:
+      return <Badge variant="secondary">{state}</Badge>
+  }
+}
+
+function BalanceDisplay({ health }: { health?: ProviderHealthEntry }) {
+  if (!health?.balance) return <span className="text-muted-foreground">—</span>
+  const { currency, amount } = health.balance
+  const label = currency === 'msats' ? 'msats' : currency === 'sats' ? 'sats' : 'µ$'
+  const display = currency === 'usd_micro' ? `$${(amount / 1_000_000).toFixed(4)}` : amount.toLocaleString()
+  return (
+    <span className="font-mono text-sm">
+      {display}<span className="text-muted-foreground ml-0.5">{label}</span>
+    </span>
+  )
+}
 
 export default function Dashboard() {
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null)
@@ -58,7 +85,8 @@ export default function Dashboard() {
   const totalRequests = metrics?.total_requests ?? 0
   const totalSuccesses = metrics?.total_successes ?? 0
   const totalFailures = metrics?.total_failures ?? 0
-  const activeProviders = providers.length
+  const activeProviders = providers.filter(p => p.health?.available).length
+  const downCount = providers.filter(p => p.health?.health_state === 'unhealthy').length
   const avgLatency = metrics?.providers.length
     ? (metrics.providers.reduce((sum, p) => sum + (p.avg_latency_ms || 0), 0) || 0) / metrics.providers.length
     : 0
@@ -70,7 +98,7 @@ export default function Dashboard() {
         <p className="text-sm text-muted-foreground">Overview of your YALR instance</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm text-muted-foreground">Total Requests</CardTitle>
@@ -85,10 +113,13 @@ export default function Dashboard() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Active Providers</CardTitle>
+            <CardTitle className="text-sm text-muted-foreground">Providers</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-3xl font-bold">{activeProviders}</p>
+            <p className="text-3xl font-bold">{activeProviders}<span className="text-lg text-muted-foreground">/{providers.length}</span></p>
+            {downCount > 0 && (
+              <p className="text-sm text-destructive mt-1">{downCount} down</p>
+            )}
           </CardContent>
         </Card>
         <Card>
@@ -97,6 +128,68 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             <p className="text-3xl font-bold">{avgLatency.toFixed(0)}ms</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Success Rate</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold">
+              {totalRequests > 0 ? ((totalSuccesses / totalRequests) * 100).toFixed(1) : '—'}%
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Provider Health Table */}
+      <div>
+        <h2 className="text-lg font-semibold text-foreground mb-3">Provider Health</h2>
+        <Card>
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Provider</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Balance</TableHead>
+                  <TableHead>In-flight</TableHead>
+                  <TableHead>Failures</TableHead>
+                  <TableHead>Backoff</TableHead>
+                  <TableHead>Latency</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {providers.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center text-muted-foreground py-12">
+                      No providers configured.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  providers.map((provider) => {
+                    const h = provider.health
+                    const m = metrics?.providers.find(p => p.provider === provider.name)
+                    return (
+                      <TableRow key={provider.slug}>
+                        <TableCell>
+                          <div className="font-medium">{provider.name}</div>
+                          <div className="font-mono text-xs text-muted-foreground">{provider.slug}</div>
+                        </TableCell>
+                        <TableCell><HealthBadge state={h?.health_state ?? 'unknown'} /></TableCell>
+                        <TableCell><BalanceDisplay health={h} /></TableCell>
+                        <TableCell className="font-mono">
+                          {h?.in_flight ?? '—'}{h?.max_concurrency ? ` / ${h.max_concurrency}` : ''}
+                        </TableCell>
+                        <TableCell className="font-mono">{h?.consecutive_failures ?? '—'}</TableCell>
+                        <TableCell className="font-mono text-sm">{h?.backoff_ms ? `${h.backoff_ms}ms` : '—'}</TableCell>
+                        <TableCell className="font-mono text-sm">{m?.avg_latency_ms ? `${m.avg_latency_ms.toFixed(0)}ms` : '—'}</TableCell>
+                      </TableRow>
+                    )
+                  })
+                )}
+              </TableBody>
+            </Table>
           </CardContent>
         </Card>
       </div>

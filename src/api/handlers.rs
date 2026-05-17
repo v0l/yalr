@@ -1,7 +1,8 @@
 use crate::state::AppState;
 use crate::db::UserType;
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
+    http::StatusCode,
     response::{sse::{Event, KeepAlive, Sse}, IntoResponse},
     Json,
 };
@@ -9,6 +10,7 @@ use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use crate::{ChatCompletionRequest, ChatCompletionResponse};
 use crate::router::{DbModelInfo, ModelInfoDetector};
@@ -35,6 +37,9 @@ pub struct ProviderMetrics {
     pub backoff_ms: Option<u64>,
     pub load_score: Option<f32>,
     pub available: Option<bool>,
+    /// Full health entry with balance tracking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<ProviderHealthEntry>,
 }
 
 #[derive(Serialize)]
@@ -49,6 +54,10 @@ pub struct ProviderHealthEntry {
     pub available: bool,
     pub last_failure_ago_ms: Option<u64>,
     pub rate_limited: bool,
+    /// Current balance for this provider, if it supports balance tracking.
+    /// Serialized as `{"currency": "msats"|"sats"|"usd_micro", "amount": N}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub balance: Option<crate::providers::provider_trait::CurrencyAmount>,
 }
 
 #[derive(Serialize)]
@@ -111,6 +120,10 @@ pub struct ProviderResponse {
     pub provider_type: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Live health+metrics for this provider.
+    /// Only present when the router has the provider loaded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<ProviderHealthEntry>,
 }
 
 #[derive(Serialize)]
@@ -237,13 +250,16 @@ pub async fn list_models(State(state): State<std::sync::Arc<AppState>>) -> Json<
     let routing_configs = state.config.db.list_routing_configs().await.unwrap_or_default();
     let mut all_models = Vec::new();
 
+    let payments_enabled = state.payments_state.is_some();
+
     // Add routing configs (routing engines) as models
     for rc in &routing_configs {
-        all_models.push(async_openai::types::models::Model {
+        all_models.push(ModelEntry {
             id: rc.name.clone(),
             object: "model".to_string(),
             created: 0,
             owned_by: rc.name.clone(),
+            pricing: None,
         });
     }
 
@@ -253,10 +269,36 @@ pub async fn list_models(State(state): State<std::sync::Arc<AppState>>) -> Json<
         
         match provider.list_models().await {
             Ok(models) => {
-                for mut model in models {
-                    // Prefix model ID with provider slug
-                    model.id = format!("{}/{}", provider_slug, model.id);
-                    all_models.push(model);
+                for model in models {
+                    let full_id = format!("{}/{}", provider_slug, model.id);
+
+                    // Resolve pricing for this model (even when payments disabled, show defaults)
+                    let pricing = if payments_enabled {
+                        if let Some(ref ps) = state.payments_state {
+                            let p = ps.pricing_resolver.resolve(&model.id).await;
+                            if !p.is_advertised {
+                                continue; // skip unadvertised models
+                            }
+                            Some(ModelPricing {
+                                prompt: p.price_per_1m_input_sats,
+                                completion: p.price_per_1m_output_sats,
+                                request: p.price_per_request_sats,
+                                unit: "1M tokens".to_string(),
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    all_models.push(ModelEntry {
+                        id: full_id,
+                        object: model.object,
+                        created: model.created as i64,
+                        owned_by: model.owned_by,
+                        pricing,
+                    });
                 }
             }
             Err(e) => {
@@ -275,10 +317,35 @@ pub async fn list_models(State(state): State<std::sync::Arc<AppState>>) -> Json<
     })
 }
 
+/// A model entry conforming to RIP-01 / RIP-05: includes pricing in sats.
+#[derive(Serialize)]
+pub struct ModelEntry {
+    pub id: String,
+    pub object: String,
+    pub created: i64,
+    pub owned_by: String,
+    /// Pricing structure per RIP-05. None if payments are disabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelPricing>,
+}
+
+/// Pricing breakdown per RIP-05, in sats.
+#[derive(Serialize)]
+pub struct ModelPricing {
+    /// Sats per 1M input/prompt tokens.
+    pub prompt: i64,
+    /// Sats per 1M output/completion tokens.
+    pub completion: i64,
+    /// Sats per request.
+    pub request: i64,
+    /// Unit for token pricing (always "1M tokens").
+    pub unit: String,
+}
+
 #[derive(Serialize)]
 pub struct ModelsListResponse {
     pub object: String,
-    pub data: Vec<async_openai::types::models::Model>,
+    pub data: Vec<ModelEntry>,
 }
 
 pub async fn get_router_config(State(state): State<std::sync::Arc<AppState>>) -> Json<RouterConfigResponse> {
@@ -661,6 +728,53 @@ pub async fn delete_routing_config_provider(
     })))
 }
 
+/// Build a ProviderHealthEntry for a live provider by looking up metrics,
+/// health state, and balance from the AppState.
+pub async fn build_provider_health_entry(
+    state: &std::sync::Arc<AppState>,
+    provider: &dyn crate::providers::Provider,
+) -> ProviderHealthEntry {
+    use std::time::Instant;
+    let name = provider.name();
+    let health = state.metrics_store.get_provider_health(name).await;
+    let failures = state.metrics_store.get_recent_failures(name).await;
+    let backoff = state.metrics_store.get_provider_backoff(name).await;
+    let load_score = state.metrics_store.get_provider_load_score(name).await;
+    let available = state.metrics_store.is_provider_available(name).await;
+    let (in_flight, max_concurrency): (u32, Option<u32>) =
+        state.metrics_store.get_provider_load(name).await.unwrap_or((0, None));
+
+    let now = Instant::now();
+    let last_failure_ago_ms = {
+        state.metrics_store.events.lock().ok().and_then(|ev| {
+            ev.iter().rev()
+                .find(|e| e.provider == name && matches!(e.event, crate::metrics::MetricsEvent::Failure(_)))
+                .map(|_| now.elapsed().as_millis() as u64)
+        })
+    };
+    let rate_limited = {
+        state.metrics_store.events.lock().ok().is_some_and(|ev| {
+            ev.iter().rev().any(|e| {
+                e.provider == name && matches!(&e.event, crate::metrics::MetricsEvent::Failure(d) if d.error_type == crate::metrics::ErrorType::RateLimit)
+            })
+        })
+    };
+
+    ProviderHealthEntry {
+        provider: name.to_string(),
+        health_state: format!("{:?}", health).to_lowercase(),
+        consecutive_failures: failures,
+        in_flight,
+        max_concurrency,
+        load_score,
+        backoff_ms: backoff.as_millis() as u64,
+        available,
+        last_failure_ago_ms,
+        rate_limited,
+        balance: state.metrics_store.get_balance(name).await,
+    }
+}
+
 pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<MetricsResponse> {
     let providers = state.config.router.get_providers().await;
     let mut provider_metrics = Vec::new();
@@ -689,6 +803,7 @@ pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<
             backoff_ms: Some(backoff.as_millis() as u64),
             load_score,
             available: Some(available),
+            health: Some(build_provider_health_entry(&state, provider.as_ref()).await),
         });
     }
 
@@ -712,61 +827,16 @@ pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<
 }
 
 pub async fn get_health_overview(State(state): State<std::sync::Arc<AppState>>) -> Json<HealthOverviewResponse> {
-    use std::time::Instant;
     let providers = state.config.router.get_providers().await;
     let mut health_entries = Vec::new();
     let mut unhealthy = 0;
     let mut degraded = 0;
 
     for provider in &providers {
-        let name = provider.name();
-        let health = state.metrics_store.get_provider_health(name).await;
-        let failures = state.metrics_store.get_recent_failures(name).await;
-        let backoff = state.metrics_store.get_provider_backoff(name).await;
-        let load_score = state.metrics_store.get_provider_load_score(name).await;
-        let available = state.metrics_store.is_provider_available(name).await;
-        let (in_flight, max_concurrency): (u32, Option<u32>) = state.metrics_store.get_provider_load(name).await.unwrap_or((0, None));
-        let health_str = format!("{:?}", health).to_lowercase();
-        if health_str == "unhealthy" { unhealthy += 1; }
-        else if health_str == "degraded" { degraded += 1; }
-
-        let now = Instant::now();
-        let last_failure_ago_ms = {
-            let events = state.metrics_store.events.lock().ok();
-            events.and_then(|ev| {
-                ev.iter().rev()
-                    .find(|e| e.provider == name && matches!(e.event, crate::metrics::MetricsEvent::Failure(_)))
-                    .map(|_e| {
-                        now.elapsed().as_millis() as u64
-                    })
-            })
-        };
-        let rate_limited = {
-            let events = std::sync::Mutex::try_lock(&state.metrics_store.events).ok();
-            events.map_or(false, |ev| {
-                ev.iter().rev().find_map(|e| {
-                    if e.provider == name {
-                        match &e.event {
-                            crate::metrics::MetricsEvent::Failure(d) if d.error_type == crate::metrics::ErrorType::RateLimit => Some(true),
-                            _ => None,
-                        }
-                    } else { None }
-                }).unwrap_or(false)
-            })
-        };
-
-        health_entries.push(ProviderHealthEntry {
-            provider: name.to_string(),
-            health_state: health_str,
-            consecutive_failures: failures,
-            in_flight,
-            max_concurrency,
-            load_score,
-            backoff_ms: backoff.as_millis() as u64,
-            available,
-            last_failure_ago_ms,
-            rate_limited,
-        });
+        let entry = build_provider_health_entry(&state, provider.as_ref()).await;
+        if entry.health_state == "unhealthy" { unhealthy += 1; }
+        else if entry.health_state == "degraded" { degraded += 1; }
+        health_entries.push(entry);
     }
 
     Json(HealthOverviewResponse {
@@ -785,13 +855,14 @@ pub async fn get_metrics_history(State(state): State<std::sync::Arc<AppState>>) 
 #[axum::debug_handler]
 pub async fn chat_handler(
     State(state): State<std::sync::Arc<AppState>>,
+    Extension(user): Extension<Option<crate::db::User>>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, String)> {
     if request.stream.unwrap_or(false) {
-        let stream_response = chat_completions_stream(State(state), Json(request)).await;
+        let stream_response = chat_completions_stream(State(state), Extension(user), Json(request)).await;
         Ok(stream_response.into_response())
     } else {
-        let response = chat_completions_handler(State(state), Json(request)).await?;
+        let response = chat_completions_handler(State(state), Extension(user), Json(request)).await?;
         Ok(response.into_response())
     }
 }
@@ -799,6 +870,7 @@ pub async fn chat_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_handler(
     State(state): State<std::sync::Arc<AppState>>,
+    Extension(user): Extension<Option<crate::db::User>>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Json<ChatCompletionResponse>, (axum::http::StatusCode, String)> {
     tracing::info!(
@@ -808,6 +880,39 @@ pub async fn chat_completions_handler(
         "Received chat completion request"
     );
 
+    // ── Billing ──────────────────────────────────────────────
+    let billing_guard = if state.payments_state.is_some() {
+        let user_id = user.as_ref().map(|u| u.id);
+        match crate::payments::guard::BillingGuard::try_create(
+            &state,
+            user_id,
+            &request.model,
+            request.max_completion_tokens.map(|t| t),
+        )
+        .await
+        {
+            Ok(guard) => Some(guard),
+            Err(crate::payments::biller::BillingError::InsufficientFunds {
+                required,
+                available,
+            }) => {
+                let (code, json) =
+                    crate::payments::guard::insufficient_funds_response(required, available);
+                return Err((code, json.0.to_string()));
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Billing reservation error");
+                return Err((
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({"error": {"message": format!("Billing error: {}", e), "type": "billing_error"}}).to_string(),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    // ──────────────────────────────────────────────────────────
+
     match state.config.router.chat_completions(&request).await {
         Ok(response) => {
             tracing::info!(
@@ -815,6 +920,14 @@ pub async fn chat_completions_handler(
                 completion_id = response.id,
                 "Request completed successfully"
             );
+
+            // Finalize billing
+            if let Some(guard) = &billing_guard {
+                if let Some(ref usage) = response.usage {
+                    guard.finalize(usage.prompt_tokens, usage.completion_tokens).await;
+                }
+            }
+
             Ok(Json(response))
         },
         Err(e) => {
@@ -837,6 +950,7 @@ pub async fn chat_completions_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_stream(
     State(state): State<std::sync::Arc<AppState>>,
+    Extension(user): Extension<Option<crate::db::User>>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>> + Send + 'static>, (axum::http::StatusCode, String)> {
     tracing::info!(
@@ -846,22 +960,72 @@ pub async fn chat_completions_stream(
         "Received streaming chat completion request"
     );
 
+    // ── Billing ──────────────────────────────────────────────
+    let billing_guard = if state.payments_state.is_some() {
+        let user_id = user.as_ref().map(|u| u.id);
+        match crate::payments::guard::BillingGuard::try_create(
+            &state,
+            user_id,
+            &request.model,
+            request.max_completion_tokens,
+        )
+        .await
+        {
+            Ok(guard) => Some(Arc::new(guard)),
+            Err(crate::payments::biller::BillingError::InsufficientFunds {
+                required,
+                available,
+            }) => {
+                return Err((
+                    axum::http::StatusCode::PAYMENT_REQUIRED,
+                    serde_json::json!({
+                        "error": {
+                            "message": "Insufficient funds",
+                            "type": "payment_required",
+                            "required_msat": required,
+                            "available_msat": available,
+                        }
+                    })
+                    .to_string(),
+                ));
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Billing reservation error");
+                return Err((
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({"error": {"message": format!("Billing error: {}", e), "type": "billing_error"}}).to_string(),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    // ──────────────────────────────────────────────────────────
+
+    let model = request.model.clone();
     let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send + 'static>> = 
         match state.config.router.chat_completions_stream(&request).await {
             Ok(stream) => {
+                let billing_guard = billing_guard.clone();
                 let converted_stream = async_stream::stream! {
                     use futures::StreamExt;
                     let mut stream = stream;
-                    let mut chunk_count = 0;
+                    let mut chunk_count = 0u32;
+                    let mut prompt_tokens = 0u32;
+                    let mut completion_tokens = 0u32;
                     while let Some(result) = stream.next().await {
                         match result {
                             Ok(chunk) => {
+                                if let Some(ref usage) = chunk.usage {
+                                    prompt_tokens = usage.prompt_tokens;
+                                    completion_tokens = usage.completion_tokens;
+                                }
                                 chunk_count += 1;
                                 yield Ok(Event::default().json_data(&chunk).unwrap_or_else(|_| Event::default()));
                             }
                             Err(e) => {
                                 tracing::error!(
-                                    model = request.model,
+                                    model = %model,
                                     error = %e,
                                     chunks_sent = chunk_count,
                                     "Streaming request failed"
@@ -879,17 +1043,26 @@ pub async fn chat_completions_stream(
                     }
                     if chunk_count > 0 {
                         tracing::info!(
-                            model = request.model,
+                            model = %model,
                             chunks_sent = chunk_count,
+                            prompt_tokens,
+                            completion_tokens,
                             "Streaming request completed"
                         );
+                    }
+
+                    // Finalize billing after stream is done
+                    if let Some(ref guard) = billing_guard {
+                        if guard.is_active() {
+                            guard.finalize(prompt_tokens, completion_tokens).await;
+                        }
                     }
                 };
                 Box::pin(converted_stream)
             }
             Err(e) => {
                 tracing::error!(
-                    model = request.model,
+                    model = %model,
                     error = %e,
                     "Failed to create streaming route"
                 );
@@ -929,16 +1102,26 @@ pub async fn list_providers(State(state): State<std::sync::Arc<AppState>>) -> Js
         }
     };
 
+    // Build slug→health-entry map from live router providers
+    let live_providers = state.config.router.get_providers().await;
+    let mut health_by_slug: std::collections::HashMap<String, ProviderHealthEntry> =
+        std::collections::HashMap::new();
+    for provider in &live_providers {
+        let entry = build_provider_health_entry(&state, provider.as_ref()).await;
+        health_by_slug.insert(provider.slug().to_string(), entry);
+    }
+
     let providers_list: Vec<ProviderResponse> = providers
         .into_iter()
         .map(|p| ProviderResponse {
             id: p.id,
-            name: p.name,
-            slug: p.slug,
+            name: p.name.clone(),
+            slug: p.slug.clone(),
             base_url: p.base_url,
             provider_type: p.provider_type.as_str().to_string(),
             created_at: p.created_at,
             updated_at: p.updated_at,
+            health: health_by_slug.remove(&p.slug),
         })
         .collect();
 
@@ -1058,6 +1241,7 @@ pub async fn update_provider(
         provider_type: updated.provider_type.as_str().to_string(),
         created_at: updated.created_at,
         updated_at: updated.updated_at,
+        health: None,
     }))
 }
 
@@ -1239,6 +1423,7 @@ pub async fn list_provider_models(
 #[axum::debug_handler]
 pub async fn create_response(
     State(state): State<std::sync::Arc<AppState>>,
+    Extension(user): Extension<Option<crate::db::User>>,
     Json(request): Json<CreateResponse>,
 ) -> Result<Json<ApiResponse>, (axum::http::StatusCode, String)> {
     tracing::info!(
@@ -1247,6 +1432,40 @@ pub async fn create_response(
         "Received Responses API request"
     );
 
+    // ── Billing ──────────────────────────────────────────────
+    let billing_guard = if state.payments_state.is_some() {
+        let user_id = user.as_ref().map(|u| u.id);
+        let model_name = request.model.as_deref().unwrap_or("unknown");
+        match crate::payments::guard::BillingGuard::try_create(
+            &state,
+            user_id,
+            model_name,
+            None,
+        )
+        .await
+        {
+            Ok(guard) => Some(guard),
+            Err(crate::payments::biller::BillingError::InsufficientFunds {
+                required,
+                available,
+            }) => {
+                let (code, json) =
+                    crate::payments::guard::insufficient_funds_response(required, available);
+                return Err((code, json.0.to_string()));
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Billing reservation error");
+                return Err((
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({"error": {"message": format!("Billing error: {}", e), "type": "billing_error"}}).to_string(),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    // ──────────────────────────────────────────────────────────
+
     match state.config.router.responses(&request).await {
         Ok(response) => {
             tracing::info!(
@@ -1254,6 +1473,14 @@ pub async fn create_response(
                 response_id = response.id,
                 "Response created successfully"
             );
+
+            // Finalize billing
+            if let Some(guard) = &billing_guard {
+                if let Some(ref usage) = response.usage {
+                    guard.finalize(usage.input_tokens as u32, usage.output_tokens as u32).await;
+                }
+            }
+
             Ok(Json(response))
         },
         Err(e) => {
@@ -1270,6 +1497,156 @@ pub async fn create_response(
             });
             Err((axum::http::StatusCode::BAD_REQUEST, body.to_string()))
         }
+    }
+}
+
+// ============================================================================
+// Model Pricing Admin API
+// ============================================================================
+
+#[derive(Serialize)]
+pub struct ModelPricingResponse {
+    pub id: i64,
+    pub model_name: String,
+    pub is_advertised: bool,
+    pub is_free: bool,
+    pub price_per_1m_input_sats: Option<i64>,
+    pub price_per_1m_output_sats: Option<i64>,
+    pub price_per_request_sats: Option<i64>,
+    pub context_window: Option<i32>,
+    pub max_output_tokens: Option<i32>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Deserialize)]
+pub struct ModelPricingCreateRequest {
+    pub model_name: String,
+    #[serde(default = "default_true")]
+    pub is_advertised: bool,
+    #[serde(default)]
+    pub is_free: bool,
+    pub price_per_1m_input_sats: Option<i64>,
+    pub price_per_1m_output_sats: Option<i64>,
+    pub price_per_request_sats: Option<i64>,
+    pub context_window: Option<i32>,
+    pub max_output_tokens: Option<i32>,
+}
+
+#[derive(Deserialize)]
+pub struct ModelPricingUpdateRequest {
+    pub is_advertised: Option<bool>,
+    pub is_free: Option<bool>,
+    pub price_per_1m_input_sats: Option<Option<i64>>,
+    pub price_per_1m_output_sats: Option<Option<i64>>,
+    pub price_per_request_sats: Option<Option<i64>>,
+    pub context_window: Option<Option<i32>>,
+    pub max_output_tokens: Option<Option<i32>>,
+}
+
+fn default_true() -> bool { true }
+
+#[axum::debug_handler]
+pub async fn list_model_pricing(
+    State(state): State<std::sync::Arc<AppState>>,
+) -> Json<Vec<ModelPricingResponse>> {
+    let rows = state.config.db.list_model_pricings().await.unwrap_or_default();
+    Json(
+        rows.into_iter()
+            .map(|r| ModelPricingResponse {
+                id: r.id,
+                model_name: r.model_name,
+                is_advertised: r.is_advertised,
+                is_free: r.is_free,
+                price_per_1m_input_sats: r.price_per_1m_input_sats,
+                price_per_1m_output_sats: r.price_per_1m_output_sats,
+                price_per_request_sats: r.price_per_request_sats,
+                context_window: r.context_window,
+                max_output_tokens: r.max_output_tokens,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            })
+            .collect(),
+    )
+}
+
+#[axum::debug_handler]
+pub async fn create_model_pricing(
+    State(state): State<std::sync::Arc<AppState>>,
+    Json(req): Json<ModelPricingCreateRequest>,
+) -> Result<Json<ModelPricingResponse>, (StatusCode, String)> {
+    let mp = crate::db::NewModelPricing {
+        model_name: &req.model_name,
+        is_advertised: req.is_advertised,
+        is_free: req.is_free,
+        price_per_1m_input_sats: req.price_per_1m_input_sats,
+        price_per_1m_output_sats: req.price_per_1m_output_sats,
+        price_per_request_sats: req.price_per_request_sats,
+        context_window: req.context_window,
+        max_output_tokens: req.max_output_tokens,
+    };
+
+    match state.config.db.create_model_pricing(mp).await {
+        Ok(r) => Ok(Json(ModelPricingResponse {
+            id: r.id,
+            model_name: r.model_name,
+            is_advertised: r.is_advertised,
+            is_free: r.is_free,
+            price_per_1m_input_sats: r.price_per_1m_input_sats,
+            price_per_1m_output_sats: r.price_per_1m_output_sats,
+            price_per_request_sats: r.price_per_request_sats,
+            context_window: r.context_window,
+            max_output_tokens: r.max_output_tokens,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        })),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+#[axum::debug_handler]
+pub async fn update_model_pricing(
+    Path(model_name): Path<String>,
+    State(state): State<std::sync::Arc<AppState>>,
+    Json(req): Json<ModelPricingUpdateRequest>,
+) -> Result<Json<ModelPricingResponse>, (StatusCode, String)> {
+    let updates = crate::db::UpdateModelPricing {
+        is_advertised: req.is_advertised,
+        is_free: req.is_free,
+        price_per_1m_input_sats: req.price_per_1m_input_sats,
+        price_per_1m_output_sats: req.price_per_1m_output_sats,
+        price_per_request_sats: req.price_per_request_sats,
+        context_window: req.context_window,
+        max_output_tokens: req.max_output_tokens,
+    };
+
+    match state.config.db.update_model_pricing(&model_name, updates).await {
+        Ok(r) => Ok(Json(ModelPricingResponse {
+            id: r.id,
+            model_name: r.model_name,
+            is_advertised: r.is_advertised,
+            is_free: r.is_free,
+            price_per_1m_input_sats: r.price_per_1m_input_sats,
+            price_per_1m_output_sats: r.price_per_1m_output_sats,
+            price_per_request_sats: r.price_per_request_sats,
+            context_window: r.context_window,
+            max_output_tokens: r.max_output_tokens,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        })),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+#[axum::debug_handler]
+pub async fn delete_model_pricing(
+    Path(model_name): Path<String>,
+    State(state): State<std::sync::Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    match state.config.db.delete_model_pricing(&model_name).await {
+        Ok(true) => Ok(Json(serde_json::json!({"deleted": true, "model_name": model_name}))),
+        Ok(false) => Err((StatusCode::NOT_FOUND, "Model pricing not found".to_string())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
 
@@ -1296,11 +1673,13 @@ mod tests {
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),
                 port: 3000,
+                admin_ui_path: "/app/admin/dist".to_string(),
             },
             database: DatabaseConfig {
                 url: "sqlite::memory:".to_string(),
             },
             auth: None,
+            payments: None,
         };
 
         let app_config = crate::config::AppConfig {
@@ -1310,6 +1689,8 @@ mod tests {
                 Arc::new(db.clone()),
             )),
             auth_config: crate::auth::nip98::AuthConfig::default(),
+            payments_config: None,
+            admin_ui_path: "/app/admin/dist".to_string(),
         };
 
         let session_store = Arc::new(SessionStore::new());
@@ -1319,6 +1700,7 @@ mod tests {
             metrics_store: metrics_store.clone().into(),
             session_store,
             db: Arc::new(db),
+            payments_state: None,
         });
 
         (state, metrics_store)
@@ -1846,11 +2228,10 @@ pub async fn update_user(
         .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, "User not found".to_string()))?;
 
     if let Some(new_username) = &request.username {
-        if Some(new_username.as_str()) != existing_user.username.as_deref() {
-            if state.db.get_user_by_username(new_username).await.unwrap_or(None).is_some() {
+        if Some(new_username.as_str()) != existing_user.username.as_deref()
+            && state.db.get_user_by_username(new_username).await.unwrap_or(None).is_some() {
                 return Err((axum::http::StatusCode::BAD_REQUEST, format!("User '{}' already exists", new_username)));
             }
-        }
     }
 
     let mut updates = Vec::new();
@@ -2012,4 +2393,158 @@ pub async fn reload_config(
             Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
         }
     }
+}
+
+// ============================================================================
+// Admin Payment Management Handlers
+// ============================================================================
+
+/// GET /api/payments/balances — List all user balances (admin)
+#[axum::debug_handler]
+pub async fn list_all_balances(
+    State(state): State<std::sync::Arc<AppState>>,
+) -> Json<Vec<crate::db::UserBalanceWithUsername>> {
+    let balances = state.db.list_all_user_balances().await.unwrap_or_default();
+    Json(balances)
+}
+
+/// GET /api/payments/balances/:user_id — Get a single user's balance + recent transactions
+#[axum::debug_handler]
+pub async fn get_user_balance_details(
+    Path(user_id): Path<i64>,
+    State(state): State<std::sync::Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let balance = state.db.get_user_balance(user_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let transactions = state.db.get_user_transactions(user_id, 50)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let balance_msat = balance.as_ref().map(|b| b.balance_msat).unwrap_or(0);
+    let lifetime_deposited = balance.as_ref().map(|b| b.lifetime_deposited_msat).unwrap_or(0);
+
+    Ok(Json(serde_json::json!({
+        "user_id": user_id,
+        "balance_msat": balance_msat,
+        "lifetime_deposited_msat": lifetime_deposited,
+        "transactions": transactions,
+    })))
+}
+
+/// POST /api/payments/credit — Admin manually credits a user's balance
+#[derive(Deserialize)]
+pub struct AdminCreditRequest {
+    pub user_id: i64,
+    pub amount_sats: u64,
+    pub reason: Option<String>,
+}
+
+#[axum::debug_handler]
+pub async fn admin_credit_user(
+    State(state): State<std::sync::Arc<AppState>>,
+    Json(req): Json<AdminCreditRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if req.amount_sats == 0 {
+        return Err((StatusCode::BAD_REQUEST, "Amount must be positive".to_string()));
+    }
+
+    let payments = state.payments_state.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Payments not enabled".to_string()))?;
+
+    let amount_msat = (req.amount_sats as i64) * 1000;
+    let ref_id = format!("admin-credit-{}", chrono::Utc::now().timestamp_millis());
+    let reason = req.reason.as_deref().unwrap_or("admin_credit");
+
+    let new_balance = payments.balance_service
+        .credit(req.user_id, amount_msat, reason, &ref_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    tracing::info!(
+        admin_action = "credit",
+        user_id = req.user_id,
+        amount_msat = amount_msat,
+        new_balance_msat = new_balance,
+        reason = reason,
+        "Admin manual credit"
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "user_id": req.user_id,
+        "credited_sats": req.amount_sats,
+        "new_balance_msat": new_balance,
+        "new_balance_sats": new_balance / 1000,
+        "reason": reason,
+    })))
+}
+
+/// POST /api/payments/debit — Admin manually debits a user's balance
+#[derive(Deserialize)]
+pub struct AdminDebitRequest {
+    pub user_id: i64,
+    pub amount_sats: u64,
+    pub reason: Option<String>,
+}
+
+#[axum::debug_handler]
+pub async fn admin_debit_user(
+    State(state): State<std::sync::Arc<AppState>>,
+    Json(req): Json<AdminDebitRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if req.amount_sats == 0 {
+        return Err((StatusCode::BAD_REQUEST, "Amount must be positive".to_string()));
+    }
+
+    let payments = state.payments_state.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Payments not enabled".to_string()))?;
+
+    let amount_msat = (req.amount_sats as i64) * 1000;
+    let ref_id = format!("admin-debit-{}", chrono::Utc::now().timestamp_millis());
+    let reason = req.reason.as_deref().unwrap_or("admin_debit");
+
+    let new_balance = payments.balance_service
+        .debit(req.user_id, amount_msat, reason, &ref_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    tracing::info!(
+        admin_action = "debit",
+        user_id = req.user_id,
+        amount_msat = amount_msat,
+        new_balance_msat = new_balance,
+        reason = reason,
+        "Admin manual debit"
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "user_id": req.user_id,
+        "debited_sats": req.amount_sats,
+        "new_balance_msat": new_balance,
+        "new_balance_sats": new_balance / 1000,
+        "reason": reason,
+    })))
+}
+
+/// GET /api/payments/transactions — List recent transactions (admin audit)
+#[axum::debug_handler]
+pub async fn list_admin_transactions(
+    State(state): State<std::sync::Arc<AppState>>,
+) -> Json<Vec<crate::db::BalanceTransactionRow>> {
+    let txs = state.db.list_all_transactions(200).await.unwrap_or_default();
+    Json(txs)
+}
+
+/// GET /api/payments/invoices — List all lightning invoices (admin)
+#[axum::debug_handler]
+pub async fn list_admin_invoices(
+    State(state): State<std::sync::Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<Vec<crate::db::LightningInvoiceRow>> {
+    let user_id = params.get("user_id").and_then(|v| v.parse::<i64>().ok());
+    let invoices = state.db.list_all_lightning_invoices(user_id, 200).await.unwrap_or_default();
+    Json(invoices)
 }

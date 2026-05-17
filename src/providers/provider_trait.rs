@@ -6,10 +6,51 @@ use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use async_openai::types::models::Model;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use serde::Serialize;
 
 use crate::metrics::ErrorType;
 use crate::router::ModelRuntimeInfo;
 use crate::providers::StreamingChunk;
+
+/// A monetary amount with an explicit currency unit.
+/// All amounts use the smallest indivisible unit of the currency:
+/// - `Msats` and `Sats` for Bitcoin Lightning
+/// - `UsdMicro` for USD (millionths of a dollar — $1.00 = 1_000_000 µ$)
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(tag = "currency", content = "amount")]
+pub enum CurrencyAmount {
+    #[serde(rename = "msats")]
+    Msats(i64),
+    #[serde(rename = "sats")]
+    Sats(i64),
+    #[serde(rename = "usd_micro")]
+    UsdMicro(i64),
+}
+
+impl CurrencyAmount {
+    /// Total millisatoshis if the currency is Lightning-based, otherwise None.
+    pub fn as_msats(&self) -> Option<i64> {
+        match self {
+            CurrencyAmount::Msats(v) => Some(*v),
+            CurrencyAmount::Sats(v) => Some(*v * 1000),
+            CurrencyAmount::UsdMicro(_) => None,
+        }
+    }
+
+    /// Total satoshis if the currency is Lightning-based, otherwise None.
+    pub fn as_sats(&self) -> Option<i64> {
+        self.as_msats().map(|m| m / 1000)
+    }
+
+    /// Human-readable label for the currency.
+    pub fn currency_label(&self) -> &'static str {
+        match self {
+            CurrencyAmount::Msats(_) => "msats",
+            CurrencyAmount::Sats(_) => "sats",
+            CurrencyAmount::UsdMicro(_) => "µ$",
+        }
+    }
+}
 
 #[async_trait]
 pub trait Provider: Send + Sync {
@@ -46,6 +87,13 @@ pub trait Provider: Send + Sync {
     async fn get_runtime_info(&self, model_id: &str) -> Result<Option<ModelRuntimeInfo>, ProviderError> {
         let _ = model_id;
         Ok(None)
+    }
+
+    /// Fetch the current balance from the upstream provider.
+    /// Result is emitted as a `MetricsEvent::Balance` by the health check loop.
+    /// Returns `None` for providers that don't support balance tracking.
+    async fn fetch_balance(&self) -> Option<CurrencyAmount> {
+        None
     }
 }
 
@@ -147,7 +195,7 @@ impl ProviderError {
             ProviderError::Timeout => true,
             ProviderError::ServerError { status_code, .. } => {
                 // 5xx errors are transient
-                status_code.map_or(true, |code| code >= 500)
+                status_code.is_none_or(|code| code >= 500)
             }
             ProviderError::OpenAIError(_) => {
                 // OpenAI errors from async_openai often represent

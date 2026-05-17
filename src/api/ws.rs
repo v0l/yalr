@@ -89,7 +89,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
                                 continue;
                             }
                         };
-                        if socket.send(Message::Text(json.into())).await.is_err() {
+                        if socket.send(Message::Text(json)).await.is_err() {
                             // Client disconnected
                             break;
                         }
@@ -98,7 +98,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
                         tracing::warn!(skipped = n, "Metrics WS client lagged behind");
                         // Send a lag notification so the client knows it missed events
                         let msg = serde_json::json!({"type": "lag", "skipped": n});
-                        let _ = socket.send(Message::Text(msg.to_string().into())).await;
+                        let _ = socket.send(Message::Text(msg.to_string())).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         tracing::info!("Metrics broadcast channel closed, ending WS connection");
@@ -140,6 +140,8 @@ mod tests {
                 Arc::new(db.clone()),
             )),
             auth_config: crate::auth::nip98::AuthConfig::default(),
+            payments_config: None,
+            admin_ui_path: "/app/admin/dist".to_string(),
         };
 
         let session_store = Arc::new(SessionStore::new());
@@ -149,6 +151,7 @@ mod tests {
             metrics_store: metrics_store.clone().into(),
             session_store,
             db: Arc::new(db),
+            payments_state: None,
         });
 
         (state, metrics_store)

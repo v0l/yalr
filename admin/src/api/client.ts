@@ -561,4 +561,96 @@ export const api = {
     
     return response.json()
   },
+
+  // ── Payments / Balance ─────────────────────────────────────────────
+
+  async getAllBalances(): Promise<import('../types').UserBalanceEntry[]> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/payments/balances`, { headers })
+    if (!response.ok) throw new Error('Failed to fetch balances')
+    return response.json()
+  },
+
+  async getUserBalanceDetail(userId: number): Promise<import('../types').UserBalanceDetail> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/payments/balances/${userId}`, { headers })
+    if (!response.ok) throw new Error('Failed to fetch balance details')
+    return response.json()
+  },
+
+  async adminCredit(data: import('../types').AdminCreditRequest): Promise<import('../types').UserBalanceDetail & { success: boolean }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/payments/credit`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!response.ok) throw new Error('Failed to credit user')
+    return response.json()
+  },
+
+  async adminDebit(data: import('../types').AdminDebitRequest): Promise<import('../types').UserBalanceDetail & { success: boolean }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/payments/debit`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!response.ok) throw new Error('Failed to debit user')
+    return response.json()
+  },
+
+  async getAllTransactions(): Promise<import('../types').BalanceTransaction[]> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/payments/transactions`, { headers })
+    if (!response.ok) throw new Error('Failed to fetch transactions')
+    return response.json()
+  },
+
+  async getAllInvoices(userId?: number): Promise<import('../types').LightningInvoice[]> {
+    const headers = await getAuthHeaders()
+    const params = userId ? `?user_id=${userId}` : ''
+    const response = await fetch(`${API_BASE_URL}/api/payments/invoices${params}`, { headers })
+    if (!response.ok) throw new Error('Failed to fetch invoices')
+    return response.json()
+  },
+
+  async getModelPricing(): Promise<import('../types').ModelPricingEntry[]> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/model-pricing`, { headers })
+    if (!response.ok) throw new Error('Failed to fetch model pricing')
+    return response.json()
+  },
+
+  async createModelPricing(data: import('../types').ModelPricingCreateRequest): Promise<import('../types').ModelPricingEntry> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/model-pricing`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!response.ok) throw new Error('Failed to create model pricing')
+    return response.json()
+  },
+
+  async updateModelPricing(modelName: string, data: import('../types').ModelPricingUpdateRequest): Promise<import('../types').ModelPricingEntry> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/model-pricing/${encodeURIComponent(modelName)}`, {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!response.ok) throw new Error('Failed to update model pricing')
+    return response.json()
+  },
+
+  async deleteModelPricing(modelName: string): Promise<{ deleted: boolean; model_name: string }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/model-pricing/${encodeURIComponent(modelName)}`, {
+      method: 'DELETE',
+      headers,
+    })
+    if (!response.ok) throw new Error('Failed to delete model pricing')
+    return response.json()
+  },
 }

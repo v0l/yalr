@@ -6,6 +6,7 @@ export interface Provider {
   provider_type: string
   created_at: string
   updated_at: string
+  health?: ProviderHealthEntry
 }
 
 export interface Model {
@@ -13,6 +14,15 @@ export interface Model {
   object: string
   created: number
   owned_by: string
+  /// Pricing per RIP-05 (present when payments enabled)
+  pricing?: ModelPricingInfo
+}
+
+export interface ModelPricingInfo {
+  prompt: number
+  completion: number
+  request: number
+  unit: string
 }
 
 export interface ProviderMetricsSummary {
@@ -29,6 +39,7 @@ export interface ProviderMetricsSummary {
   backoff_ms: number | null
   load_score: number | null
   available: boolean | null
+  health?: ProviderHealthEntry
 }
 
 export interface ProviderHealthEntry {
@@ -42,6 +53,12 @@ export interface ProviderHealthEntry {
   available: boolean
   last_failure_ago_ms: number | null
   rate_limited: boolean
+  balance?: CurrencyAmount
+}
+
+export interface CurrencyAmount {
+  currency: 'msats' | 'sats' | 'usd_micro'
+  amount: number
 }
 
 export interface HealthOverviewResponse {
@@ -289,4 +306,93 @@ export interface UserApiKeyListItem {
 export interface UserDetailResponse {
   user: User
   api_keys: UserApiKeyListItem[]
+}
+
+// ── Payments / Balance ────────────────────────────────────────────────
+
+export interface UserBalanceEntry {
+  id: number
+  user_id: number
+  balance_msat: number
+  lifetime_deposited_msat: number
+  created_at: string
+  updated_at: string
+  username: string
+}
+
+export interface BalanceTransaction {
+  id: number
+  user_id: number
+  amount_msat: number
+  transaction_type: string
+  reference_id: string | null
+  metadata: string | null
+  created_at: string
+}
+
+export interface UserBalanceDetail {
+  user_id: number
+  balance_msat: number
+  lifetime_deposited_msat: number
+  transactions: BalanceTransaction[]
+}
+
+export interface LightningInvoice {
+  id: number
+  user_id: number
+  payment_hash: string
+  bolt11: string
+  amount_msat: number
+  amount_sats: number
+  status: string
+  created_at: string
+  expires_at: string | null
+  paid_at: string | null
+}
+
+export interface AdminCreditRequest {
+  user_id: number
+  amount_sats: number
+  reason?: string
+}
+
+export interface AdminDebitRequest {
+  user_id: number
+  amount_sats: number
+  reason?: string
+}
+
+export interface ModelPricingEntry {
+  id: number
+  model_name: string
+  is_advertised: boolean
+  is_free: boolean
+  price_per_1m_input_sats: number | null
+  price_per_1m_output_sats: number | null
+  price_per_request_sats: number | null
+  context_window: number | null
+  max_output_tokens: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ModelPricingCreateRequest {
+  model_name: string
+  is_advertised: boolean
+  is_free: boolean
+  price_per_1m_input_sats?: number | null
+  price_per_1m_output_sats?: number | null
+  price_per_request_sats?: number | null
+  context_window?: number | null
+  max_output_tokens?: number | null
+}
+
+export interface ModelPricingUpdateRequest {
+  is_advertised?: boolean
+  is_free?: boolean
+  price_per_1m_input_sats?: number | null
+  price_per_1m_output_sats?: number | null
+  price_per_request_sats?: number | null
+  context_window?: number | null
+  max_output_tokens?: number | null
 }

@@ -14,6 +14,19 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Card, CardContent } from '@/components/ui/card'
 
+function HealthBadge({ state }: { state?: string }) {
+  switch (state) {
+    case 'healthy':
+      return <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400">Healthy</Badge>
+    case 'degraded':
+      return <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">Degraded</Badge>
+    case 'unhealthy':
+      return <Badge className="bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400">Down</Badge>
+    default:
+      return <Badge variant="outline">Unknown</Badge>
+  }
+}
+
 type ProviderFormData = {
   name: string
   slug: string
@@ -175,6 +188,7 @@ export default function Providers() {
                 <TableHead>Name</TableHead>
                 <TableHead>Slug</TableHead>
                 <TableHead>Type</TableHead>
+                <TableHead>Status</TableHead>
                 <TableHead>Base URL</TableHead>
                 <TableHead className="w-20 text-right">Actions</TableHead>
               </TableRow>
@@ -182,7 +196,7 @@ export default function Providers() {
             <TableBody>
               {providers.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground py-12">
+                  <TableCell colSpan={6} className="text-center text-muted-foreground py-12">
                     No providers configured. Add one to get started.
                   </TableCell>
                 </TableRow>
@@ -194,6 +208,7 @@ export default function Providers() {
                     <TableCell>
                       <Badge variant="secondary">{provider.provider_type}</Badge>
                     </TableCell>
+                    <TableCell><HealthBadge state={provider.health?.health_state} /></TableCell>
                     <TableCell className="font-mono text-muted-foreground">{provider.base_url}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
@@ -215,7 +230,7 @@ export default function Providers() {
 
       {/* Create/Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={(open) => { if (!open) setDialogOpen(false) }}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{editingProvider ? 'Edit Provider' : 'Add Provider'}</DialogTitle>
             <DialogDescription>
@@ -257,6 +272,7 @@ export default function Providers() {
                       <SelectItem value="llamacpp">LlamaCpp</SelectItem>
                       <SelectItem value="vllm">vLLM</SelectItem>
                       <SelectItem value="ollama">Ollama</SelectItem>
+                      <SelectItem value="routstr">Routstr</SelectItem>
                     </SelectGroup>
                   </SelectContent>
                 </Select>

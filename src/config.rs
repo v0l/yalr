@@ -8,12 +8,19 @@ pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub auth: Option<AuthConfig>,
+    pub payments: Option<PaymentsConfig>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    #[serde(default = "default_admin_ui_path")]
+    pub admin_ui_path: String,
+}
+
+fn default_admin_ui_path() -> String {
+    "/app/admin/dist".to_string()
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -33,13 +40,63 @@ impl Default for Config {
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),
                 port: 3000,
+                admin_ui_path: default_admin_ui_path(),
             },
             database: DatabaseConfig {
                 url: "sqlite:llm_router.db?mode=rwc".to_string(),
             },
             auth: None,
+            payments: None,
         }
     }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Default)]
+pub struct PaymentsConfig {
+    pub enabled: bool,
+    #[serde(default)]
+    pub default_pricing: DefaultPricingConfig,
+    pub lnd: Option<LndConfig>,
+}
+
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DefaultPricingConfig {
+    #[serde(default)]
+    pub price_per_1m_input_sats: i64,
+    #[serde(default)]
+    pub price_per_1m_output_sats: i64,
+    #[serde(default)]
+    pub price_per_request_sats: i64,
+    #[serde(default = "DefaultPricingConfig::default_context_window")]
+    pub context_window: i32,
+    #[serde(default = "DefaultPricingConfig::default_max_output_tokens")]
+    pub max_output_tokens: i32,
+}
+
+impl Default for DefaultPricingConfig {
+    fn default() -> Self {
+        Self {
+            price_per_1m_input_sats: 0,
+            price_per_1m_output_sats: 0,
+            price_per_request_sats: 0,
+            context_window: Self::default_context_window(),
+            max_output_tokens: Self::default_max_output_tokens(),
+        }
+    }
+}
+
+impl DefaultPricingConfig {
+    fn default_context_window() -> i32 { 8192 }
+    fn default_max_output_tokens() -> i32 { 4096 }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct LndConfig {
+    pub url: String,
+    pub tls_cert_path: String,
+    pub macaroon_path: String,
 }
 
 #[derive(Clone)]
@@ -47,6 +104,8 @@ pub struct AppConfig {
     pub db: Arc<Database>,
     pub router: Arc<Router>,
     pub auth_config: crate::auth::nip98::AuthConfig,
+    pub payments_config: Option<PaymentsConfig>,
+    pub admin_ui_path: String,
 }
 
 impl AppConfig {
@@ -76,7 +135,10 @@ impl AppConfig {
             }
         }).unwrap_or_default();
 
-        Ok(Self { db, router, auth_config })
+        let payments_config = config.payments;
+        let admin_ui_path = config.server.admin_ui_path.clone();
+
+        Ok(Self { db, router, auth_config, payments_config, admin_ui_path })
     }
 
     pub async fn load_providers(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

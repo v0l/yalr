@@ -21,7 +21,15 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 config = "0.14"
 clap = { version = "4", features = ["derive"] }
-async-openai = { version = "0.34.0", features = ["chat-completion", "responses", "realtime", "model-types", "_api", "model", "byot"] }
+async-openai = { version = "0.34.0", features = [
+  "chat-completion",
+  "responses",
+  "realtime",
+  "model-types",
+  "_api",
+  "model",
+  "byot",
+] }
 nostr = "0.44"
 base64 = "0.22"
 url = "2.5"
@@ -30,6 +38,10 @@ argon2 = "0.5"
 rand = "0.8"
 sha2 = "0.10"
 hex = "0.4"
+payments-rs = { git = "https://github.com/v0l/payments-rs", default-features = false, features = [
+  "method-lnd",
+  "tls-ring",
+] }
 
 [[bin]]
 name = "yalr-server"

@@ -3,6 +3,7 @@ use crate::api::ws;
 use crate::auth::admin::SessionStore;
 use crate::config::AppConfig;
 use crate::metrics::{MetricsEmitter, MetricsStore};
+use crate::payments::PaymentsState;
 use crate::state::AppState;
 use axum::{
     body::Body,
@@ -15,11 +16,32 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::{trace::TraceLayer, cors::CorsLayer};
 
-async fn serve_admin_fallback(req: Request<Body>) -> impl IntoResponse {
+async fn serve_admin_fallback(req: Request<Body>, admin_ui_path: String) -> impl IntoResponse {
+    // Only serve admin UI for GET and HEAD requests
+    if req.method() != axum::http::Method::GET && req.method() != axum::http::Method::HEAD {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    
     let path = req.uri().path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
     
-    match tokio::fs::read(format!("/app/admin/dist/{}", path)).await {
+    // Skip API routes - they should return 404 if not found
+    if path.starts_with("api/") || path.starts_with("v1/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    
+    // Don't fall back to index.html for asset files (js, css, images, etc.)
+    let is_asset = path.ends_with(".js") 
+        || path.ends_with(".css") 
+        || path.contains("/assets/")
+        || path.contains("/favicon")
+        || path.ends_with(".png")
+        || path.ends_with(".jpg")
+        || path.ends_with(".jpeg")
+        || path.ends_with(".svg")
+        || path.ends_with(".ico");
+    
+    match tokio::fs::read(format!("{}/{}", admin_ui_path, path)).await {
         Ok(contents) => {
             let content_type = if path.ends_with(".html") {
                 "text/html; charset=utf-8"
@@ -35,14 +57,20 @@ async fn serve_admin_fallback(req: Request<Body>) -> impl IntoResponse {
             (headers, contents).into_response()
         },
         Err(_) => {
-            // For SPA routing, serve index.html for any unknown path
-            match tokio::fs::read("/app/admin/dist/index.html").await {
-                Ok(contents) => {
-                    let mut headers = axum::http::HeaderMap::new();
-                    headers.insert(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8".parse().unwrap());
-                    (headers, contents).into_response()
-                },
-                Err(_) => StatusCode::NOT_FOUND.into_response(),
+            // For SPA routing, serve index.html for unknown paths (except assets)
+            if is_asset {
+                // Assets that don't exist should return 404
+                StatusCode::NOT_FOUND.into_response()
+            } else {
+                // Unknown routes should serve index.html for SPA routing
+                match tokio::fs::read(format!("{}/index.html", admin_ui_path)).await {
+                    Ok(contents) => {
+                        let mut headers = axum::http::HeaderMap::new();
+                        headers.insert(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8".parse().unwrap());
+                        (headers, contents).into_response()
+                    },
+                    Err(_) => StatusCode::NOT_FOUND.into_response(),
+                }
             }
         }
     }
@@ -57,19 +85,42 @@ pub async fn run_with_shutdown<F>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_store = Arc::new(SessionStore::new());
     let db = config.db.clone();
+
+    // Initialize payments state if configured
+    let payments_state = if let Some(ref pc) = config.payments_config {
+        if pc.enabled {
+            match PaymentsState::new(pc.clone(), db.clone()).await {
+                Ok(ps) => {
+                    tracing::info!("Payments system initialized");
+                    Some(Arc::new(ps))
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to initialize payments, starting without payments");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let state = Arc::new(AppState {
         config: config.clone(),
         metrics_emitter,
         metrics_store,
         session_store: session_store.clone(),
         db,
+        payments_state,
     });
 
+    let admin_ui_path = config.admin_ui_path.clone();
     let cors = CorsLayer::permissive();
 
     use crate::auth::admin::{login, logout, auth_status, check_setup_complete, setup_first_user, auth_middleware, admin_middleware};
     use crate::auth::api_keys::{create_api_key, list_api_keys, delete_api_key, disable_api_key, enable_api_key, create_api_key_for_user};
-    use handlers::{list_users, create_user, update_user, delete_user, get_user};
+    use handlers::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, admin_credit_user, admin_debit_user, list_admin_transactions, list_admin_invoices};
     
     let public_auth_routes = Router::new()
         .route("/auth/setup", post(setup_first_user))
@@ -100,6 +151,10 @@ pub async fn run_with_shutdown<F>(
         .route("/providers/:slug/models", get(handlers::list_provider_models))
         .route("/models/sync/:provider_slug", get(handlers::sync_provider_models))
         .route("/models/discrepancies", post(handlers::detect_model_discrepancies))
+        .route("/model-pricing", get(handlers::list_model_pricing))
+        .route("/model-pricing", post(handlers::create_model_pricing))
+        .route("/model-pricing/:model_name", put(handlers::update_model_pricing))
+        .route("/model-pricing/:model_name", delete(handlers::delete_model_pricing))
         .route("/api-keys", get(list_api_keys))
         .route("/api-keys", post(create_api_key))
         .route("/api-keys/:id", delete(delete_api_key))
@@ -111,6 +166,12 @@ pub async fn run_with_shutdown<F>(
         .route("/users/:id", get(get_user))
         .route("/users/:id", put(update_user))
         .route("/users/:id", delete(delete_user))
+        .route("/payments/balances", get(list_all_balances))
+        .route("/payments/balances/:user_id", get(get_user_balance_details))
+        .route("/payments/credit", post(admin_credit_user))
+        .route("/payments/debit", post(admin_debit_user))
+        .route("/payments/transactions", get(list_admin_transactions))
+        .route("/payments/invoices", get(list_admin_invoices))
         .layer(axum::middleware::from_fn_with_state(state.clone(), admin_middleware));
 
     let all_protected = protected_routes.merge(admin_routes);
@@ -123,14 +184,26 @@ pub async fn run_with_shutdown<F>(
         .route("/v1/responses", post(handlers::create_response))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let routstr_protected_routes = Router::new()
+        .route("/v1/balance/info", get(crate::payments::routstr::balance_info))
+        .route("/v1/balance/refund", post(crate::payments::routstr::balance_refund))
+        .route("/lightning/invoice", post(crate::payments::routstr::create_lightning_invoice))
+        .route("/lightning/invoice/:payment_hash/status", get(crate::payments::routstr::check_lightning_invoice))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
     let app = Router::new()
         .nest("/api", public_auth_routes.merge(all_protected))
         .route("/api/metrics/ws", get(ws::ws_metrics_handler))
         .merge(chat_completions_routes)
         .merge(responses_routes)
+        .merge(routstr_protected_routes)
         .route("/v1/models", get(handlers::list_models))
+        .route("/v1/info", get(crate::payments::routstr::routstr_info))
         .route("/api/health", get(handlers::health_check))
-        .fallback(serve_admin_fallback)
+        .fallback(axum::routing::get({
+            let admin_ui_path = admin_ui_path.clone();
+            move |req: axum::extract::Request| serve_admin_fallback(req, admin_ui_path.clone())
+        }))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -162,7 +235,7 @@ pub async fn run(
 pub async fn create_test_app(state: Arc<AppState>) -> Router {
     use crate::auth::admin::{login, logout, auth_status, check_setup_complete, setup_first_user, auth_middleware, admin_middleware, AdminExtractor};
     use crate::auth::api_keys::{create_api_key, list_api_keys, delete_api_key, disable_api_key, enable_api_key, create_api_key_for_user};
-    use handlers::{list_users, create_user, update_user, delete_user, get_user};
+    use handlers::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, admin_credit_user, admin_debit_user, list_admin_transactions, list_admin_invoices};
     use tower_http::cors::CorsLayer;
     use tower_http::trace::TraceLayer;
     
@@ -195,6 +268,10 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/providers/:slug/models", get(handlers::list_provider_models))
         .route("/models/sync/:provider_slug", get(handlers::sync_provider_models))
         .route("/models/discrepancies", post(handlers::detect_model_discrepancies))
+        .route("/model-pricing", get(handlers::list_model_pricing))
+        .route("/model-pricing", post(handlers::create_model_pricing))
+        .route("/model-pricing/:model_name", put(handlers::update_model_pricing))
+        .route("/model-pricing/:model_name", delete(handlers::delete_model_pricing))
         .route("/api-keys", get(list_api_keys))
         .route("/api-keys", post(create_api_key))
         .route("/api-keys/:id", delete(delete_api_key))
@@ -206,6 +283,12 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/users/:id", get(get_user))
         .route("/users/:id", put(update_user))
         .route("/users/:id", delete(delete_user))
+        .route("/payments/balances", get(list_all_balances))
+        .route("/payments/balances/:user_id", get(get_user_balance_details))
+        .route("/payments/credit", post(admin_credit_user))
+        .route("/payments/debit", post(admin_debit_user))
+        .route("/payments/transactions", get(list_admin_transactions))
+        .route("/payments/invoices", get(list_admin_invoices))
         .layer(axum::middleware::from_fn_with_state(state.clone(), admin_middleware));
 
     let all_protected = protected_routes.merge(admin_routes);
@@ -218,14 +301,26 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/v1/responses", post(handlers::create_response))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let routstr_protected_routes = Router::new()
+        .route("/v1/balance/info", get(crate::payments::routstr::balance_info))
+        .route("/v1/balance/refund", post(crate::payments::routstr::balance_refund))
+        .route("/lightning/invoice", post(crate::payments::routstr::create_lightning_invoice))
+        .route("/lightning/invoice/:payment_hash/status", get(crate::payments::routstr::check_lightning_invoice))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
     Router::new()
         .merge(chat_completions_routes)
         .merge(responses_routes)
+        .merge(routstr_protected_routes)
         .route("/v1/models", get(handlers::list_models))
+        .route("/v1/info", get(crate::payments::routstr::routstr_info))
         .route("/api/health", get(handlers::health_check))
         .route("/api/metrics/ws", get(ws::ws_metrics_handler))
         .nest("/api", public_auth_routes.merge(all_protected))
-        .fallback(serve_admin_fallback)
+        .fallback_service(axum::routing::get({
+            let state = state.clone();
+            move || serve_admin_fallback(axum::extract::Request::new(Body::empty()), state.config.admin_ui_path.clone())
+        }))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

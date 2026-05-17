@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
-import type { UserDetailResponse } from '../types'
+import type { UserDetailResponse, UserBalanceDetail } from '../types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -32,6 +32,10 @@ export default function UserDetail() {
   const [keyForm, setKeyForm] = useState({ name: '', expiresInDays: '' })
   const [createdKey, setCreatedKey] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // Balance
+  const [balanceData, setBalanceData] = useState<UserBalanceDetail | null>(null)
+  const [balanceLoading, setBalanceLoading] = useState(false)
+  const [showBalance, setShowBalance] = useState(false)
 
   useEffect(() => { if (id) loadUser() }, [id])
 
@@ -48,6 +52,20 @@ export default function UserDetail() {
       setError(e instanceof Error ? e.message : 'Failed to load user')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function loadBalance() {
+    if (!id) return
+    setBalanceLoading(true)
+    try {
+      const bd = await api.getUserBalanceDetail(parseInt(id))
+      setBalanceData(bd)
+      setShowBalance(true)
+    } catch {
+      // Payments may not be enabled — ignore silently
+    } finally {
+      setBalanceLoading(false)
     }
   }
 
@@ -152,6 +170,77 @@ export default function UserDetail() {
             <div><Label className="text-xs text-muted-foreground">Updated</Label><p className="text-sm">{new Date(user.updated_at).toLocaleString()}</p></div>
           </div>
         </CardContent>
+      </Card>
+
+      <Separator />
+
+      {/* Balance */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Balance</CardTitle>
+          {!showBalance ? (
+            <Button size="sm" onClick={loadBalance} disabled={balanceLoading} variant="secondary">
+              {balanceLoading ? 'Loading...' : 'View Balance'}
+            </Button>
+          ) : (
+            <Button size="sm" variant="outline" onClick={() => { loadBalance() }} disabled={balanceLoading}>
+              Refresh
+            </Button>
+          )}
+        </CardHeader>
+        {showBalance && balanceData && (
+          <CardContent>
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <Label className="text-xs text-muted-foreground">Current Balance</Label>
+                <p className="text-lg font-bold font-mono">{(balanceData.balance_msat / 1000).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} sats</p>
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Lifetime Deposited</Label>
+                <p className="text-lg font-mono text-muted-foreground">{(balanceData.lifetime_deposited_msat / 1000).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} sats</p>
+              </div>
+            </div>
+            {balanceData.transactions.length > 0 && (
+              <>
+                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Recent Transactions</h4>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Time</TableHead>
+                      <TableHead>Type</TableHead>
+                      <TableHead className="text-right">Amount</TableHead>
+                      <TableHead>Reference</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {balanceData.transactions.slice(0, 10).map(tx => (
+                      <TableRow key={tx.id}>
+                        <TableCell className="text-sm text-muted-foreground">{new Date(tx.created_at).toLocaleString()}</TableCell>
+                        <TableCell>
+                          {tx.transaction_type === 'deposit' ? <Badge>Deposit</Badge> :
+                           tx.transaction_type === 'refund' ? <Badge variant="outline">Refund</Badge> :
+                           tx.transaction_type === 'charge' ? <Badge variant="destructive">Charge</Badge> :
+                           tx.transaction_type === 'reserve' ? <Badge variant="secondary">Reserve</Badge> :
+                           tx.transaction_type === 'admin_credit' ? <Badge>Admin Credit</Badge> :
+                           tx.transaction_type === 'admin_debit' ? <Badge variant="destructive">Admin Debit</Badge> :
+                           <Badge variant="secondary">{tx.transaction_type}</Badge>
+                          }
+                        </TableCell>
+                        <TableCell className={`text-right font-mono text-sm ${tx.amount_msat >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive'}`}>
+                          {tx.amount_msat >= 0 ? '+' : ''}{(tx.amount_msat / 1000).toFixed(3)} sats
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-muted-foreground truncate max-w-32" title={tx.reference_id || ''}>{tx.reference_id || '—'}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </>
+            )}
+            {balanceData.transactions.length === 0 && (
+              <p className="text-sm text-muted-foreground text-center py-4">No transactions yet</p>
+            )}
+          </CardContent>
+        )}
       </Card>
 
       <Separator />

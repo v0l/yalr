@@ -35,6 +35,7 @@ pub enum ProviderType {
     LlamaCpp = 1,
     Vllm = 2,
     Ollama = 3,
+    Routstr = 4,
 }
 
 impl ProviderType {
@@ -44,6 +45,7 @@ impl ProviderType {
             ProviderType::LlamaCpp => "llamacpp",
             ProviderType::Vllm => "vllm",
             ProviderType::Ollama => "ollama",
+            ProviderType::Routstr => "routstr",
         }
     }
     
@@ -53,6 +55,7 @@ impl ProviderType {
             "llamacpp" => Some(ProviderType::LlamaCpp),
             "vllm" => Some(ProviderType::Vllm),
             "ollama" => Some(ProviderType::Ollama),
+            "routstr" => Some(ProviderType::Routstr),
             _ => None,
         }
     }
@@ -713,7 +716,6 @@ impl Database {
         // Return the user (either the one we just created or one created by a concurrent request)
         self.get_user_by_external_id(pubkey, UserType::Nostr)
             .await
-            .map_err(|e| e)
             .and_then(|user| user.ok_or(sqlx::Error::RowNotFound))
     }
 
@@ -805,9 +807,322 @@ impl Database {
             .await?;
         Ok(result.rows_affected() > 0)
     }
+
+    // ── Payments: User Balances ───────────────────────────────────────
+
+    pub async fn get_user_balance(&self, user_id: i64) -> Result<Option<UserBalanceRow>, sqlx::Error> {
+        sqlx::query_as::<_, UserBalanceRow>(
+            "SELECT id, user_id, balance_msat, lifetime_deposited_msat, created_at, updated_at FROM user_balances WHERE user_id = ?"
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn get_user_transactions(
+        &self,
+        user_id: i64,
+        limit: i64,
+    ) -> Result<Vec<BalanceTransactionRow>, sqlx::Error> {
+        sqlx::query_as::<_, BalanceTransactionRow>(
+            "SELECT id, user_id, amount_msat, transaction_type, reference_id, metadata, created_at FROM balance_transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?"
+        )
+        .bind(user_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    // ── Payments: Admin Queries ───────────────────────────────────────
+
+    /// List all user balances (admin overview).
+    pub async fn list_all_user_balances(&self) -> Result<Vec<UserBalanceWithUsername>, sqlx::Error> {
+        sqlx::query_as::<_, UserBalanceWithUsername>(
+            "SELECT ub.id, ub.user_id, ub.balance_msat, ub.lifetime_deposited_msat, ub.created_at, ub.updated_at, COALESCE(u.username, u.external_id, 'user-' || ub.user_id) as username FROM user_balances ub LEFT JOIN users u ON ub.user_id = u.id ORDER BY ub.balance_msat DESC"
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// List all balance transactions across all users (admin audit).
+    pub async fn list_all_transactions(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<BalanceTransactionRow>, sqlx::Error> {
+        sqlx::query_as::<_, BalanceTransactionRow>(
+            "SELECT id, user_id, amount_msat, transaction_type, reference_id, metadata, created_at FROM balance_transactions ORDER BY created_at DESC LIMIT ?"
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// List all lightning invoices (admin overview), optionally filtered by user.
+    pub async fn list_all_lightning_invoices(
+        &self,
+        user_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<LightningInvoiceRow>, sqlx::Error> {
+        if let Some(uid) = user_id {
+            sqlx::query_as::<_, LightningInvoiceRow>(
+                "SELECT id, user_id, payment_hash, bolt11, amount_msat, amount_sats, status, created_at, expires_at, paid_at FROM lightning_invoices WHERE user_id = ? ORDER BY created_at DESC LIMIT ?"
+            )
+            .bind(uid)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+        } else {
+            sqlx::query_as::<_, LightningInvoiceRow>(
+                "SELECT id, user_id, payment_hash, bolt11, amount_msat, amount_sats, status, created_at, expires_at, paid_at FROM lightning_invoices ORDER BY created_at DESC LIMIT ?"
+            )
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+        }
+    }
+
+    // ── Payments: Lightning Invoices ───────────────────────────────────
+
+    pub async fn create_lightning_invoice(
+        &self,
+        invoice: NewLightningInvoice<'_>,
+    ) -> Result<LightningInvoiceRow, sqlx::Error> {
+        sqlx::query_as::<_, LightningInvoiceRow>(
+            "INSERT INTO lightning_invoices (user_id, payment_hash, bolt11, amount_msat, amount_sats, status, expires_at)
+             VALUES (?, ?, ?, ?, ?, 'pending', datetime('now', '+' || ? || ' seconds'))
+             RETURNING id, user_id, payment_hash, bolt11, amount_msat, amount_sats, status, created_at, expires_at, paid_at"
+        )
+        .bind(invoice.user_id)
+        .bind(invoice.payment_hash)
+        .bind(invoice.bolt11)
+        .bind(invoice.amount_msat)
+        .bind(invoice.amount_sats)
+        .bind(invoice.expire_seconds.unwrap_or(3600))
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn get_lightning_invoice_by_hash(
+        &self,
+        payment_hash: &str,
+    ) -> Result<Option<LightningInvoiceRow>, sqlx::Error> {
+        sqlx::query_as::<_, LightningInvoiceRow>(
+            "SELECT id, user_id, payment_hash, bolt11, amount_msat, amount_sats, status, created_at, expires_at, paid_at FROM lightning_invoices WHERE payment_hash = ?"
+        )
+        .bind(payment_hash)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn update_lightning_invoice_status(
+        &self,
+        payment_hash: &str,
+        status: &str,
+    ) -> Result<Option<LightningInvoiceRow>, sqlx::Error> {
+        let query = if status == "paid" {
+            "UPDATE lightning_invoices SET status = ?, paid_at = CURRENT_TIMESTAMP WHERE payment_hash = ? RETURNING id, user_id, payment_hash, bolt11, amount_msat, amount_sats, status, created_at, expires_at, paid_at"
+        } else {
+            "UPDATE lightning_invoices SET status = ? WHERE payment_hash = ? RETURNING id, user_id, payment_hash, bolt11, amount_msat, amount_sats, status, created_at, expires_at, paid_at"
+        };
+        sqlx::query_as::<_, LightningInvoiceRow>(query)
+            .bind(status)
+            .bind(payment_hash)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    // ── Payments: Model Pricing ───────────────────────────────────────
+
+    pub async fn get_model_pricing(
+        &self,
+        model_name: &str,
+    ) -> Result<Option<ModelPricingRow>, sqlx::Error> {
+        sqlx::query_as::<_, ModelPricingRow>(
+            "SELECT id, model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_request_sats, context_window, max_output_tokens, created_at, updated_at FROM model_pricing WHERE model_name = ?"
+        )
+        .bind(model_name)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn list_model_pricings(&self) -> Result<Vec<ModelPricingRow>, sqlx::Error> {
+        sqlx::query_as::<_, ModelPricingRow>(
+            "SELECT id, model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_request_sats, context_window, max_output_tokens, created_at, updated_at FROM model_pricing ORDER BY model_name"
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn create_model_pricing(
+        &self,
+        mp: NewModelPricing<'_>,
+    ) -> Result<ModelPricingRow, sqlx::Error> {
+        sqlx::query_as::<_, ModelPricingRow>(
+            "INSERT INTO model_pricing (model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_request_sats, context_window, max_output_tokens)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             RETURNING id, model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_request_sats, context_window, max_output_tokens, created_at, updated_at"
+        )
+        .bind(mp.model_name)
+        .bind(mp.is_advertised)
+        .bind(mp.is_free)
+        .bind(mp.price_per_1m_input_sats)
+        .bind(mp.price_per_1m_output_sats)
+        .bind(mp.price_per_request_sats)
+        .bind(mp.context_window)
+        .bind(mp.max_output_tokens)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn update_model_pricing(
+        &self,
+        model_name: &str,
+        updates: UpdateModelPricing,
+    ) -> Result<ModelPricingRow, sqlx::Error> {
+        // Fetch current row, merge updates, then full UPDATE.
+        // This avoids building dynamic SQL with N optional params.
+        let current = self.get_model_pricing(model_name).await?
+            .ok_or_else(|| sqlx::Error::RowNotFound)?;
+
+        let merged = ModelPricingRow {
+            is_advertised: updates.is_advertised.unwrap_or(current.is_advertised),
+            is_free: updates.is_free.unwrap_or(current.is_free),
+            price_per_1m_input_sats: updates.price_per_1m_input_sats.unwrap_or(current.price_per_1m_input_sats),
+            price_per_1m_output_sats: updates.price_per_1m_output_sats.unwrap_or(current.price_per_1m_output_sats),
+            price_per_request_sats: updates.price_per_request_sats.unwrap_or(current.price_per_request_sats),
+            context_window: updates.context_window.unwrap_or(current.context_window),
+            max_output_tokens: updates.max_output_tokens.unwrap_or(current.max_output_tokens),
+            ..current
+        };
+
+        sqlx::query_as::<_, ModelPricingRow>(
+            "UPDATE model_pricing SET
+                is_advertised = ?, is_free = ?,
+                price_per_1m_input_sats = ?, price_per_1m_output_sats = ?, price_per_request_sats = ?,
+                context_window = ?, max_output_tokens = ?,
+                updated_at = CURRENT_TIMESTAMP
+             WHERE model_name = ?
+             RETURNING id, model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_request_sats, context_window, max_output_tokens, created_at, updated_at"
+        )
+        .bind(merged.is_advertised)
+        .bind(merged.is_free)
+        .bind(merged.price_per_1m_input_sats)
+        .bind(merged.price_per_1m_output_sats)
+        .bind(merged.price_per_request_sats)
+        .bind(merged.context_window)
+        .bind(merged.max_output_tokens)
+        .bind(model_name)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn delete_model_pricing(&self, model_name: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM model_pricing WHERE model_name = ?")
+            .bind(model_name)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 pub type DbPool = Arc<SqlitePool>;
+
+// ── Payments Row Types ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct UserBalanceRow {
+    pub id: i64,
+    pub user_id: i64,
+    pub balance_msat: i64,
+    pub lifetime_deposited_msat: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Balance row joined with username for admin listing.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct UserBalanceWithUsername {
+    pub id: i64,
+    pub user_id: i64,
+    pub balance_msat: i64,
+    pub lifetime_deposited_msat: i64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub username: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct BalanceTransactionRow {
+    pub id: i64,
+    pub user_id: i64,
+    pub amount_msat: i64,
+    pub transaction_type: String,
+    pub reference_id: Option<String>,
+    pub metadata: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewLightningInvoice<'a> {
+    pub user_id: i64,
+    pub payment_hash: &'a str,
+    pub bolt11: &'a str,
+    pub amount_msat: i64,
+    pub amount_sats: i64,
+    pub expire_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct LightningInvoiceRow {
+    pub id: i64,
+    pub user_id: i64,
+    pub payment_hash: String,
+    pub bolt11: String,
+    pub amount_msat: i64,
+    pub amount_sats: i64,
+    pub status: String,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub paid_at: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ModelPricingRow {
+    pub id: i64,
+    pub model_name: String,
+    pub is_advertised: bool,
+    pub is_free: bool,
+    pub price_per_1m_input_sats: Option<i64>,
+    pub price_per_1m_output_sats: Option<i64>,
+    pub price_per_request_sats: Option<i64>,
+    pub context_window: Option<i32>,
+    pub max_output_tokens: Option<i32>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewModelPricing<'a> {
+    pub model_name: &'a str,
+    pub is_advertised: bool,
+    pub is_free: bool,
+    pub price_per_1m_input_sats: Option<i64>,
+    pub price_per_1m_output_sats: Option<i64>,
+    pub price_per_request_sats: Option<i64>,
+    pub context_window: Option<i32>,
+    pub max_output_tokens: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateModelPricing {
+    pub is_advertised: Option<bool>,
+    pub is_free: Option<bool>,
+    pub price_per_1m_input_sats: Option<Option<i64>>,
+    pub price_per_1m_output_sats: Option<Option<i64>>,
+    pub price_per_request_sats: Option<Option<i64>>,
+    pub context_window: Option<Option<i32>>,
+    pub max_output_tokens: Option<Option<i32>>,
+}
 
 #[cfg(test)]
 mod tests {

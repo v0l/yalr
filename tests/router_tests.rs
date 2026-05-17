@@ -135,7 +135,6 @@ fn create_test_router_with_db(db: Arc<Database>) -> (Router, MetricsStore) {
     let metrics_store = MetricsStore::new(1000);
 
     let router = Router::new(
-        Arc::new(yalr::router::strategies::round_robin::RoundRobinStrategy::new()),
         metrics_store.clone(),
         db,
     );

@@ -2,11 +2,13 @@ pub mod llamacpp;
 pub mod ollama;
 pub mod openai;
 pub mod provider_trait;
+pub mod routstr;
 pub mod vllm;
 
 pub use llamacpp::LlamaCppProvider;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
+pub use routstr::RoutstrProvider;
 pub use vllm::VllmProvider;
 
 use crate::db::ProviderType;
@@ -25,6 +27,7 @@ pub fn create_provider(
         ProviderType::LlamaCpp => Arc::new(LlamaCppProvider::new(name, slug, base_url, api_key).unwrap()),
         ProviderType::Vllm => Arc::new(VllmProvider::new(name, slug, base_url, api_key)),
         ProviderType::Ollama => Arc::new(OllamaProvider::new(name, slug, base_url, api_key).unwrap()),
+        ProviderType::Routstr => Arc::new(RoutstrProvider::new(name, slug, base_url, api_key)),
     }
 }
 

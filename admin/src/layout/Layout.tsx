@@ -9,6 +9,7 @@ const navigation = [
   { name: 'Config', path: '/config' },
   { name: 'Metrics', path: '/metrics' },
   { name: 'Users', path: '/users' },
+  { name: 'Payments', path: '/payments' },
   { name: 'Chat', path: '/chat' },
 ]
 
