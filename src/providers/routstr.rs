@@ -66,9 +66,12 @@ impl RoutstrProvider {
         let body: serde_json::Value =
             resp.json().await.map_err(|e| ProviderError::Other(e.into()))?;
 
+        // Try multiple response formats for flexibility
         let balance = body
             .get("balance_msat")
             .and_then(|v| v.as_i64())
+            .or_else(|| body.get("balance").and_then(|b| b.as_i64()))
+            .or_else(|| body.get("data").and_then(|d| d.get("balance_msat")).and_then(|v| v.as_i64()))
             .ok_or_else(|| ProviderError::Other("Missing balance_msat in response".into()))?;
 
         Ok(balance)
@@ -115,7 +118,65 @@ impl Provider for RoutstrProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<Model>, ProviderError> {
-        self.inner.list_models().await
+        // Override to handle custom OpenRouter/OpenRouter-like formats
+        let models_url = self
+            .base_url
+            .join("v1/models")
+            .map_err(|e| ProviderError::Other(e.into()))?;
+
+        let mut req = self.http_client.get(models_url.as_str());
+        if let Some(ref key) = self.api_key {
+            req = req.header("Authorization", format!("Bearer {}", key));
+        }
+
+        let response = req.send().await.map_err(|e| ProviderError::Other(e.into()))?;
+
+        if !response.status().is_success() {
+            tracing::debug!(
+                provider = self.name(),
+                status = %response.status(),
+                "Routstr GET /v1/models failed"
+            );
+            return Err(ProviderError::ServerError {
+                message: format!("Failed to list models: {}", response.status()),
+                status_code: Some(response.status().as_u16()),
+            });
+        }
+
+        let body: serde_json::Value =
+            response.json().await.map_err(|e| ProviderError::Other(e.into()))?;
+
+        let empty = Vec::new();
+        let models = body
+            .get("data")
+            .and_then(|d| d.as_array())
+            .unwrap_or(&empty);
+
+        // Parse models flexibly - extract just the fields we need
+        let mut result = Vec::new();
+        for model in models {
+            if let Some(id) = model.get("id").and_then(|v| v.as_str()) {
+                let owned_by = model
+                    .get("owned_by")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("routstr")
+                    .to_string();
+                
+                let created = model
+                    .get("created")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as u32;
+
+                result.push(Model {
+                    id: id.to_string(),
+                    object: "model".to_string(),
+                    created,
+                    owned_by,
+                });
+            }
+        }
+
+        Ok(result)
     }
 
     async fn chat_completions(
