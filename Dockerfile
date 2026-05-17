@@ -9,6 +9,7 @@ RUN apt-get update && \
     pkg-config \
     libssl-dev \
     cmake \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy manifests first for dependency caching
