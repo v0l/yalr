@@ -197,7 +197,21 @@ impl Provider for RoutstrProvider {
     }
 
     async fn health_check(&self) -> Result<bool, ProviderError> {
-        let healthy = self.inner.health_check().await?;
+        // For Routstr providers, we do a simple connectivity check instead of
+        // relying on the inner OpenAI provider's health check which may fail
+        // to deserialize custom model formats.
+        let health_url = self
+            .base_url
+            .join("v1/models")
+            .map_err(|e| ProviderError::Other(e.into()))?;
+
+        let mut req = self.http_client.get(health_url.as_str());
+        if let Some(ref key) = self.api_key {
+            req = req.header("Authorization", format!("Bearer {}", key));
+        }
+
+        let resp = req.send().await.map_err(|e| ProviderError::Other(e.into()))?;
+        let healthy = resp.status().is_success();
 
         // Refresh balance on every health check so the dashboard stays current
         if healthy {
