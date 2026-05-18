@@ -6,6 +6,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Button } from '@/components/ui/button'
+import { TopupDialog } from '@/components/TopupDialog'
 
 function HealthBadge({ state }: { state: string }) {
   switch (state) {
@@ -23,8 +25,10 @@ function HealthBadge({ state }: { state: string }) {
 function BalanceDisplay({ health }: { health?: ProviderHealthEntry }) {
   if (!health?.balance) return <span className="text-muted-foreground">—</span>
   const { currency, amount } = health.balance
-  const label = currency === 'msats' ? 'msats' : currency === 'sats' ? 'sats' : 'µ$'
-  const display = currency === 'usd_micro' ? `$${(amount / 1_000_000).toFixed(4)}` : amount.toLocaleString()
+  // Convert msats to sats for display
+  const amountInSats = currency === 'msats' ? Math.floor(amount / 1000) : amount
+  const label = currency === 'msats' || currency === 'sats' ? 'sats' : 'µ$'
+  const display = currency === 'usd_micro' ? `$${(amount / 1_000_000).toFixed(4)}` : amountInSats.toLocaleString()
   return (
     <span className="font-mono text-sm">
       {display}<span className="text-muted-foreground ml-0.5">{label}</span>
@@ -37,6 +41,8 @@ export default function Dashboard() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [topupDialogOpen, setTopupDialogOpen] = useState(false)
+  const [selectedProvider, setSelectedProvider] = useState<Provider | null>(null)
 
   useEffect(() => {
     async function fetchData() {
@@ -91,6 +97,11 @@ export default function Dashboard() {
     ? (metrics.providers.reduce((sum, p) => sum + (p.avg_latency_ms || 0), 0) || 0) / metrics.providers.length
     : 0
 
+  function handleTopup(provider: Provider) {
+    setSelectedProvider(provider)
+    setTopupDialogOpen(true)
+  }
+
   return (
     <div className="flex flex-col gap-6 p-6">
       <div>
@@ -140,6 +151,16 @@ export default function Dashboard() {
             </p>
           </CardContent>
         </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Quick Actions</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={() => handleTopup(providers[0])} disabled={providers.length === 0}>
+              Top-up Balance
+            </Button>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Provider Health Table */}
@@ -177,7 +198,14 @@ export default function Dashboard() {
                           <div className="font-mono text-xs text-muted-foreground">{provider.slug}</div>
                         </TableCell>
                         <TableCell><HealthBadge state={h?.health_state ?? 'unknown'} /></TableCell>
-                        <TableCell><BalanceDisplay health={h} /></TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <BalanceDisplay health={h} />
+                            <Button variant="outline" size="sm" onClick={() => handleTopup(provider)}>
+                              Top-up
+                            </Button>
+                          </div>
+                        </TableCell>
                         <TableCell className="font-mono">
                           {h?.in_flight ?? '—'}{h?.max_concurrency ? ` / ${h.max_concurrency}` : ''}
                         </TableCell>
@@ -193,6 +221,15 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {selectedProvider && (
+        <TopupDialog
+          open={topupDialogOpen}
+          onOpenChange={setTopupDialogOpen}
+          providerSlug={selectedProvider.slug}
+          providerName={selectedProvider.name}
+        />
+      )}
     </div>
   )
 }
