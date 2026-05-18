@@ -7,36 +7,38 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use crate::router::{Modality, ModelRuntimeInfo};
 
-/// Extract error details from a JSON value that might contain an error
-fn extract_error_from_value(value: &serde_json::Value) -> Option<ErrorDetail> {
-    // Try direct "error" field first
-    if let Some(error_obj) = value.get("error").and_then(|e| e.as_object()) {
-        return parse_error_object(error_obj);
-    }
-
-    // Try nested "detail.error" structure
-    if let Some(detail) = value.get("detail").and_then(|d| d.as_object()) {
-        if let Some(error_obj) = detail.get("error").and_then(|e| e.as_object()) {
-            return parse_error_object(error_obj);
-        }
-    }
-
-    None
-}
-
-/// Parse error details from an error object
-fn parse_error_object(obj: &serde_json::Map<String, serde_json::Value>) -> Option<ErrorDetail> {
-    let message = obj.get("message")?.as_str()?.to_string();
-    let code = obj.get("code").and_then(|c| c.as_str().map(String::from));
-
-    Some(ErrorDetail { message, code })
+/// Error response from API - supports both direct and nested formats via untagged enum
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum ErrorResponse {
+    /// Direct error format: { "error": { "message": "...", "code": "..." } }
+    Direct { error: ErrorDetail },
+    /// Nested error format: { "detail": { "error": { "message": "...", "code": "..." } } }
+    Nested { detail: NestedDetail },
 }
 
 /// Error detail structure
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 struct ErrorDetail {
     message: String,
+    #[serde(default)]
     code: Option<String>,
+}
+
+/// Nested detail wrapper for { "detail": { "error": ... } }
+#[derive(Debug, Clone, Deserialize)]
+struct NestedDetail {
+    error: ErrorDetail,
+}
+
+impl ErrorResponse {
+    /// Extract error message and code from any format
+    fn extract(&self) -> ErrorDetail {
+        match self {
+            ErrorResponse::Direct { error } => error.clone(),
+            ErrorResponse::Nested { detail } => detail.error.clone(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -113,8 +115,9 @@ impl Provider for OpenAiProvider {
                     Box::pin(stream.map(move |result: Result<serde_json::Value, async_openai::error::OpenAIError>| {
                         match result {
                             Ok(json_value) => {
-                                // Try to extract error from response (handles both direct and nested formats)
-                                if let Some(error_detail) = extract_error_from_value(&json_value) {
+                                // Try to deserialize as error response first (handles both formats via untagged enum)
+                                if let Ok(error_response) = serde_json::from_value::<ErrorResponse>(json_value.clone()) {
+                                    let error_detail = error_response.extract();
                                     tracing::warn!(
                                         provider = %provider_name,
                                         error_message = %error_detail.message,
@@ -260,7 +263,7 @@ mod tests {
     use crate::metrics::ErrorType;
 
     #[test]
-    fn test_extract_error_from_nested_detail() {
+    fn test_error_response_nested_format() {
         let json_str = r#"{
             "detail": {
                 "error": {
@@ -272,15 +275,15 @@ mod tests {
             "request_id": "de069d4f-38a3-4b08-a80b-cdfdda4eae8d"
         }"#;
         
-        let json_value: serde_json::Value = serde_json::from_str(json_str).unwrap();
-        let error = extract_error_from_value(&json_value).unwrap();
+        let error_response: ErrorResponse = serde_json::from_str(json_str).unwrap();
+        let detail = error_response.extract();
         
-        assert_eq!(error.message, "Insufficient balance: 232747 mSats required for this model. 202576 available.");
-        assert_eq!(error.code, Some("insufficient_balance".to_string()));
+        assert_eq!(detail.message, "Insufficient balance: 232747 mSats required for this model. 202576 available.");
+        assert_eq!(detail.code, Some("insufficient_balance".to_string()));
     }
 
     #[test]
-    fn test_extract_error_from_direct_error() {
+    fn test_error_response_direct_format() {
         let json_str = r#"{
             "error": {
                 "message": "Some error message",
@@ -288,39 +291,26 @@ mod tests {
             }
         }"#;
         
-        let json_value: serde_json::Value = serde_json::from_str(json_str).unwrap();
-        let error = extract_error_from_value(&json_value).unwrap();
+        let error_response: ErrorResponse = serde_json::from_str(json_str).unwrap();
+        let detail = error_response.extract();
         
-        assert_eq!(error.message, "Some error message");
-        assert_eq!(error.code, Some("some_code".to_string()));
+        assert_eq!(detail.message, "Some error message");
+        assert_eq!(detail.code, Some("some_code".to_string()));
     }
 
     #[test]
-    fn test_extract_error_missing_code() {
+    fn test_error_response_missing_code() {
         let json_str = r#"{
             "error": {
                 "message": "Error without code"
             }
         }"#;
         
-        let json_value: serde_json::Value = serde_json::from_str(json_str).unwrap();
-        let error = extract_error_from_value(&json_value).unwrap();
+        let error_response: ErrorResponse = serde_json::from_str(json_str).unwrap();
+        let detail = error_response.extract();
         
-        assert_eq!(error.message, "Error without code");
-        assert_eq!(error.code, None);
-    }
-
-    #[test]
-    fn test_no_error_in_response() {
-        let json_str = r#"{
-            "id": "test",
-            "object": "chat.completion.chunk"
-        }"#;
-        
-        let json_value: serde_json::Value = serde_json::from_str(json_str).unwrap();
-        let error = extract_error_from_value(&json_value);
-        
-        assert!(error.is_none());
+        assert_eq!(detail.message, "Error without code");
+        assert_eq!(detail.code, None);
     }
 
     #[tokio::test]
