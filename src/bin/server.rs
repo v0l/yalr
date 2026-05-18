@@ -1,8 +1,20 @@
 use yalr::{api, config, metrics};
 use std::env;
+use clap::Parser;
+
+#[derive(Parser)]
+#[command(name = "yalr-server")]
+#[command(author = "YALR")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(about = "YALR - LLM Router", long_about = None)]
+struct Args {}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _args = Args::parse();
+    
+    // Clap will automatically handle --version, --help, etc.
+    
     tracing_subscriber::fmt::init();
 
     let metrics_store = std::sync::Arc::new(metrics::MetricsStore::new(10000));
