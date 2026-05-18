@@ -76,8 +76,7 @@ COPY --from=rust-build /app/target/release/yalr-server /usr/local/bin/
 COPY --from=rust-build /app/target/release/yalr-cli /usr/local/bin/
 COPY --from=admin-builder /app/admin/dist /app/admin/dist
 
-# Verify binary exists and has correct dependencies
-RUN ldd /usr/local/bin/yalr-server | grep -q libc.so || exit 1
+RUN yalr-server --version
 
 EXPOSE 3000
 
