@@ -1,17 +1,23 @@
 # YALR - Yet Another LLM Router
 
-Async LLM router with load balancing, provider management, and streaming support.
+High-performance async LLM router with load balancing, provider management, intelligent routing strategies, and a web-based admin interface.
 
 ## Features
 
-- **Load Balancing**: Round-robin and other routing strategies for distributing requests across multiple LLM providers
-- **Provider Abstraction**: Clean trait-based architecture supporting multiple LLM providers (OpenAI, LlamaCpp, etc.)
-- **Streaming Support**: Full support for streaming responses across all providers
+- **Load Balancing**: Round-robin and configurable routing strategies for distributing requests across multiple LLM providers
+- **Provider Abstraction**: Clean trait-based architecture supporting multiple LLM providers (OpenAI, LlamaCpp, and extensible)
+- **Dual Routing Modes**:
+  - **Prefixed models** (`provider-1/gpt-4`): Direct routing to specific provider
+  - **Unprefixed models** (`gpt-4`): Load-balanced selection across configured providers
+- **Streaming Support**: Full SSE (Server-Sent Events) support for streaming responses
 - **Async First**: Built on tokio for high-performance async I/O
-- **Metrics Collection**: Built-in metrics for monitoring provider performance (latency, throughput, success rates)
-- **Health Checks**: API endpoints for monitoring router health and provider status
-- **Admin UI**: Web-based interface for managing providers, API keys, and viewing metrics
-- **Authentication**: Session-based auth with API key support for production use
+- **Metrics Collection**: Built-in metrics for monitoring provider performance (latency, throughput, success rates, token usage)
+- **Health Checks**: Automatic health tracking with exponential backoff and provider recovery
+- **Retry & Fallback**: Automatic retry with exponential backoff and fallback to next available provider on failure
+- **Admin UI**: React-based web interface for managing providers, API keys, and viewing metrics
+- **Authentication**: Session-based auth with NIP-98 (Nostr) and API key support
+- **Database-Backed Config**: SQLite database for persistent provider and routing configuration
+- **CLI Tool**: Command-line interface for additional operations
 
 ## Quick Start
 
@@ -20,6 +26,7 @@ Async LLM router with load balancing, provider management, and streaming support
 ```bash
 docker run -p 3000:3000 \
   -v $(pwd)/data:/app/data \
+  -v $(pwd)/config.yaml:/app/config.yaml \
   voidic/yalr:latest
 ```
 
@@ -33,9 +40,31 @@ cargo run --bin yalr-server
 
 # Or run with debug info
 cargo run --bin yalr-server -- --verbose
+
+# Run CLI tool
+cargo run --bin yalr-cli
 ```
 
 Access the admin UI at http://localhost:3000
+
+### Development Commands
+
+```bash
+# Run all tests
+cargo test
+
+# Run library tests only
+cargo test --lib
+
+# Run specific test module
+cargo test --lib router::model_router
+
+# Check compilation
+cargo check
+
+# Build Docker image
+docker build -t yalr .
+```
 
 ## Configuration
 
@@ -109,6 +138,13 @@ The admin UI provides a web interface for:
 
 ## Architecture
 
+### Entry Points
+
+- **Server**: `src/bin/server.rs` - HTTP server and API handlers
+- **CLI**: `src/bin/cli.rs` - Command-line interface
+
+### Core Components
+
 ```
 ┌─────────────────┐
 │   Admin UI      │
@@ -133,25 +169,100 @@ The admin UI provides a web interface for:
 └───────────────┘
 ```
 
-## Development
+### Routing Flow
 
-### Building
+**Prefixed models** (`provider-1/gpt-4`):
+1. Split on `/` to get provider slug and model name
+2. Route directly to specified provider via `RoutingEngine::route_by_slug()`
+3. Bypasses load balancing
 
-```bash
-# Build server
-cargo build --release --bin yalr-server
+**Unprefixed models** (`gpt-4`):
+1. Route through `RoutingEngine` for load-balanced selection
+2. Match model name against `routing_config_providers` table
+3. Use round-robin strategy to select from active providers
+4. Fall back to first available routing config if no match
 
-# Build admin UI
-cd admin && bun run build
+### Source Structure
 
-# Build Docker image
-docker build -t yalr .
+```
+src/
+├── bin/
+│   ├── server.rs    # HTTP server entry point
+│   └── cli.rs       # CLI entry point
+├── api/
+│   └── handlers.rs  # HTTP request handlers
+├── auth/            # Authentication (NIP-98, sessions)
+├── db/              # Database layer (SQLite, migrations)
+├── router/
+│   ├── engine.rs    # Core routing engine
+│   ├── model_router.rs  # Model-specific routing
+│   └── strategies/  # Routing strategies
+├── providers/       # Provider implementations
+│   └── provider_trait.rs  # Provider trait definition
+├── metrics.rs       # Metrics and health tracking
+├── config.rs        # Configuration loading
+└── state.rs         # Application state
 ```
 
-### Testing
+## Health & Retry System
+
+### Health States
+
+- **Healthy**: Normal operation, accepting requests
+- **Degraded**: Elevated error rate, still accepting but with backoff
+- **Unhealthy**: High failure rate, temporarily unavailable
+
+### Retry Behavior
+
+- Automatic retry with exponential backoff (`base_backoff * 2^consecutive_failures`)
+- Fallback to next available provider on failure
+- Provider recovery after successful requests
+- Respects `retry_after` headers from providers
+
+## Testing
 
 ```bash
+# Run all tests
 cargo test
+
+# Run library tests only
+cargo test --lib
+
+# Run specific test module
+cargo test --lib router::model_router
+```
+
+Tests use:
+- `wiremock` for HTTP mocking in provider tests
+- In-memory SQLite (`sqlite::memory:`) for DB tests
+- Inline test modules: `#[cfg(test)] mod tests { ... }`
+
+## Deployment
+
+### Docker
+
+Multi-stage build with:
+- Rust builder for compilation
+- Bun for Admin UI build
+- Debian slim runtime
+
+### Docker Compose
+
+```yaml
+version: '3.8'
+services:
+  yalr:
+    image: voidic/yalr:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 ```
 
 ## License

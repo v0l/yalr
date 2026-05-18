@@ -51,7 +51,7 @@ pub use async_openai::types::chat::{
     ChatCompletionRequestSystemMessageContent, ChatCompletionRequestUserMessage,
     ChatCompletionRequestUserMessageContent, CreateChatCompletionRequest,
     CreateChatCompletionResponse, CreateChatCompletionStreamResponse,
-    ServiceTier, CompletionUsage, FinishReason, ChatChoiceLogprobs, Role,
+    CompletionUsage, FinishReason, ChatChoiceLogprobs, Role,
     ChatCompletionMessageToolCallChunk,
 };
 pub use async_openai::types::models::Model;
@@ -68,7 +68,7 @@ pub struct StreamingChunk {
     pub model: String,
     pub choices: Vec<StreamingChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<ServiceTier>,
+    pub service_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_fingerprint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
