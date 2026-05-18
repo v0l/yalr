@@ -298,8 +298,8 @@ pub async fn create_provider_invoice(
         .post(upstream_url.as_str())
         .json(&serde_json::json!({
             "amount_sats": body.amount_sats,
-            "purpose": "topup",
             "memo": body.memo,
+            "expire_seconds": body.expire_seconds,
         }));
 
     // Add API key if present
