@@ -653,4 +653,54 @@ export const api = {
     if (!response.ok) throw new Error('Failed to delete model pricing')
     return response.json()
   },
+
+  // ── Lightning Invoice Creation ───────────────────────────────────────
+
+  async createLightningInvoice(data: { amount_sats: number; memo?: string; expire_seconds?: number }): Promise<{
+    invoice_id: number
+    bolt11: string
+    payment_hash: string
+    amount_sats: number
+    expires_at: string
+  }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/lightning/invoice`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!response.ok) throw new Error('Failed to create Lightning invoice')
+    return response.json()
+  },
+
+  async createProviderInvoice(slug: string, data: { amount_sats: number; memo?: string; expire_seconds?: number }): Promise<{
+    bolt11: string
+    payment_hash: string
+    amount_sats: number
+    expires_at?: string
+  }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/providers/${slug}/lightning/invoice`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!response.ok) throw new Error('Failed to create provider invoice')
+    return response.json()
+  },
+
+  async getInvoiceStatus(paymentHash: string): Promise<{
+    status: string
+    payment_hash: string
+    amount_sats: number
+    created_at: string
+    expires_at: string
+  }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/lightning/invoice/${encodeURIComponent(paymentHash)}/status`, {
+      headers,
+    })
+    if (!response.ok) throw new Error('Failed to check invoice status')
+    return response.json()
+  },
 }

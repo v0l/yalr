@@ -240,6 +240,122 @@ pub async fn check_lightning_invoice(
     }
 }
 
+/// POST /providers/:slug/lightning/invoice — Create invoice for provider top-up
+///
+/// Calls the upstream Routstr provider's /lightning/invoice endpoint to generate
+/// an invoice for topping up the provider's balance.
+pub async fn create_provider_invoice(
+    State(state): State<Arc<AppState>>,
+    Extension(_user): Extension<User>, // Admin authentication
+    Path(slug): Path<String>,
+    Json(body): Json<CreateInvoiceRequest>,
+) -> axum::response::Response {
+    use reqwest::Client;
+
+    // Find the provider
+    let provider = match state.db.get_provider_by_slug(&slug).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Provider not found"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(slug = %slug, error = %e, "Failed to get provider");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to get provider"})),
+            )
+                .into_response()
+        }
+    };
+
+    // Check if it's a Routstr provider
+    if provider.provider_type != crate::db::ProviderType::Routstr {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Provider is not a Routstr provider"})),
+        )
+            .into_response()
+    }
+
+    // Build the upstream invoice request
+    let upstream_url = match url::Url::parse(&provider.base_url) {
+        Ok(u) => u.join("lightning/invoice").unwrap_or_else(|_| url::Url::parse("/lightning/invoice").unwrap()),
+        Err(e) => {
+            tracing::error!(slug = %slug, error = %e, "Invalid provider base URL");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid provider base URL"})),
+            )
+                .into_response()
+        }
+    };
+
+    let mut request_builder = Client::new()
+        .post(upstream_url.as_str())
+        .json(&serde_json::json!({
+            "amount_sats": body.amount_sats,
+            "purpose": "topup",
+            "memo": body.memo,
+        }));
+
+    // Add API key if present
+    if let Some(ref api_key) = provider.api_key {
+        request_builder = request_builder.bearer_auth(api_key);
+    }
+
+    // Call the upstream endpoint
+    match request_builder.send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            if !status.is_success() {
+                let error_text = resp.text().await.unwrap_or_default();
+                tracing::error!(slug = %slug, status = %status, error = %error_text, "Upstream invoice creation failed");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("Upstream error: {}", error_text)})),
+                )
+                    .into_response()
+            }
+
+            let upstream_invoice: serde_json::Value = match resp.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(slug = %slug, error = %e, "Failed to parse upstream response");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": "Failed to parse upstream response"})),
+                    )
+                        .into_response()
+                }
+            };
+
+            // Return the invoice data
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!({
+                    "bolt11": upstream_invoice.get("bolt11").and_then(|v| v.as_str()).unwrap_or(""),
+                    "payment_hash": upstream_invoice.get("payment_hash").and_then(|v| v.as_str()).unwrap_or(""),
+                    "amount_sats": body.amount_sats,
+                    "expires_at": upstream_invoice.get("expires_at").and_then(|v| v.as_str()),
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(slug = %slug, error = %e, "Failed to connect to upstream provider");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": format!("Failed to connect to upstream provider: {}", e)})),
+            )
+                .into_response()
+        }
+    }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 fn payments_disabled() -> axum::response::Response {

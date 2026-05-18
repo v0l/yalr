@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { PlusIcon, PencilIcon, TrashIcon } from 'lucide-react'
+import { PlusIcon, PencilIcon, TrashIcon, WalletIcon } from 'lucide-react'
 import { api } from '../api/client'
 import type { Provider } from '../types'
 import { Button } from '@/components/ui/button'
+import { TopupDialog } from '@/components/TopupDialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -56,6 +57,7 @@ export default function Providers() {
 
   const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [topupProvider, setTopupProvider] = useState<Provider | null>(null)
 
   useEffect(() => { loadProviders() }, [])
 
@@ -130,6 +132,10 @@ export default function Providers() {
     } finally {
       setDeleting(false)
     }
+  }
+
+  function openTopup(provider: Provider) {
+    setTopupProvider(provider)
   }
 
   if (loading) {
@@ -212,6 +218,11 @@ export default function Providers() {
                     <TableCell className="font-mono text-muted-foreground">{provider.base_url}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
+                        {provider.provider_type === 'routstr' && (
+                          <Button variant="ghost" size="icon-xs" onClick={() => openTopup(provider)} title="Top-up provider balance">
+                            <WalletIcon />
+                          </Button>
+                        )}
                         <Button variant="ghost" size="icon-xs" onClick={() => openEdit(provider)}>
                           <PencilIcon />
                         </Button>
@@ -313,6 +324,18 @@ export default function Providers() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Topup Dialog */}
+      {topupProvider && (
+        <TopupDialog
+          open={!!topupProvider}
+          onOpenChange={(open) => {
+            if (!open) setTopupProvider(null)
+          }}
+          providerSlug={topupProvider.slug}
+          providerName={topupProvider.name}
+        />
+      )}
 
       {/* Delete Confirmation */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}>

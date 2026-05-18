@@ -189,6 +189,7 @@ pub async fn run_with_shutdown<F>(
         .route("/v1/balance/refund", post(crate::payments::routstr::balance_refund))
         .route("/lightning/invoice", post(crate::payments::routstr::create_lightning_invoice))
         .route("/lightning/invoice/:payment_hash/status", get(crate::payments::routstr::check_lightning_invoice))
+        .route("/providers/:slug/lightning/invoice", post(crate::payments::routstr::create_provider_invoice))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let app = Router::new()
