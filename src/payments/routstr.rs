@@ -294,6 +294,8 @@ pub async fn create_provider_invoice(
         }
     };
 
+    tracing::info!(slug = %slug, url = %upstream_url.as_str(), "Creating provider invoice via upstream");
+
     let mut request_builder = Client::new()
         .post(upstream_url.as_str())
         .json(&serde_json::json!({
