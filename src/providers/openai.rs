@@ -3,21 +3,21 @@ use async_openai::config::OpenAIConfig;
 use async_openai::Client;
 use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
+use serde::Deserialize;
 use std::collections::HashMap;
 use crate::router::{Modality, ModelRuntimeInfo};
 
-/// Extract error information from a JSON response that might be an error.
-/// Handles various error formats including nested "detail.error" structure.
-fn extract_error_from_response(json_value: &serde_json::Value) -> Option<ErrorDetail> {
-    // Try direct "error" field
-    if let Some(error) = json_value.get("error") {
-        return parse_error_detail(error);
+/// Extract error details from a JSON value that might contain an error
+fn extract_error_from_value(value: &serde_json::Value) -> Option<ErrorDetail> {
+    // Try direct "error" field first
+    if let Some(error_obj) = value.get("error").and_then(|e| e.as_object()) {
+        return parse_error_object(error_obj);
     }
 
-    // Try nested "detail.error" structure (used by some providers like routstr)
-    if let Some(detail) = json_value.get("detail") {
-        if let Some(error) = detail.get("error") {
-            return parse_error_detail(error);
+    // Try nested "detail.error" structure
+    if let Some(detail) = value.get("detail").and_then(|d| d.as_object()) {
+        if let Some(error_obj) = detail.get("error").and_then(|e| e.as_object()) {
+            return parse_error_object(error_obj);
         }
     }
 
@@ -25,27 +25,15 @@ fn extract_error_from_response(json_value: &serde_json::Value) -> Option<ErrorDe
 }
 
 /// Parse error details from an error object
-fn parse_error_detail(error: &serde_json::Value) -> Option<ErrorDetail> {
-    if let Some(obj) = error.as_object() {
-        let message = obj.get("message")
-            .and_then(|m| m.as_str())
-            .map(String::from)?;
+fn parse_error_object(obj: &serde_json::Map<String, serde_json::Value>) -> Option<ErrorDetail> {
+    let message = obj.get("message")?.as_str()?.to_string();
+    let code = obj.get("code").and_then(|c| c.as_str().map(String::from));
 
-        let code = obj.get("code")
-            .and_then(|c| c.as_str())
-            .map(String::from);
-
-        Some(ErrorDetail {
-            message,
-            code,
-        })
-    } else {
-        None
-    }
+    Some(ErrorDetail { message, code })
 }
 
-/// Extracted error details from API response
-#[derive(Debug)]
+/// Error detail structure
+#[derive(Debug, Clone)]
 struct ErrorDetail {
     message: String,
     code: Option<String>,
@@ -125,13 +113,12 @@ impl Provider for OpenAiProvider {
                     Box::pin(stream.map(move |result: Result<serde_json::Value, async_openai::error::OpenAIError>| {
                         match result {
                             Ok(json_value) => {
-                                // Check if this is an error response before trying to deserialize
-                                if let Some(error_detail) = extract_error_from_response(&json_value) {
+                                // Try to extract error from response (handles both direct and nested formats)
+                                if let Some(error_detail) = extract_error_from_value(&json_value) {
                                     tracing::warn!(
                                         provider = %provider_name,
                                         error_message = %error_detail.message,
                                         error_code = ?error_detail.code,
-                                        raw_json = %json_value,
                                         "Stream returned error response"
                                     );
                                     return Err(ProviderError::ServerError {
@@ -143,8 +130,7 @@ impl Provider for OpenAiProvider {
                                     });
                                 }
 
-                                // Deserialize the raw JSON value to our custom type
-                                // This preserves all fields including reasoning_content
+                                // Not an error, try to deserialize as streaming chunk
                                 match serde_json::from_value::<StreamingChunk>(json_value.clone()) {
                                     Ok(chunk) => Ok(chunk),
                                     Err(de_error) => {
@@ -287,7 +273,7 @@ mod tests {
         }"#;
         
         let json_value: serde_json::Value = serde_json::from_str(json_str).unwrap();
-        let error = extract_error_from_response(&json_value).unwrap();
+        let error = extract_error_from_value(&json_value).unwrap();
         
         assert_eq!(error.message, "Insufficient balance: 232747 mSats required for this model. 202576 available.");
         assert_eq!(error.code, Some("insufficient_balance".to_string()));
@@ -303,10 +289,25 @@ mod tests {
         }"#;
         
         let json_value: serde_json::Value = serde_json::from_str(json_str).unwrap();
-        let error = extract_error_from_response(&json_value).unwrap();
+        let error = extract_error_from_value(&json_value).unwrap();
         
         assert_eq!(error.message, "Some error message");
         assert_eq!(error.code, Some("some_code".to_string()));
+    }
+
+    #[test]
+    fn test_extract_error_missing_code() {
+        let json_str = r#"{
+            "error": {
+                "message": "Error without code"
+            }
+        }"#;
+        
+        let json_value: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        let error = extract_error_from_value(&json_value).unwrap();
+        
+        assert_eq!(error.message, "Error without code");
+        assert_eq!(error.code, None);
     }
 
     #[test]
@@ -317,7 +318,7 @@ mod tests {
         }"#;
         
         let json_value: serde_json::Value = serde_json::from_str(json_str).unwrap();
-        let error = extract_error_from_response(&json_value);
+        let error = extract_error_from_value(&json_value);
         
         assert!(error.is_none());
     }
