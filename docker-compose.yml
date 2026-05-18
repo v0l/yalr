@@ -10,6 +10,7 @@ services:
       - ./config.yaml:/app/config.yaml:ro
     environment:
       - RUST_LOG=info
+    command: ["yalr-server"]
     ports:
       - "127.0.0.1:3000:3000"
     stop_grace_period: 5s
@@ -18,4 +19,4 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 30s

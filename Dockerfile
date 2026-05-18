@@ -1,4 +1,4 @@
-FROM rust:trixie AS builder
+FROM rust:trixie AS rust-deps
 
 WORKDIR /app
 
@@ -15,42 +15,49 @@ RUN apt-get update && \
 # Copy manifests first for dependency caching
 COPY Cargo.toml Cargo.lock ./
 
-# Fetch and cache dependencies (persisted via BuildKit cache mount)
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
-    cargo fetch --locked
-
-# Create dummy source to build dependency artifacts
+# Create dummy source for dependency compilation
 RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/bin/server.rs && \
     echo "fn main() {}" > src/bin/cli.rs && \
-    echo "" > src/lib.rs
+    echo "// Empty lib for dependency caching" > src/lib.rs
 
-# Pre-compile dependencies (cached across builds)
+# Step 1: Build dependencies only (cached unless Cargo.lock changes)
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --release --bin yalr-server --bin yalr-cli && \
-    rm -rf src
-
-# Copy actual source and rebuild only the application crates
-COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
-    touch src/bin/server.rs src/bin/cli.rs src/lib.rs && \
     cargo build --release --bin yalr-server --bin yalr-cli
 
-# Copy built binaries out of the cache mount so they're available to later stages
-RUN --mount=type=cache,target=/app/target \
-    cp /app/target/release/yalr-server /app/target/release/yalr-cli /tmp/
+# Step 2: Remove stub binary artifacts so real source rebuilds
+RUN rm -f target/release/*yalr*
 
 # Build the admin UI
 FROM oven/bun:1 AS admin-builder
 
 WORKDIR /app/admin
+
+# Cache node_modules for faster installs
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    mkdir -p /app/admin
+
 COPY admin/package.json admin/bun.lock ./
-RUN bun install --frozen-lockfile
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile
+
 COPY admin/ ./
-RUN bun run build
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun run build
+
+# Rust application build
+FROM rust-deps AS rust-build
+
+# Copy actual source code (specific files needed for build)
+COPY src ./src
+COPY migrations ./migrations
+
+# Touch entry points so Cargo sees them as changed vs. the stubs above
+RUN touch src/lib.rs src/bin/server.rs src/bin/cli.rs
+
+# Rebuild - dependencies cached, only source files recompile
+RUN cargo build --release --bin yalr-server --bin yalr-cli
 
 # Runtime image
 FROM debian:trixie-slim
@@ -65,8 +72,8 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY --from=builder /tmp/yalr-server /usr/local/bin/
-COPY --from=builder /tmp/yalr-cli /usr/local/bin/
+COPY --from=rust-build /app/target/release/yalr-server /usr/local/bin/
+COPY --from=rust-build /app/target/release/yalr-cli /usr/local/bin/
 COPY --from=admin-builder /app/admin/dist /app/admin/dist
 
 # Verify binary can run (check for missing libraries)
