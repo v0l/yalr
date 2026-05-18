@@ -67,26 +67,57 @@ impl Provider for OpenAiProvider {
 
         let client = self.client.clone();
         let request = request.clone();
+        let provider_name = self.name().to_string();
+        let request_model = request.model.clone();
 
         // Serialize request once at the start
         let request_value = serde_json::to_value(request)
             .map_err(|e| ProviderError::Other(e.into()))?;
 
         let stream = async move {
-            match client.chat().create_stream_byot(request_value).await {
+            match client.chat().create_stream_byot(request_value.clone()).await {
                 Ok(stream) => {
-                    Box::pin(stream.map(|result| {
-                        result
-                            .map_err(ProviderError::OpenAIError)
-                            .and_then(|json_value: serde_json::Value| {
+                    Box::pin(stream.map(move |result: Result<serde_json::Value, async_openai::error::OpenAIError>| {
+                        match result {
+                            Ok(json_value) => {
                                 // Deserialize the raw JSON value to our custom type
                                 // This preserves all fields including reasoning_content
-                                serde_json::from_value(json_value)
-                                    .map_err(|e| ProviderError::Other(e.into()))
-                            })
+                                match serde_json::from_value::<StreamingChunk>(json_value.clone()) {
+                                    Ok(chunk) => Ok(chunk),
+                                    Err(de_error) => {
+                                        // Log the raw JSON that failed to deserialize for debugging
+                                        tracing::error!(
+                                            provider = %provider_name,
+                                            error = %de_error,
+                                            raw_json = %json_value,
+                                            "Failed to deserialize streaming chunk"
+                                        );
+                                        Err(ProviderError::Other(
+                                            format!("Stream decode error: {} (raw JSON: {})", de_error, json_value).into()
+                                        ))
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                // Log the OpenAI error with more context
+                                tracing::error!(
+                                    provider = %provider_name,
+                                    error = %e,
+                                    "Stream failed"
+                                );
+                                Err(ProviderError::OpenAIError(e))
+                            }
+                        }
                     })) as BoxStream<'static, Result<StreamingChunk, ProviderError>>
                 }
-            Err(e) => {
+                Err(e) => {
+                    // Log stream setup errors with full context
+                    tracing::error!(
+                        provider = %provider_name,
+                        request_model = %request_model,
+                        error = %e,
+                        "Stream setup failed"
+                    );
                     Box::pin(futures::stream::once(async move {
                         Err(ProviderError::OpenAIError(e))
                     })) as BoxStream<'static, Result<StreamingChunk, ProviderError>>

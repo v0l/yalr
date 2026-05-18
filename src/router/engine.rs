@@ -828,11 +828,23 @@ impl Router {
                                         e.status_code(),
                                     );
 
+                                    // Log detailed error context for debugging
+                                    tracing::error!(
+                                        provider = &provider_name,
+                                        model = &original_model,
+                                        attempt = attempt,
+                                        chunks_yielded = chunks_yielded,
+                                        error_type = ?e.error_type(),
+                                        error = %e,
+                                        "Stream error occurred"
+                                    );
+
                                     // If no chunks have been sent yet and the error is transient,
                                     // fail over to the next provider instead of surfacing the error.
                                     if !chunks_yielded && e.is_transient() {
                                         tracing::warn!(
                                             provider = &provider_name,
+                                            model = &original_model,
                                             attempt = attempt,
                                             error = %e,
                                             "Transient stream error before any data, failing over to another provider"
@@ -858,6 +870,7 @@ impl Router {
                                     if !e.is_transient() {
                                         tracing::warn!(
                                             provider = &provider_name,
+                                            model = &original_model,
                                             attempt = attempt,
                                             error = %e,
                                             "Non-transient stream error, aborting"
@@ -865,6 +878,7 @@ impl Router {
                                     } else {
                                         tracing::warn!(
                                             provider = &provider_name,
+                                            model = &original_model,
                                             attempt = attempt,
                                             chunks_yielded = chunks_yielded,
                                             error = %e,
