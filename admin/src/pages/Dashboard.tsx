@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { api, API_BASE_URL } from '../api/client'
-import type { MetricsResponse, Provider, ProviderHealthEntry, WsProviderMetrics, HealthOverviewResponse } from '../types'
+import type { MetricsResponse, Provider, ProviderHealthEntry, HealthOverviewResponse } from '../types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -95,11 +95,11 @@ export default function Dashboard() {
               const idx = updated.findIndex(p => p.name === d.provider)
               if (idx !== -1 && d.event && typeof d.event === 'object' && 'ProviderLoad' in d.event) {
                 const load = (d.event as Record<string, unknown>).ProviderLoad as { in_flight: number; max_concurrency: number | null }
-                if (load) {
+                if (load && updated[idx].health) {
                   updated[idx] = {
                     ...updated[idx],
                     health: {
-                      ...updated[idx].health,
+                      ...updated[idx].health!,
                       in_flight: load.in_flight,
                       max_concurrency: load.max_concurrency,
                     }
@@ -164,7 +164,6 @@ export default function Dashboard() {
   const totalSuccesses = metrics?.total_successes ?? 0
   const totalFailures = metrics?.total_failures ?? 0
   const activeProviders = providers.filter(p => p.health?.available).length
-  const downCount = providers.filter(p => p.health?.health_state === 'unhealthy').length
   const avgLatency = metrics?.providers.length
     ? (metrics.providers.reduce((sum, p) => sum + (p.avg_latency_ms || 0), 0) || 0) / metrics.providers.length
     : 0
