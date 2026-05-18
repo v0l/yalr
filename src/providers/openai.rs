@@ -6,6 +6,51 @@ use futures::stream::BoxStream;
 use std::collections::HashMap;
 use crate::router::{Modality, ModelRuntimeInfo};
 
+/// Extract error information from a JSON response that might be an error.
+/// Handles various error formats including nested "detail.error" structure.
+fn extract_error_from_response(json_value: &serde_json::Value) -> Option<ErrorDetail> {
+    // Try direct "error" field
+    if let Some(error) = json_value.get("error") {
+        return parse_error_detail(error);
+    }
+
+    // Try nested "detail.error" structure (used by some providers like routstr)
+    if let Some(detail) = json_value.get("detail") {
+        if let Some(error) = detail.get("error") {
+            return parse_error_detail(error);
+        }
+    }
+
+    None
+}
+
+/// Parse error details from an error object
+fn parse_error_detail(error: &serde_json::Value) -> Option<ErrorDetail> {
+    if let Some(obj) = error.as_object() {
+        let message = obj.get("message")
+            .and_then(|m| m.as_str())
+            .map(String::from)?;
+
+        let code = obj.get("code")
+            .and_then(|c| c.as_str())
+            .map(String::from);
+
+        Some(ErrorDetail {
+            message,
+            code,
+        })
+    } else {
+        None
+    }
+}
+
+/// Extracted error details from API response
+#[derive(Debug)]
+struct ErrorDetail {
+    message: String,
+    code: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct OpenAiProvider {
     name: String,
@@ -80,6 +125,24 @@ impl Provider for OpenAiProvider {
                     Box::pin(stream.map(move |result: Result<serde_json::Value, async_openai::error::OpenAIError>| {
                         match result {
                             Ok(json_value) => {
+                                // Check if this is an error response before trying to deserialize
+                                if let Some(error_detail) = extract_error_from_response(&json_value) {
+                                    tracing::warn!(
+                                        provider = %provider_name,
+                                        error_message = %error_detail.message,
+                                        error_code = ?error_detail.code,
+                                        raw_json = %json_value,
+                                        "Stream returned error response"
+                                    );
+                                    return Err(ProviderError::ServerError {
+                                        message: error_detail.message,
+                                        status_code: error_detail.code.as_ref().and_then(|c| match c.as_str() {
+                                            "insufficient_quota" | "insufficient_balance" => Some(402), // Payment Required
+                                            _ => None,
+                                        }),
+                                    });
+                                }
+
                                 // Deserialize the raw JSON value to our custom type
                                 // This preserves all fields including reasoning_content
                                 match serde_json::from_value::<StreamingChunk>(json_value.clone()) {
@@ -209,6 +272,55 @@ pub fn convert_message_role(role: &str) -> ChatCompletionRequestMessage {
 mod tests {
     use super::*;
     use crate::metrics::ErrorType;
+
+    #[test]
+    fn test_extract_error_from_nested_detail() {
+        let json_str = r#"{
+            "detail": {
+                "error": {
+                    "message": "Insufficient balance: 232747 mSats required for this model. 202576 available.",
+                    "type": "insufficient_quota",
+                    "code": "insufficient_balance"
+                }
+            },
+            "request_id": "de069d4f-38a3-4b08-a80b-cdfdda4eae8d"
+        }"#;
+        
+        let json_value: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        let error = extract_error_from_response(&json_value).unwrap();
+        
+        assert_eq!(error.message, "Insufficient balance: 232747 mSats required for this model. 202576 available.");
+        assert_eq!(error.code, Some("insufficient_balance".to_string()));
+    }
+
+    #[test]
+    fn test_extract_error_from_direct_error() {
+        let json_str = r#"{
+            "error": {
+                "message": "Some error message",
+                "code": "some_code"
+            }
+        }"#;
+        
+        let json_value: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        let error = extract_error_from_response(&json_value).unwrap();
+        
+        assert_eq!(error.message, "Some error message");
+        assert_eq!(error.code, Some("some_code".to_string()));
+    }
+
+    #[test]
+    fn test_no_error_in_response() {
+        let json_str = r#"{
+            "id": "test",
+            "object": "chat.completion.chunk"
+        }"#;
+        
+        let json_value: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        let error = extract_error_from_response(&json_value);
+        
+        assert!(error.is_none());
+    }
 
     #[tokio::test]
     async fn test_provider_name_and_slug() {
