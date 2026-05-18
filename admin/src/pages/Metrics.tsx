@@ -312,34 +312,42 @@ export default function Metrics() {
       </div>
 
       {plist.length===0 ? <Card><CardContent className="py-12 text-center text-muted-foreground">Waiting for metrics…</CardContent></Card> :
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
         {plist.map(p=>{const sr=p.totalRequests>0?(p.successes/p.totalRequests*100):null
           const tt=pct(p.ttftVals,.9);const ot=pct(p.outTpsVals,.9);const is=selP===p.name
           return <button key={p.name} onClick={()=>{setSelP(is?null:p.name);setSelM(null)}}
-            className={cn('text-left p-4 bg-card rounded-xl border transition-colors cursor-pointer',
+            className={cn('text-left p-3 bg-card rounded-xl border transition-colors cursor-pointer',
               is?'border-primary ring-1 ring-primary/30':'border-border hover:border-primary/40')}>
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-1.5">
               <span className="text-sm font-semibold">{p.name}</span>
-              <span className="text-xs text-muted-foreground">{p.models.size}m</span>
+              <span className="text-[10px] text-muted-foreground">{p.models.size}m</span>
             </div>
-            <div className="grid grid-cols-4 gap-2 text-xs">
-              <div><div className="text-muted-foreground">Load</div>
-                <div className="font-mono font-medium">{p.inFlight}{p.maxConcurrency?<span className="text-muted-foreground">/{p.maxConcurrency}</span>:''}</div></div>
-              <div><div className="text-muted-foreground">Success</div>
-                <div className={cn('font-mono font-medium',sr!==null?(sr>=95?'text-emerald-500':sr>=80?'text-amber-500':'text-destructive'):'text-muted-foreground')}>
-                  {sr!==null?`${sr.toFixed(1)}%`:'\u2014'}</div></div>
-              <div><div className="text-muted-foreground">P90 TTFT</div>
-                <div className="font-mono font-medium">{tt!==null?`${tt}ms`:'\u2014'}</div></div>
-              <div><div className="text-muted-foreground">P90 tok/s</div>
-                <div className="font-mono font-medium">{ot!==null?ot.toFixed(1):'\u2014'}</div></div>
-            </div></button>})}
+            <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Load</span>
+                <span className="font-mono">{p.inFlight}{p.maxConcurrency?<span className="text-muted-foreground">/{p.maxConcurrency}</span>:''}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Success</span>
+                <span className={cn('font-mono',sr!==null?(sr>=95?'text-emerald-500':sr>=80?'text-amber-500':'text-destructive'):'text-muted-foreground')}>
+                  {sr!==null?`${sr.toFixed(1)}%`:'\u2014'}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">P90 TTFT</span>
+                <span className="font-mono">{tt!==null?`${tt}ms`:'\u2014'}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">P90 tok/s</span>
+                <span className="font-mono">{ot!==null?ot.toFixed(1):'\u2014'}</span>
+              </div>
+            </div></button>})} 
       </div>}
 
       {hist&&hist.length>0&&<div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <Card><CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2">
           <ActivityIcon className="size-4 text-primary"/>
           P90 TTFT<span className="text-xs font-normal text-muted-foreground ml-auto">{selP||'All providers'}{selM?` / ${selM}`:''}</span></CardTitle></CardHeader>
-          <CardContent>{loadingHist?<div className="h-48 flex items-center justify-center text-sm text-muted-foreground">Loading…</div>:
+          <CardContent>{loadingHist?<div className="h-48 flex items-center justify-center text-sm text-muted-foreground">Loading...</div>:
           <ResponsiveContainer width="100%" height={200}><LineChart data={chartData} margin={{top:5,right:5,left:0,bottom:5}}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)"/><XAxis dataKey="time" tick={{fontSize:11}} stroke="var(--muted-foreground)"/>
             <YAxis tick={{fontSize:11}} stroke="var(--muted-foreground)"/><Tooltip contentStyle={ttStyle}/><Legend wrapperStyle={{fontSize:'11px'}}/>
@@ -348,7 +356,7 @@ export default function Metrics() {
         <Card><CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2">
           <GaugeIcon className="size-4 text-primary"/>
           P90 Tokens/Second<span className="text-xs font-normal text-muted-foreground ml-auto">{selP||'All providers'}</span></CardTitle></CardHeader>
-          <CardContent>{loadingHist?<div className="h-48 flex items-center justify-center text-sm text-muted-foreground">Loading…</div>:
+          <CardContent>{loadingHist?<div className="h-48 flex items-center justify-center text-sm text-muted-foreground">Loading...</div>:
           <ResponsiveContainer width="100%" height={200}><LineChart data={chartData} margin={{top:5,right:5,left:0,bottom:5}}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)"/><XAxis dataKey="time" tick={{fontSize:11}} stroke="var(--muted-foreground)"/>
             <YAxis tick={{fontSize:11}} stroke="var(--muted-foreground)"/><Tooltip contentStyle={ttStyle}/><Legend wrapperStyle={{fontSize:'11px'}}/>
@@ -402,7 +410,7 @@ export default function Metrics() {
         <div className="lg:col-span-2"><Card><CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2">
           <ActivityIcon className="size-4 text-primary"/>Live Event Stream<span className="ml-2 text-sm font-normal text-muted-foreground">({liveEvents.length})</span></CardTitle></CardHeader>
           <CardContent><div className="space-y-0.5 max-h-[450px] overflow-y-auto font-mono text-xs">
-            {liveEvents.length===0?<p className="text-muted-foreground py-8 text-center">{wsStatus==='connected'?'Waiting…':'Not connected'}</p>:
+            {liveEvents.length===0?<p className="text-muted-foreground py-8 text-center">{wsStatus==='connected'?'Waiting...':'Not connected'}</p>:
             liveEvents.map((ev,i)=>{const{label,value,kind}=fmt(ev.event)
               const d=new Date(ev.timestamp_ms);const t=d.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'})
               const ms=String(d.getMilliseconds()).padStart(3,'0')
