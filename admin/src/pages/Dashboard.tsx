@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { api } from '../api/client'
-import type { MetricsResponse, Provider, ProviderHealthEntry } from '../types'
+import { useEffect, useState, useRef } from 'react'
+import { api, API_BASE_URL } from '../api/client'
+import type { MetricsResponse, Provider, ProviderHealthEntry, WsProviderMetrics, HealthOverviewResponse } from '../types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { TopupDialog } from '@/components/TopupDialog'
+import { cn } from '@/lib/utils'
 
 function HealthBadge({ state }: { state: string }) {
   switch (state) {
@@ -39,20 +40,26 @@ function BalanceDisplay({ health }: { health?: ProviderHealthEntry }) {
 export default function Dashboard() {
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null)
   const [providers, setProviders] = useState<Provider[]>([])
+  const [health, setHealth] = useState<HealthOverviewResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [topupDialogOpen, setTopupDialogOpen] = useState(false)
   const [selectedProvider, setSelectedProvider] = useState<Provider | null>(null)
+  const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected')
+  const wsRef = useRef<WebSocket | null>(null)
+  const reconnectT = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     async function fetchData() {
       try {
-        const [metricsData, providersData] = await Promise.all([
+        const [metricsData, providersData, healthData] = await Promise.all([
           api.getMetrics(),
           api.getProviders(),
+          api.getHealthOverview(),
         ])
         setMetrics(metricsData)
         setProviders(providersData.providers)
+        setHealth(healthData)
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to fetch data')
       } finally {
@@ -60,6 +67,71 @@ export default function Dashboard() {
       }
     }
     fetchData()
+  }, [])
+
+  // WebSocket connection for real-time metrics
+  useEffect(() => {
+    let c = false
+    function connect() {
+      if (c) return
+      const tok = localStorage.getItem('token')
+      if (!tok) { setWsStatus('disconnected'); return }
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      let base: string
+      try { const u = new URL(API_BASE_URL); u.protocol = proto; base = u.toString().replace(/\/$/, '') }
+      catch { base = `${proto}//${window.location.host}` }
+      setWsStatus('connecting')
+      const ws = new WebSocket(`${base}/api/metrics/ws?token=${encodeURIComponent(tok)}`)
+      wsRef.current = ws
+      ws.onopen = () => { if (!c) setWsStatus('connected') }
+      ws.onmessage = (ev) => {
+        if (c) return
+        try {
+          const d = JSON.parse(ev.data as string)
+          // Update providers list when we get ProviderLoad events
+          if (d.provider) {
+            setProviders(prev => {
+              const updated = [...prev]
+              const idx = updated.findIndex(p => p.name === d.provider)
+              if (idx !== -1 && d.event && typeof d.event === 'object' && 'ProviderLoad' in d.event) {
+                const load = (d.event as Record<string, unknown>).ProviderLoad as { in_flight: number; max_concurrency: number | null }
+                if (load) {
+                  updated[idx] = {
+                    ...updated[idx],
+                    health: {
+                      ...updated[idx].health,
+                      in_flight: load.in_flight,
+                      max_concurrency: load.max_concurrency,
+                    }
+                  }
+                }
+              }
+              return updated
+            })
+          }
+        } catch {}
+      }
+      ws.onclose = () => {
+        if (!c) { setWsStatus('disconnected'); wsRef.current = null; reconnectT.current = setTimeout(connect, 3000) }
+      }
+    }
+    connect()
+    return () => { c = true; if (reconnectT.current) clearTimeout(reconnectT.current); wsRef.current?.close() }
+  }, [])
+
+  // Periodic refresh of health data
+  useEffect(() => {
+    const iv = setInterval(async () => {
+      try {
+        const [healthData, providersData] = await Promise.all([
+          api.getHealthOverview(),
+          api.getProviders(),
+        ])
+        setHealth(healthData)
+        setProviders(providersData.providers)
+      } catch {}
+    }, 10000)
+    return () => clearInterval(iv)
   }, [])
 
   if (loading) {
@@ -104,10 +176,12 @@ export default function Dashboard() {
 
   return (
     <div className="flex flex-col gap-6 p-6">
-      <div>
+      <div className="flex items-center gap-2 mb-2">
         <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
-        <p className="text-sm text-muted-foreground">Overview of your YALR instance</p>
+        <span className={cn('size-2 rounded-full',
+          wsStatus==='connected'?'bg-emerald-500':wsStatus==='connecting'?'bg-amber-500':'bg-destructive')}/>
       </div>
+      <p className="text-sm text-muted-foreground">Overview of your YALR instance</p>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
@@ -128,8 +202,11 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             <p className="text-3xl font-bold">{activeProviders}<span className="text-lg text-muted-foreground">/{providers.length}</span></p>
-            {downCount > 0 && (
-              <p className="text-sm text-destructive mt-1">{downCount} down</p>
+            {health?.unhealthy_count && health.unhealthy_count > 0 && (
+              <p className="text-sm text-destructive mt-1">{health.unhealthy_count} down</p>
+            )}
+            {health?.degraded_count && health.degraded_count > 0 && (
+              <p className="text-sm text-amber-500 mt-1">{health.degraded_count} degraded</p>
             )}
           </CardContent>
         </Card>
