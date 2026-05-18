@@ -201,9 +201,11 @@ export default function Dashboard() {
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <BalanceDisplay health={h} />
-                            <Button variant="outline" size="sm" onClick={() => handleTopup(provider)}>
-                              Top-up
-                            </Button>
+                            {provider.provider_type === 'routstr' && (
+                              <Button variant="outline" size="sm" onClick={() => handleTopup(provider)}>
+                                Top-up
+                              </Button>
+                            )}
                           </div>
                         </TableCell>
                         <TableCell className="font-mono">
