@@ -281,9 +281,9 @@ pub async fn create_provider_invoice(
             .into_response()
     }
 
-    // Build the upstream invoice request
+    // Build the upstream invoice request - routstr expects /v1/lightning/invoice
     let upstream_url = match url::Url::parse(&provider.base_url) {
-        Ok(u) => u.join("lightning/invoice").unwrap_or_else(|_| url::Url::parse("/lightning/invoice").unwrap()),
+        Ok(u) => u.join("v1/lightning/invoice").unwrap_or_else(|_| url::Url::parse("/v1/lightning/invoice").unwrap()),
         Err(e) => {
             tracing::error!(slug = %slug, error = %e, "Invalid provider base URL");
             return (
@@ -296,15 +296,45 @@ pub async fn create_provider_invoice(
 
     tracing::info!(slug = %slug, url = %upstream_url.as_str(), "Creating provider invoice via upstream");
 
+    // Get a valid model name for the provider
+    // Try to get models from the provider's database entry first
+    let model_name = {
+        // Query model providers for this provider to get associated models
+        let model_providers = state.db
+            .list_model_providers_for_provider(provider.id)
+            .await
+            .unwrap_or_default();
+        
+        if let Some(mp) = model_providers.first() {
+            // Get the model name from the model_id
+            if let Ok(Some(model)) = state.db.get_model_by_id(mp.model_id).await {
+                model.name
+            } else {
+                "unknown".to_string()
+            }
+        } else {
+            // No models configured for this provider, use a placeholder
+            // This will fail on the upstream if the model doesn't exist
+            "unknown".to_string()
+        }
+    };
+
+    // Build the upstream request body - routstr expects:
+    // - amount_sats: required
+    // - purpose: "create" or "topup" (required)
+    // - model: required (routstr validates model existence)
+    // Note: memo and expire_seconds are not used by routstr
+    let upstream_body = serde_json::json!({
+        "amount_sats": body.amount_sats,
+        "purpose": "topup",
+        "model": model_name,
+    });
+
     let mut request_builder = Client::new()
         .post(upstream_url.as_str())
-        .json(&serde_json::json!({
-            "amount_sats": body.amount_sats,
-            "memo": body.memo,
-            "expire_seconds": body.expire_seconds,
-        }));
+        .json(&upstream_body);
 
-    // Add API key if present
+    // Add API key if present (routstr requires auth for topup)
     if let Some(ref api_key) = provider.api_key {
         request_builder = request_builder.bearer_auth(api_key);
     }
