@@ -41,6 +41,7 @@ function fmt(e: WsProviderMetrics['event']): { label: string; value: string; kin
   if (e === 'Success') return { label: 'OK', value: '\u2713', kind: 'ok' }
   if (has(e, 'TTFT')) return { label: 'TTFT', value: `${e.TTFT}ms`, kind: 'info' }
   if (has(e, 'OutputTokensPerSecond')) return { label: 'tok/s', value: (e.OutputTokensPerSecond as number).toFixed(1), kind: 'info' }
+  if (has(e, 'InputTokensPerSecond')) return { label: 'in tok/s', value: (e.InputTokensPerSecond as number).toFixed(1), kind: 'info' }
   if (has(e, 'TotalLatency')) return { label: 'Lat', value: `${e.TotalLatency}ms`, kind: 'info' }
   if (has(e, 'InputTokens')) return { label: 'In tok', value: String(e.InputTokens), kind: 'info' }
   if (has(e, 'OutputTokens')) return { label: 'Out tok', value: String(e.OutputTokens), kind: 'info' }
