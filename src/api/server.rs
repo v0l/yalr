@@ -136,6 +136,7 @@ pub async fn run_with_shutdown<F>(
         .route("/providers", get(handlers::list_providers))
         .route("/providers", post(handlers::create_provider))
         .route("/providers/:slug", put(handlers::update_provider))
+        .route("/providers/:slug/generate-api-key", post(handlers::generate_provider_api_key))
         .route("/providers/:slug", delete(handlers::delete_provider))
         .route("/metrics", get(handlers::get_metrics))
         .route("/metrics/history", get(handlers::get_metrics_history))

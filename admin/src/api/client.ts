@@ -147,6 +147,25 @@ export const api = {
     return response.json()
   },
 
+  async generateProviderApiKey(slug: string): Promise<{ api_key: string; credit_id?: string; provider: Provider }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/providers/${slug}/generate-api-key`, {
+      method: 'POST',
+      headers,
+    })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      const error = await response.json().catch(() => ({ error: 'Failed to generate API key' }))
+      throw new Error(error.error || 'Failed to generate API key')
+    }
+    
+    return response.json()
+  },
+
   async getModels(): Promise<{ object: string; data: Model[] }> {
     return request('/v1/models')
   },

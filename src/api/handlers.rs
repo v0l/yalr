@@ -1175,6 +1175,95 @@ pub async fn create_provider(
     }))
 }
 
+/// POST /providers/:slug/generate-api-key — Generate API key for PPQ/Routstr providers
+///
+/// For PPQ providers, creates a new account and returns a fresh API key.
+/// For Routstr providers, this is not supported (Routstr requires external key setup).
+#[axum::debug_handler]
+pub async fn generate_provider_api_key(
+    Path(slug): Path<String>,
+    State(state): State<std::sync::Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    use crate::db::ProviderType;
+    use reqwest::Client;
+
+    // Get the provider
+    let provider = state.config.db.get_provider_by_slug(&slug).await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, format!("Provider '{}' not found", slug)))?;
+
+    // Check if it's a supported provider type
+    if provider.provider_type != ProviderType::Ppq {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "API key generation is only supported for PPQ providers".to_string(),
+        ));
+    }
+
+    // Call PPQ's /accounts/create endpoint to generate a new API key
+    let client = Client::new();
+    let response = client
+        .post("https://api.ppq.ai/accounts/create")
+        .send()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to contact PPQ: {}", e)))?;
+
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("PPQ account creation failed: {}", error_text),
+        ));
+    }
+
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid PPQ response: {}", e)))?;
+
+    // Extract the API key and credit_id from the response
+    let api_key = body
+        .get("data")
+        .and_then(|d| d.get("api_key"))
+        .and_then(|k| k.as_str())
+        .ok_or_else(|| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "PPQ did not return an API key".to_string()))?;
+
+    let credit_id = body
+        .get("data")
+        .and_then(|d| d.get("credit_id"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+
+    // Update the provider with the new API key
+    let updated = state.config.db.update_provider(provider.id, crate::db::UpdateProvider {
+        name: None,
+        slug: None,
+        base_url: None,
+        api_key: Some(Some(api_key)),
+        provider_type: None,
+    }).await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Reload config
+    state.config.router.reload_config().await
+        .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    tracing::info!(provider_slug = slug, "Generated new PPQ API key");
+
+    // Return the API key and credit_id to the client
+    Ok(Json(serde_json::json!({
+        "api_key": api_key,
+        "credit_id": credit_id,
+        "provider": {
+            "id": updated.id,
+            "name": updated.name,
+            "slug": updated.slug,
+            "base_url": updated.base_url,
+            "provider_type": updated.provider_type.as_str(),
+        }
+    })))
+}
+
 #[axum::debug_handler]
 pub async fn delete_provider(
     Path(slug): Path<String>,

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { PlusIcon, PencilIcon, TrashIcon, WalletIcon } from 'lucide-react'
+import { PlusIcon, PencilIcon, TrashIcon, WalletIcon, KeyIcon, RefreshCw } from 'lucide-react'
 import { api } from '../api/client'
 import type { Provider } from '../types'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,14 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Card, CardContent } from '@/components/ui/card'
+
+// Common providers with logos and defaults
+const COMMON_PROVIDERS = [
+  { name: 'ChatGPT', slug: 'chatgpt', type: 'openai', url: 'https://api.openai.com/v1', logo: '🤖' },
+  { name: 'Anthropic', slug: 'anthropic', type: 'anthropic', url: 'https://api.anthropic.com', logo: '🎭' },
+  { name: 'OpenRouter', slug: 'openrouter', type: 'openrouter', url: 'https://openrouter.ai/api/v1', logo: '🔀' },
+  { name: 'PPQ.ai', slug: 'ppq', type: 'ppq', url: 'https://api.ppq.ai', logo: '⚡' },
+]
 
 function HealthBadge({ state }: { state?: string }) {
   switch (state) {
@@ -65,6 +73,8 @@ export default function Providers() {
   const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [topupProvider, setTopupProvider] = useState<Provider | null>(null)
+  const [generatingKey, setGeneratingKey] = useState<Provider | null>(null)
+  const [generatedApiKey, setGeneratedApiKey] = useState<string | null>(null)
 
   useEffect(() => { loadProviders() }, [])
 
@@ -81,9 +91,9 @@ export default function Providers() {
     }
   }
 
-  function openCreate() {
+  function openCreate(prefill?: Partial<ProviderFormData>) {
     setEditingProvider(null)
-    setForm({ ...emptyForm })
+    setForm({ ...emptyForm, ...prefill })
     setDialogOpen(true)
   }
 
@@ -141,6 +151,20 @@ export default function Providers() {
     }
   }
 
+  async function handleGenerateKey(provider: Provider) {
+    setGeneratingKey(provider)
+    try {
+      const response = await api.generateProviderApiKey(provider.slug)
+      setGeneratedApiKey(response.api_key)
+      setSuccessMessage('API key generated successfully!')
+      await loadProviders()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to generate API key')
+    } finally {
+      setGeneratingKey(null)
+    }
+  }
+
   function openTopup(provider: Provider) {
     setTopupProvider(provider)
   }
@@ -168,7 +192,7 @@ export default function Providers() {
           <h1 className="text-2xl font-bold text-foreground">Providers</h1>
           <p className="text-sm text-muted-foreground">Manage LLM provider connections</p>
         </div>
-        <Button onClick={openCreate}>
+        <Button onClick={() => openCreate()}>
           <PlusIcon />
           Add Provider
         </Button>
@@ -192,6 +216,31 @@ export default function Providers() {
         </Alert>
       )}
 
+      {/* Quick Add - Common Providers */}
+      <Card>
+        <CardContent className="p-4">
+          <h3 className="text-sm font-medium mb-3">Quick Add Common Providers</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {COMMON_PROVIDERS.map((cp) => (
+              <Button
+                key={cp.slug}
+                variant="outline"
+                className="h-auto p-3 flex flex-col gap-2"
+                onClick={() => openCreate({
+                  name: cp.name,
+                  slug: cp.slug,
+                  provider_type: cp.type,
+                  base_url: cp.url,
+                })}
+              >
+                <span className="text-2xl">{cp.logo}</span>
+                <span className="text-sm font-medium">{cp.name}</span>
+              </Button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Table */}
       <Card>
         <CardContent className="p-0">
@@ -203,7 +252,7 @@ export default function Providers() {
                 <TableHead>Type</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Base URL</TableHead>
-                <TableHead className="w-20 text-right">Actions</TableHead>
+                <TableHead className="w-32 text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -225,11 +274,18 @@ export default function Providers() {
                     <TableCell className="font-mono text-muted-foreground">{provider.base_url}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
-                        {provider.provider_type === 'routstr' || provider.provider_type === 'ppq' ? (
-                          <Button variant="ghost" size="icon-xs" onClick={() => openTopup(provider)} title="Top-up provider balance">
-                            <WalletIcon />
-                          </Button>
-                        ) : null}
+                        {(provider.provider_type === 'routstr' || provider.provider_type === 'ppq') && (
+                          <>
+                            <Button variant="ghost" size="icon-xs" onClick={() => openTopup(provider)} title="Top-up provider balance">
+                              <WalletIcon />
+                            </Button>
+                            {provider.provider_type === 'ppq' && (
+                              <Button variant="ghost" size="icon-xs" onClick={() => handleGenerateKey(provider)} disabled={!!generatingKey} title="Generate API key">
+                                {generatingKey?.slug === provider.slug ? <RefreshCw className="animate-spin" /> : <KeyIcon />}
+                              </Button>
+                            )}
+                          </>
+                        )}
                         <Button variant="ghost" size="icon-xs" onClick={() => openEdit(provider)}>
                           <PencilIcon />
                         </Button>
@@ -338,6 +394,33 @@ export default function Providers() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Generated API Key Dialog */}
+      <Dialog open={!!generatedApiKey} onOpenChange={(open) => { if (!open) { setGeneratedApiKey(null); setSuccessMessage(null); } }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>API Key Generated!</DialogTitle>
+            <DialogDescription>
+              Save this API key securely. You won't be able to see it again.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="p-3 bg-muted rounded-md">
+              <code className="text-sm break-all">{generatedApiKey}</code>
+            </div>
+            <Alert>
+              <AlertDescription>
+                This key is automatically saved to your provider configuration. You can use it to authenticate API requests.
+              </AlertDescription>
+            </Alert>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => { setGeneratedApiKey(null); setSuccessMessage(null); }}>
+              Close
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
