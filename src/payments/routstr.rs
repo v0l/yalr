@@ -297,21 +297,17 @@ pub async fn create_provider_invoice(
     tracing::info!(slug = %slug, url = %upstream_url.as_str(), "Creating provider invoice via upstream");
 
     // Get a valid model name for the provider
-    // Try to get models from the provider's database entry first
+    // Try to get models from routing_config_providers (which stores the actual model name)
     let model_name = {
-        // Query model providers for this provider to get associated models
-        let model_providers = state.db
-            .list_model_providers_for_provider(provider.id)
+        // Query routing config providers for this provider to get associated model names
+        let routing_config_providers = state.db
+            .list_routing_config_providers_for_provider(provider.id)
             .await
             .unwrap_or_default();
         
-        if let Some(mp) = model_providers.first() {
-            // Get the model name from the model_id
-            if let Ok(Some(model)) = state.db.get_model_by_id(mp.model_id).await {
-                model.name
-            } else {
-                "unknown".to_string()
-            }
+        // Find the first active entry with a non-empty model name
+        if let Some(rcp) = routing_config_providers.iter().find(|rcp| rcp.is_active && !rcp.model.as_ref().map(|m| m.is_empty()).unwrap_or(true)) {
+            rcp.model.clone().unwrap_or("unknown".to_string())
         } else {
             // No models configured for this provider, use a placeholder
             // This will fail on the upstream if the model doesn't exist
