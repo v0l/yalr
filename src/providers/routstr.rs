@@ -210,15 +210,10 @@ impl Provider for RoutstrProvider {
             req = req.header("Authorization", format!("Bearer {}", key));
         }
 
-        let resp = req.send().await.map_err(|e| ProviderError::Other(e.into()))?;
-        let healthy = resp.status().is_success();
-
-        // Refresh balance on every health check so the dashboard stays current
-        if healthy {
-            self.refresh_balance().await;
+        match req.send().await {
+            Ok(resp) => Ok(resp.status().is_success()),
+            Err(_) => Ok(false),
         }
-
-        Ok(healthy)
     }
 
     async fn get_runtime_info(&self, model_id: &str) -> Result<Option<ModelRuntimeInfo>, ProviderError> {
