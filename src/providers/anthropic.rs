@@ -615,6 +615,8 @@ impl Provider for AnthropicProvider {
         let mut req = self.http_client.get(&url).header("anthropic-version", "2023-06-01");
         if !self.api_key.is_empty() {
             req = req.header("x-api-key", &self.api_key);
+        } else {
+            tracing::warn!(provider = %self.name(), "No API key configured for Anthropic provider");
         }
         match req.send().await {
             Ok(resp) => {

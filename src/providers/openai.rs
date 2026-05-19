@@ -219,6 +219,8 @@ impl Provider for OpenAiProvider {
         let mut req = self.http_client.get(&url);
         if !self.api_key.is_empty() {
             req = req.bearer_auth(&self.api_key);
+        } else {
+            tracing::warn!(provider = %self.name(), "No API key configured for OpenAI-compatible provider");
         }
         match req.send().await {
             Ok(resp) => {
