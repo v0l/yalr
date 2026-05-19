@@ -307,7 +307,9 @@ impl Router {
         Ok(())
     }
 
-    /// Start background health check tasks for routing configs that have health checks enabled
+    /// Start background health check tasks that cover all loaded providers.
+    /// The interval and timeout are taken from the first routing config that has
+    /// health checks enabled, falling back to 30s / 10s defaults.
     pub async fn start_health_checks(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut handles = self.health_check_handles.write().await;
         
@@ -316,119 +318,101 @@ impl Router {
             handle.abort();
         }
         
-        // Get all routing configs with health checks enabled
-        let routing_configs = self.db.list_routing_configs().await?;
-        
-        for rc in routing_configs {
-            if !rc.health_check_enabled {
-                continue;
+        // Gather all loaded providers (deduplicated by name)
+        let provs = self.providers.read().await;
+        let mut all_providers = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for provider in provs.values() {
+            if seen.insert(provider.name().to_string()) {
+                all_providers.push(provider.clone());
             }
-            
-            let interval = Duration::from_secs(rc.health_check_interval_seconds as u64);
-            let timeout = Duration::from_secs(rc.health_check_timeout_seconds as u64);
-            
-            // Get providers for this routing config (deduplicated)
-            let rcp_records = self.db.list_active_routing_config_providers(rc.id).await?;
-            let mut all_providers = Vec::new();
-            let mut seen = std::collections::HashSet::new();
-            
-            let id_to_slug = self.get_provider_slug_map().await;
-            let provs = self.providers.read().await;
-            
-            for rcp in rcp_records {
-                if let Some(slug) = id_to_slug.get(&rcp.provider_id) {
-                    if let Some(provider) = provs.get(slug) {
-                        if seen.insert(provider.name().to_string()) {
-                            all_providers.push(provider.clone());
-                        }
-                    }
-                }
-            }
-            drop(provs);
-
-            if all_providers.is_empty() {
-                continue;
-            }
-
-            let count = all_providers.len();
-            let router = HealthCheckRouter {
-                metrics_store: self.metrics_store.clone(),
-            };
-
-            let handle = tokio::spawn(async move {
-                let mut interval_tick = tokio::time::interval(interval);
-
-                loop {
-                    interval_tick.tick().await;
-
-                    // Run health checks for all providers in parallel
-                    let health_check_tasks: Vec<_> = all_providers
-                        .iter()
-                        .map(|provider| {
-                            let provider_name = provider.name().to_string();
-                            let provider_clone = provider.clone();
-                            let router_clone = router.clone();
-                            let timeout_duration = timeout;
-
-                            tokio::spawn(async move {
-                                // Fetch and emit balance snapshot
-                                if let Some(amount) = provider_clone.fetch_balance().await {
-                                    router_clone.metrics_store.emitter().emit_balance(&provider_name, amount);
-                                }
-
-                                // Health check with timeout
-                                let result = tokio::time::timeout(timeout_duration, provider_clone.health_check()).await;
-                                match result {
-                                    Ok(Ok(true)) => {
-                                        let was_down = !router_clone.metrics_store.is_provider_available(&provider_name).await;
-                                        if was_down {
-                                            tracing::info!(provider = %provider_name, "Health check recovered");
-                                        }
-                                        router_clone.record_success(&provider_name).await;
-                                    }
-                                    Ok(Ok(false)) => {
-                                        tracing::warn!(provider = %provider_name, "Health check unhealthy");
-                                        router_clone.record_failure(
-                                            &provider_name,
-                                            crate::metrics::ErrorType::ServerError,
-                                            "Health check returned unhealthy",
-                                        ).await;
-                                    }
-                                    Ok(Err(e)) => {
-                                        tracing::warn!(provider = %provider_name, error = %e, "Health check error");
-                                        router_clone.record_failure(&provider_name, e.error_type(), &e.to_string()).await;
-                                    }
-                                    Err(_) => {
-                                        tracing::warn!(provider = %provider_name, "Health check timeout");
-                                        router_clone.record_failure(&provider_name, crate::metrics::ErrorType::Timeout, "Health check timed out").await;
-                                    }
-                                }
-                            })
-                        })
-                        .collect();
-
-                    // Wait for all health checks to complete
-                    for task in health_check_tasks {
-                        let _ = task.await;
-                    }
-                }
-            });
-
-            handles.insert(rc.name.clone(), handle);
-            tracing::info!(
-                config = rc.name,
-                interval_seconds = rc.health_check_interval_seconds,
-                total_providers = count,
-                "Started health check task"
-            );
         }
-        
-        Ok(())
-    }
+        drop(provs);
 
-    async fn get_provider_slug_map(&self) -> HashMap<i64, String> {
-        let provider_records = self.db.list_providers().await.unwrap_or_default();
-        provider_records.into_iter().map(|p| (p.id, p.slug.clone())).collect()
+        if all_providers.is_empty() {
+            return Ok(());
+        }
+
+        // Pick interval/timeout from the first routing config with health checks enabled,
+        // or fall back to sensible defaults.
+        let routing_configs = self.db.list_routing_configs().await?;
+        let health_config = routing_configs.iter().find(|rc| rc.health_check_enabled);
+        let interval = Duration::from_secs(
+            health_config.map_or(30, |rc| rc.health_check_interval_seconds as u64),
+        );
+        let timeout = Duration::from_secs(
+            health_config.map_or(10, |rc| rc.health_check_timeout_seconds as u64),
+        );
+
+        let count = all_providers.len();
+        let router = HealthCheckRouter {
+            metrics_store: self.metrics_store.clone(),
+        };
+
+        let handle = tokio::spawn(async move {
+            let mut interval_tick = tokio::time::interval(interval);
+
+            loop {
+                interval_tick.tick().await;
+
+                let health_check_tasks: Vec<_> = all_providers
+                    .iter()
+                    .map(|provider| {
+                        let provider_name = provider.name().to_string();
+                        let provider_clone = provider.clone();
+                        let router_clone = router.clone();
+                        let timeout_duration = timeout;
+
+                        tokio::spawn(async move {
+                            // Fetch and emit balance snapshot
+                            if let Some(amount) = provider_clone.fetch_balance().await {
+                                router_clone.metrics_store.emitter().emit_balance(&provider_name, amount);
+                            }
+
+                            let result = tokio::time::timeout(timeout_duration, provider_clone.health_check()).await;
+                            match result {
+                                Ok(Ok(true)) => {
+                                    let was_down = !router_clone.metrics_store.is_provider_available(&provider_name).await;
+                                    if was_down {
+                                        tracing::info!(provider = %provider_name, "Health check recovered");
+                                    }
+                                    router_clone.record_success(&provider_name).await;
+                                }
+                                Ok(Ok(false)) => {
+                                    tracing::warn!(provider = %provider_name, "Health check unhealthy");
+                                    router_clone.record_failure(
+                                        &provider_name,
+                                        crate::metrics::ErrorType::ServerError,
+                                        "Health check returned unhealthy",
+                                    ).await;
+                                }
+                                Ok(Err(e)) => {
+                                    tracing::warn!(provider = %provider_name, error = %e, "Health check error");
+                                    router_clone.record_failure(&provider_name, e.error_type(), &e.to_string()).await;
+                                }
+                                Err(_) => {
+                                    tracing::warn!(provider = %provider_name, "Health check timeout");
+                                    router_clone.record_failure(&provider_name, crate::metrics::ErrorType::Timeout, "Health check timed out").await;
+                                }
+                            }
+                        })
+                    })
+                    .collect();
+
+                for task in health_check_tasks {
+                    let _ = task.await;
+                }
+            }
+        });
+
+        handles.insert("all-providers".to_string(), handle);
+        tracing::info!(
+            interval_seconds = interval.as_secs(),
+            total_providers = count,
+            "Started health check task for all providers"
+        );
+
+        Ok(())
     }
 
     pub async fn get_providers(&self) -> Vec<Arc<dyn Provider>> {
