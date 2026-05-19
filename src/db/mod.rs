@@ -36,6 +36,7 @@ pub enum ProviderType {
     Vllm = 2,
     Ollama = 3,
     Routstr = 4,
+    OpenRouter = 5,
 }
 
 impl ProviderType {
@@ -46,6 +47,7 @@ impl ProviderType {
             ProviderType::Vllm => "vllm",
             ProviderType::Ollama => "ollama",
             ProviderType::Routstr => "routstr",
+            ProviderType::OpenRouter => "openrouter",
         }
     }
     
@@ -56,6 +58,7 @@ impl ProviderType {
             "vllm" => Some(ProviderType::Vllm),
             "ollama" => Some(ProviderType::Ollama),
             "routstr" => Some(ProviderType::Routstr),
+            "openrouter" => Some(ProviderType::OpenRouter),
             _ => None,
         }
     }

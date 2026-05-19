@@ -1,6 +1,7 @@
 pub mod llamacpp;
 pub mod ollama;
 pub mod openai;
+pub mod openrouter;
 pub mod provider_trait;
 pub mod routstr;
 pub mod vllm;
@@ -8,6 +9,7 @@ pub mod vllm;
 pub use llamacpp::LlamaCppProvider;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
+pub use openrouter::OpenRouterProvider;
 pub use routstr::RoutstrProvider;
 pub use vllm::VllmProvider;
 
@@ -28,6 +30,7 @@ pub fn create_provider(
         ProviderType::Vllm => Arc::new(VllmProvider::new(name, slug, base_url, api_key)),
         ProviderType::Ollama => Arc::new(OllamaProvider::new(name, slug, base_url, api_key).unwrap()),
         ProviderType::Routstr => Arc::new(RoutstrProvider::new(name, slug, base_url, api_key)),
+        ProviderType::OpenRouter => Arc::new(OpenRouterProvider::new(name, slug, base_url, api_key)),
     }
 }
 

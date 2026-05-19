@@ -273,7 +273,14 @@ export default function Providers() {
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="p-type">Provider Type</Label>
-                <Select value={form.provider_type} onValueChange={(v) => setForm({ ...form, provider_type: v })}>
+                <Select value={form.provider_type} onValueChange={(v) => {
+                  // Pre-fill base URL for OpenRouter
+                  const newForm = { ...form, provider_type: v };
+                  if (v === 'openrouter' && form.base_url === '') {
+                    newForm.base_url = 'https://openrouter.ai/api/v1';
+                  }
+                  setForm(newForm);
+                }}>
                   <SelectTrigger id="p-type" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
@@ -284,6 +291,7 @@ export default function Providers() {
                       <SelectItem value="vllm">vLLM</SelectItem>
                       <SelectItem value="ollama">Ollama</SelectItem>
                       <SelectItem value="routstr">Routstr</SelectItem>
+                      <SelectItem value="openrouter">OpenRouter</SelectItem>
                     </SelectGroup>
                   </SelectContent>
                 </Select>
