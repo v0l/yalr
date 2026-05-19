@@ -309,11 +309,38 @@ impl Provider for RoutstrProvider {
         }
     }
 
-    async fn create_topup(&self, amount_usd: f64) -> Option<serde_json::Value> {
-        // Routstr topup is handled through the admin API endpoint
-        // This method is for future direct integration if needed
-        let _ = amount_usd;
-        None
+    async fn create_topup(&self, amount: CurrencyAmount) -> Option<serde_json::Value> {
+        use reqwest::Client;
+        
+        // Routstr only accepts sats
+        let amount_sats = match amount {
+            CurrencyAmount::Sats(sats) => sats,
+            CurrencyAmount::Msats(msats) => msats / 1000,
+            _ => return None, // Routstr only supports Lightning
+        };
+        
+        let api_key = self.api_key.as_ref()?;
+        let client = Client::new();
+        
+        // Build the upstream URL: {base_url}/v1/lightning/invoice
+        let invoice_url = self.base_url.join("v1/lightning/invoice").ok()?;
+        
+        let response = client
+            .post(invoice_url.as_str())
+            .bearer_auth(api_key)
+            .json(&serde_json::json!({
+                "amount_sats": amount_sats,
+                "purpose": "topup"
+            }))
+            .send()
+            .await
+            .ok()?;
+
+        if !response.status().is_success() {
+            return None;
+        }
+
+        response.json().await.ok()
     }
 }
 

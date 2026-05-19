@@ -270,8 +270,14 @@ impl Provider for PpqProvider {
         }
     }
 
-    async fn create_topup(&self, amount_usd: f64) -> Option<serde_json::Value> {
+    async fn create_topup(&self, amount: CurrencyAmount) -> Option<serde_json::Value> {
         use reqwest::Client;
+        
+        // PPQ accepts USD amounts
+        let amount_usd = match amount {
+            CurrencyAmount::UsdMicro(µs) => (µs as f64) / 1_000_000.0,
+            _ => return None, // PPQ only supports USD
+        };
         
         let api_key = self.api_key.as_ref()?;
         let client = Client::new();

@@ -1,5 +1,6 @@
 use crate::state::AppState;
 use crate::db::UserType;
+use crate::providers::CurrencyAmount;
 use axum::{
     extract::{Extension, Path, State},
     http::StatusCode,
@@ -1296,7 +1297,10 @@ pub async fn create_provider_topup(
     let provider_arc = providers.into_iter().find(|p| p.slug() == slug)
         .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST, "Provider not found in router".to_string()))?;
 
-    let invoice_data = provider_arc.create_topup(amount_usd).await
+    // Convert USD to CurrencyAmount (we'll use usd_micro for now, providers will convert as needed)
+    let amount = CurrencyAmount::UsdMicro((amount_usd * 1_000_000.0) as i64);
+    
+    let invoice_data = provider_arc.create_topup(amount).await
         .ok_or_else(|| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to create top-up invoice".to_string()))?;
 
     Ok(Json(serde_json::json!({

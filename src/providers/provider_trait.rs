@@ -97,9 +97,10 @@ pub trait Provider: Send + Sync {
     }
 
     /// Create a top-up invoice for the provider.
-    /// Returns the invoice data (bolt11, payment_hash, amount, etc.) or None if not supported.
-    async fn create_topup(&self, amount_usd: f64) -> Option<serde_json::Value> {
-        let _ = amount_usd;
+    /// Returns the invoice data (payment instructions, URL, bolt11, etc.) as JSON or None if not supported.
+    /// The returned value is provider-specific and should be handled by the frontend accordingly.
+    async fn create_topup(&self, amount: CurrencyAmount) -> Option<serde_json::Value> {
+        let _ = amount;
         None
     }
 }
