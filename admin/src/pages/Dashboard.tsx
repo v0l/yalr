@@ -169,11 +169,6 @@ export default function Dashboard() {
     ? (metrics.providers.reduce((sum, p) => sum + (p.avg_latency_ms || 0), 0) || 0) / metrics.providers.length
     : 0
 
-  function handleTopup(provider: Provider) {
-    setSelectedProvider(provider)
-    setTopupDialogOpen(true)
-  }
-
   return (
     <div className="flex flex-col gap-6 p-6">
       <div className="flex items-center gap-2 mb-2">

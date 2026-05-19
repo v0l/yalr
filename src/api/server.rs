@@ -135,6 +135,7 @@ pub async fn run_with_shutdown<F>(
     let admin_routes = Router::new()
         .route("/providers", get(handlers::list_providers))
         .route("/providers", post(handlers::create_provider))
+        .route("/providers/:slug/topup", post(handlers::create_provider_topup))
         .route("/providers/:slug", put(handlers::update_provider))
         .route("/providers/:slug/generate-api-key", post(handlers::generate_provider_api_key))
         .route("/providers/:slug", delete(handlers::delete_provider))

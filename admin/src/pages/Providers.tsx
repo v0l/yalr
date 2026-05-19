@@ -151,7 +151,7 @@ export default function Providers() {
     }
   }
 
-  function openTopup(provider: Provider) {
+  function handleTopup(provider: Provider) {
     setTopupProvider(provider)
   }
 

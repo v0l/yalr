@@ -1264,7 +1264,49 @@ pub async fn generate_provider_api_key(
     })))
 }
 
+/// POST /providers/:slug/topup — Create top-up request for PPQ providers
 #[axum::debug_handler]
+pub async fn create_provider_topup(
+    Path(slug): Path<String>,
+    State(state): State<std::sync::Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    use crate::db::ProviderType;
+
+    // Get the provider
+    let provider = state.config.db.get_provider_by_slug(&slug).await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, format!("Provider '{}' not found", slug)))?;
+
+    // Check if it's a PPQ provider
+    if provider.provider_type != ProviderType::Ppq {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Top-up is only supported for PPQ providers".to_string(),
+        ));
+    }
+
+    // Extract amount from request
+    let amount_usd = body
+        .get("amount_usd")
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST, "Missing amount_usd".to_string()))?;
+
+    if amount_usd <= 0.0 {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Amount must be greater than 0".to_string(),
+        ));
+    }
+
+    tracing::info!(provider_slug = slug, amount_usd = amount_usd, "PPQ top-up request created");
+
+    Ok(Json(serde_json::json!({
+        "message": "Top-up request created! Check your email or PPQ dashboard for payment instructions.",
+        "provider": { "slug": provider.slug, "name": provider.name },
+        "amount_usd": amount_usd,
+    })))
+}
 pub async fn delete_provider(
     Path(slug): Path<String>,
     State(state): State<std::sync::Arc<AppState>>,

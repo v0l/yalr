@@ -1,13 +1,11 @@
 import { useState, useEffect } from 'react'
-import { CopyIcon, CheckIcon, WalletIcon, ZapIcon, ClockIcon, ExternalLinkIcon } from 'lucide-react'
+import { CheckIcon, WalletIcon } from 'lucide-react'
 import { api } from '../api/client'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Card, CardContent } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
 
 interface TopupDialogProps {
   open: boolean
@@ -28,6 +26,7 @@ export function TopupDialog({ open, onOpenChange, providerSlug, providerName, pr
 
   // Check if this is a PPQ provider
   const isPpq = providerType === 'ppq'
+  const isRoutstr = providerType === 'routstr'
 
   // Reset state when dialog opens/closes
   useEffect(() => {
@@ -52,19 +51,21 @@ export function TopupDialog({ open, onOpenChange, providerSlug, providerName, pr
     try {
       if (isPpq) {
         // For PPQ, call the new topup endpoint with USD amount
-        const response = await api.post(`/providers/${providerSlug}/topup`, {
+        await api.topupProvider(providerSlug, {
           amount_usd: amountNum,
           currency: 'USD'
         })
         setSuccess('Top-up request created! Check your email or PPQ dashboard for payment instructions.')
-      } else {
-        // For Routstr, create Lightning invoice (existing flow)
-        const data = await api.createProviderInvoice(providerSlug, {
+      } else if (isRoutstr) {
+        // For Routstr, create Lightning invoice
+        await api.createProviderInvoice(providerSlug, {
           amount_sats: Math.round(amountNum),
           memo: `Topup for ${providerName}`,
           expire_seconds: 1800,
         })
         setSuccess('Invoice created! Check your email for payment instructions.')
+      } else {
+        setError('Top-up is not supported for this provider type')
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create top-up')
@@ -88,7 +89,9 @@ export function TopupDialog({ open, onOpenChange, providerSlug, providerName, pr
           <DialogDescription>
             {isPpq 
               ? 'Add USD credits to your PPQ account. Payments are processed through PPQ\'s payment system.'
-              : 'Create a Lightning invoice to add funds to your provider account.'}
+              : isRoutstr
+                ? 'Create a Lightning invoice to add funds to your Routstr account.'
+                : 'Select an amount to top-up your provider account.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -121,15 +124,14 @@ export function TopupDialog({ open, onOpenChange, providerSlug, providerName, pr
                 placeholder={isPpq ? '10' : '1000'}
                 className="flex-1"
               />
-              <Select value={currency} onValueChange={(v) => setCurrency(v as TopupCurrency)}>
-                <SelectTrigger className="w-24">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="usd">USD</SelectItem>
-                  {isRoutstr && <SelectItem value="sats">sats</SelectItem>}
-                </SelectContent>
-              </Select>
+              <select 
+                value={currency} 
+                onChange={(e) => setCurrency(e.target.value as TopupCurrency)}
+                className="flex h-9 w-24 items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+              >
+                <option value="usd">USD</option>
+                {isRoutstr && <option value="sats">sats</option>}
+              </select>
             </div>
           </div>
           
@@ -152,33 +154,4 @@ export function TopupDialog({ open, onOpenChange, providerSlug, providerName, pr
       </DialogContent>
     </Dialog>
   )
-}
-
-// Simple Select component for currency
-function Select({ value, onValueChange, children }: { value: string, onValueChange: (v: string) => void, children: React.ReactNode }) {
-  return (
-    <select 
-      value={value} 
-      onChange={(e) => onValueChange(e.target.value)}
-      className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-    >
-      {children}
-    </select>
-  )
-}
-
-function SelectTrigger({ children, className }: { children: React.ReactNode, className?: string }) {
-  return <div className={className}>{children}</div>
-}
-
-function SelectContent({ children }: { children: React.ReactNode }) {
-  return <>{children}</>
-}
-
-function SelectItem({ value, children }: { value: string, children: React.ReactNode }) {
-  return <option value={value}>{children}</option>
-}
-
-function SelectValue({}: { children?: React.ReactNode }) {
-  return null
 }

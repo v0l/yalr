@@ -166,6 +166,26 @@ export const api = {
     return response.json()
   },
 
+  async topupProvider(slug: string, data: { amount_usd: number; currency: string }): Promise<{ message: string }> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/providers/${slug}/topup`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      const error = await response.json().catch(() => ({ error: 'Failed to create topup' }))
+      throw new Error(error.error || 'Failed to create topup')
+    }
+    
+    return response.json()
+  },
+
   async getModels(): Promise<{ object: string; data: Model[] }> {
     return request('/v1/models')
   },
