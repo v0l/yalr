@@ -151,6 +151,10 @@ export default function Providers() {
     }
   }
 
+  function openTopup(provider: Provider) {
+    setTopupProvider(provider)
+  }
+
   async function handleGenerateKey(provider: Provider) {
     setGeneratingKey(provider)
     try {
@@ -163,10 +167,6 @@ export default function Providers() {
     } finally {
       setGeneratingKey(null)
     }
-  }
-
-  function openTopup(provider: Provider) {
-    setTopupProvider(provider)
   }
 
   if (loading) {
@@ -276,7 +276,7 @@ export default function Providers() {
                       <div className="flex items-center justify-end gap-1">
                         {(provider.provider_type === 'routstr' || provider.provider_type === 'ppq') && (
                           <>
-                            <Button variant="ghost" size="icon-xs" onClick={() => openTopup(provider)} title="Top-up provider balance">
+                            <Button variant="ghost" size="icon-xs" onClick={() => handleTopup(provider)} title="Top-up provider balance">
                               <WalletIcon />
                             </Button>
                             {provider.provider_type === 'ppq' && (
@@ -433,6 +433,7 @@ export default function Providers() {
           }}
           providerSlug={topupProvider.slug}
           providerName={topupProvider.name}
+          providerType={topupProvider.provider_type}
         />
       )}
 

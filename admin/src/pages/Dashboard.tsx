@@ -45,6 +45,11 @@ export default function Dashboard() {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectT = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  function handleTopup(provider: Provider) {
+    setSelectedProvider(provider)
+    setTopupDialogOpen(true)
+  }
+
   useEffect(() => {
     async function fetchData() {
       try {
@@ -273,11 +278,6 @@ export default function Dashboard() {
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <BalanceDisplay health={h} />
-                            {provider.provider_type === 'routstr' || provider.provider_type === 'ppq' ? (
-                              <Button variant="outline" size="sm" onClick={() => handleTopup(provider)}>
-                                Top-up
-                              </Button>
-                            ) : null}
                           </div>
                         </TableCell>
                         <TableCell className="font-mono">
@@ -302,6 +302,7 @@ export default function Dashboard() {
           onOpenChange={setTopupDialogOpen}
           providerSlug={selectedProvider.slug}
           providerName={selectedProvider.name}
+          providerType={selectedProvider.provider_type}
         />
       )}
     </div>

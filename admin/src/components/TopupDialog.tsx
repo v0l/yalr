@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
-import { CopyIcon, CheckIcon, WalletIcon, ZapIcon, ClockIcon } from 'lucide-react'
-import { QRCodeSVG } from 'qrcode.react'
+import { CopyIcon, CheckIcon, WalletIcon, ZapIcon, ClockIcon, ExternalLinkIcon } from 'lucide-react'
 import { api } from '../api/client'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -15,48 +14,33 @@ interface TopupDialogProps {
   onOpenChange: (open: boolean) => void
   providerSlug: string
   providerName: string
+  providerType?: string
 }
 
-type InvoiceStatus = 'pending' | 'paid' | 'expired' | 'cancelled'
+type TopupCurrency = 'sats' | 'usd'
 
-export function TopupDialog({ open, onOpenChange, providerSlug, providerName }: TopupDialogProps) {
-  const [step, setStep] = useState<'form' | 'invoice'>('form')
-  const [amount, setAmount] = useState('1000')
+export function TopupDialog({ open, onOpenChange, providerSlug, providerName, providerType }: TopupDialogProps) {
+  const [amount, setAmount] = useState('10')
+  const [currency, setCurrency] = useState<TopupCurrency>('usd')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [invoice, setInvoice] = useState<{
-    invoice_id?: number
-    bolt11: string
-    payment_hash: string
-    amount_sats: number
-    expires_at?: string
-  } | null>(null)
-  const [status, setStatus] = useState<InvoiceStatus>('pending')
-  const [copied, setCopied] = useState(false)
-  const [pollInterval, setPollInterval] = useState<number | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
 
-  // Clean up interval on unmount
-  useEffect(() => {
-    return () => {
-      if (pollInterval) clearInterval(pollInterval)
-    }
-  }, [pollInterval])
+  // Check if this is a PPQ provider
+  const isPpq = providerType === 'ppq'
 
   // Reset state when dialog opens/closes
   useEffect(() => {
-    if (!open) {
-      setStep('form')
-      setInvoice(null)
-      setStatus('pending')
+    if (open) {
+      setAmount(isPpq ? '10' : '1000')
+      setCurrency('usd')
       setError(null)
-      setCopied(false)
-      if (pollInterval) clearInterval(pollInterval)
-      setPollInterval(null)
+      setSuccess(null)
     }
-  }, [open])
+  }, [open, isPpq])
 
-  async function handleCreateInvoice() {
-    const amountNum = parseInt(amount, 10)
+  async function handleCreateTopup() {
+    const amountNum = parseFloat(amount)
     if (isNaN(amountNum) || amountNum <= 0) {
       setError('Please enter a valid amount')
       return
@@ -64,68 +48,33 @@ export function TopupDialog({ open, onOpenChange, providerSlug, providerName }: 
 
     setLoading(true)
     setError(null)
+    setSuccess(null)
     try {
-      const data = await api.createProviderInvoice(providerSlug, {
-        amount_sats: amountNum,
-        memo: `Topup for ${providerName}`,
-        expire_seconds: 1800, // 30 minutes
-      })
-      setInvoice(data)
-      setStep('invoice')
-      
-      // Start polling for payment
-      const interval = window.setInterval(async () => {
-        try {
-          const statusData = await api.getInvoiceStatus(data.payment_hash)
-          setStatus(statusData.status as InvoiceStatus)
-          
-          if (statusData.status === 'paid') {
-            if (pollInterval) clearInterval(pollInterval)
-            setPollInterval(null)
-          }
-        } catch (e) {
-          // Ignore polling errors, keep trying
-          console.error('Failed to poll invoice status:', e)
-        }
-      }, 3000) // Poll every 3 seconds
-      
-      setPollInterval(interval)
+      if (isPpq) {
+        // For PPQ, call the new topup endpoint with USD amount
+        const response = await api.post(`/providers/${providerSlug}/topup`, {
+          amount_usd: amountNum,
+          currency: 'USD'
+        })
+        setSuccess('Top-up request created! Check your email or PPQ dashboard for payment instructions.')
+      } else {
+        // For Routstr, create Lightning invoice (existing flow)
+        const data = await api.createProviderInvoice(providerSlug, {
+          amount_sats: Math.round(amountNum),
+          memo: `Topup for ${providerName}`,
+          expire_seconds: 1800,
+        })
+        setSuccess('Invoice created! Check your email for payment instructions.')
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create invoice')
+      setError(e instanceof Error ? e.message : 'Failed to create top-up')
     } finally {
       setLoading(false)
     }
   }
 
-  async function handleCopy() {
-    if (!invoice) return
-    try {
-      await navigator.clipboard.writeText(invoice.bolt11)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch (e) {
-      setError('Failed to copy to clipboard')
-    }
-  }
-
   function handleClose() {
-    if (pollInterval) clearInterval(pollInterval)
     onOpenChange(false)
-  }
-
-  function getStatusBadge(status: InvoiceStatus) {
-    switch (status) {
-      case 'paid':
-        return <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400">Paid</Badge>
-      case 'pending':
-        return <Badge variant="secondary">Pending</Badge>
-      case 'expired':
-        return <Badge variant="outline">Expired</Badge>
-      case 'cancelled':
-        return <Badge variant="outline">Cancelled</Badge>
-      default:
-        return <Badge variant="secondary">{status}</Badge>
-    }
   }
 
   return (
@@ -134,10 +83,12 @@ export function TopupDialog({ open, onOpenChange, providerSlug, providerName }: 
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <WalletIcon className="size-5" />
-            Top-up Provider Balance
+            Top-up {providerName}
           </DialogTitle>
           <DialogDescription>
-            Create a Lightning invoice to add funds to your provider account.
+            {isPpq 
+              ? 'Add USD credits to your PPQ account. Payments are processed through PPQ\'s payment system.'
+              : 'Create a Lightning invoice to add funds to your provider account.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -147,125 +98,87 @@ export function TopupDialog({ open, onOpenChange, providerSlug, providerName }: 
           </Alert>
         )}
 
-        {step === 'form' && (
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="amount">Amount (sats)</Label>
+        {success && (
+          <Alert className="bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900">
+            <CheckIcon className="size-4 text-emerald-600 dark:text-emerald-400" />
+            <AlertDescription className="text-emerald-800 dark:text-emerald-400">
+              {success}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="amount">Amount</Label>
+            <div className="flex gap-2">
               <Input
                 id="amount"
                 type="number"
-                min="1"
+                min="0.01"
+                step={isPpq ? '0.01' : '1'}
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
-                placeholder="1000"
+                placeholder={isPpq ? '10' : '1000'}
+                className="flex-1"
               />
-            </div>
-            
-              <div className="flex flex-col gap-1.5">
-                <Label>Provider</Label>
-                <div className="font-mono text-sm text-muted-foreground bg-muted p-2 rounded">
-                  {providerName} ({providerSlug})
-                </div>
-              </div>
-
-            <div className="flex gap-2 pt-2">
-              <Button variant="outline" onClick={() => handleClose()} disabled={loading}>
-                Cancel
-              </Button>
-              <Button onClick={handleCreateInvoice} disabled={loading}>
-                {loading ? 'Creating...' : 'Generate Invoice'}
-              </Button>
+              <Select value={currency} onValueChange={(v) => setCurrency(v as TopupCurrency)}>
+                <SelectTrigger className="w-24">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="usd">USD</SelectItem>
+                  {isRoutstr && <SelectItem value="sats">sats</SelectItem>}
+                </SelectContent>
+              </Select>
             </div>
           </div>
-        )}
-
-        {step === 'invoice' && invoice && (
-          <div className="flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <ZapIcon className="size-4 text-muted-foreground" />
-                <span className="text-sm font-medium">Amount:</span>
-              </div>
-              <div className="font-mono text-sm">
-                {invoice.amount_sats.toLocaleString()} sats
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <ClockIcon className="size-4 text-muted-foreground" />
-                <span className="text-sm font-medium">Status:</span>
-              </div>
-              {getStatusBadge(status)}
-            </div>
-
-            {status === 'paid' && (
-              <Alert className="bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900">
-                <CheckIcon className="size-4 text-emerald-600 dark:text-emerald-400" />
-                <AlertDescription className="text-emerald-800 dark:text-emerald-400">
-                  Payment received! Your balance has been updated.
-                </AlertDescription>
-              </Alert>
-            )}
-
-            <Card>
-              <CardContent className="p-4 flex flex-col items-center gap-4">
-                <div className="bg-white p-4 rounded-lg">
-                  <QRCodeSVG 
-                    value={invoice.bolt11}
-                    size={180}
-                    level="H"
-                    includeMargin={true}
-                  />
-                </div>
-                <div className="text-xs text-muted-foreground text-center">
-                  Scan with your Lightning wallet to pay
-                </div>
-              </CardContent>
-            </Card>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="bolt11">Bolt11 Invoice</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="bolt11"
-                  value={invoice.bolt11}
-                  readOnly
-                  className="font-mono text-xs break-all pr-8"
-                />
-                <Button 
-                  variant="outline" 
-                  size="icon"
-                  onClick={handleCopy}
-                  disabled={copied}
-                >
-                  {copied ? <CheckIcon className="size-4" /> : <CopyIcon className="size-4" />}
-                </Button>
-              </div>
-              {copied && (
-                <div className="text-xs text-emerald-600 dark:text-emerald-400">
-                  Copied to clipboard!
-                </div>
-              )}
-            </div>
-
-            <div className="flex gap-2 pt-2">
-              <Button variant="outline" onClick={() => handleClose()}>
-                Done
-              </Button>
-              {status === 'pending' && (
-                <Button variant="outline" onClick={() => {
-                  if (pollInterval) clearInterval(pollInterval)
-                  setStep('form')
-                  setInvoice(null)
-                }}>
-                  Cancel Invoice
-                </Button>
-              )}
+          
+          <div className="flex flex-col gap-1.5">
+            <Label>Provider</Label>
+            <div className="font-mono text-sm text-muted-foreground bg-muted p-2 rounded">
+              {providerName} ({providerSlug})
             </div>
           </div>
-        )}
+
+          <div className="flex gap-2 pt-2">
+            <Button variant="outline" onClick={handleClose} disabled={loading}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreateTopup} disabled={loading}>
+              {loading ? 'Creating...' : 'Create Top-up'}
+            </Button>
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   )
+}
+
+// Simple Select component for currency
+function Select({ value, onValueChange, children }: { value: string, onValueChange: (v: string) => void, children: React.ReactNode }) {
+  return (
+    <select 
+      value={value} 
+      onChange={(e) => onValueChange(e.target.value)}
+      className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {children}
+    </select>
+  )
+}
+
+function SelectTrigger({ children, className }: { children: React.ReactNode, className?: string }) {
+  return <div className={className}>{children}</div>
+}
+
+function SelectContent({ children }: { children: React.ReactNode }) {
+  return <>{children}</>
+}
+
+function SelectItem({ value, children }: { value: string, children: React.ReactNode }) {
+  return <option value={value}>{children}</option>
+}
+
+function SelectValue({}: { children?: React.ReactNode }) {
+  return null
 }
