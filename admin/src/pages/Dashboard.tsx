@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { api, API_BASE_URL } from '../api/client'
-import type { MetricsResponse, Provider, ProviderHealthEntry, HealthOverviewResponse, CurrencyAmount } from '../types'
+import type { MetricsResponse, Provider, ProviderHealthEntry, HealthOverviewResponse } from '../types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertDescription } from '@/components/ui/alert'
