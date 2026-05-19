@@ -269,6 +269,30 @@ impl Provider for PpqProvider {
             }
         }
     }
+
+    async fn create_topup(&self, amount_usd: f64) -> Option<serde_json::Value> {
+        use reqwest::Client;
+        
+        let api_key = self.api_key.as_ref()?;
+        let client = Client::new();
+        
+        let response = client
+            .post("https://api.ppq.ai/topup/create/btc-lightning")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&serde_json::json!({
+                "amount": amount_usd,
+                "currency": "USD"
+            }))
+            .send()
+            .await
+            .ok()?;
+
+        if !response.status().is_success() {
+            return None;
+        }
+
+        response.json().await.ok()
+    }
 }
 
 // ============================================================================

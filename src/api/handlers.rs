@@ -1264,7 +1264,7 @@ pub async fn generate_provider_api_key(
     })))
 }
 
-/// POST /providers/:slug/topup — Create top-up request for PPQ providers
+/// POST /providers/:slug/topup — Create top-up request for PPQ/Routstr providers
 #[axum::debug_handler]
 pub async fn create_provider_topup(
     Path(slug): Path<String>,
@@ -1278,15 +1278,7 @@ pub async fn create_provider_topup(
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, format!("Provider '{}' not found", slug)))?;
 
-    // Check if it's a PPQ provider
-    if provider.provider_type != ProviderType::Ppq {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "Top-up is only supported for PPQ providers".to_string(),
-        ));
-    }
-
-    // Extract amount from request
+    // Get the amount
     let amount_usd = body
         .get("amount_usd")
         .and_then(|v| v.as_f64())
@@ -1299,12 +1291,19 @@ pub async fn create_provider_topup(
         ));
     }
 
-    tracing::info!(provider_slug = slug, amount_usd = amount_usd, "PPQ top-up request created");
+    // Create top-up via provider trait method
+    let providers = state.config.router.get_providers().await;
+    let provider_arc = providers.into_iter().find(|p| p.slug() == slug)
+        .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST, "Provider not found in router".to_string()))?;
+
+    let invoice_data = provider_arc.create_topup(amount_usd).await
+        .ok_or_else(|| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to create top-up invoice".to_string()))?;
 
     Ok(Json(serde_json::json!({
-        "message": "Top-up request created! Check your email or PPQ dashboard for payment instructions.",
+        "message": "Invoice created! Pay the invoice to top up your provider balance.",
         "provider": { "slug": provider.slug, "name": provider.name },
         "amount_usd": amount_usd,
+        "invoice": invoice_data,
     })))
 }
 pub async fn delete_provider(

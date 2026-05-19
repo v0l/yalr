@@ -95,6 +95,13 @@ pub trait Provider: Send + Sync {
     async fn fetch_balance(&self) -> Option<CurrencyAmount> {
         None
     }
+
+    /// Create a top-up invoice for the provider.
+    /// Returns the invoice data (bolt11, payment_hash, amount, etc.) or None if not supported.
+    async fn create_topup(&self, amount_usd: f64) -> Option<serde_json::Value> {
+        let _ = amount_usd;
+        None
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

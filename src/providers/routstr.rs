@@ -308,6 +308,13 @@ impl Provider for RoutstrProvider {
             }
         }
     }
+
+    async fn create_topup(&self, amount_usd: f64) -> Option<serde_json::Value> {
+        // Routstr topup is handled through the admin API endpoint
+        // This method is for future direct integration if needed
+        let _ = amount_usd;
+        None
+    }
 }
 
 // ============================================================================
