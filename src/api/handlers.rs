@@ -1265,27 +1265,21 @@ pub async fn generate_provider_api_key(
     })))
 }
 
-/// POST /providers/:slug/topup — Create top-up request for PPQ/Routstr providers
+/// POST /providers/:slug/topup — Create top-up request for any provider
+///
+/// Returns a generic PaymentInstruction enum that tells the admin UI how to handle the payment.
 #[axum::debug_handler]
 pub async fn create_provider_topup(
     Path(slug): Path<String>,
     State(state): State<std::sync::Arc<AppState>>,
-    Json(body): Json<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    use crate::db::ProviderType;
-
+    Json(body): Json<crate::payments::instructions::TopupRequest>,
+) -> Result<Json<crate::payments::instructions::TopupResponse>, (axum::http::StatusCode, String)> {
     // Get the provider
     let provider = state.config.db.get_provider_by_slug(&slug).await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, format!("Provider '{}' not found", slug)))?;
 
-    // Get the amount
-    let amount_usd = body
-        .get("amount_usd")
-        .and_then(|v| v.as_f64())
-        .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST, "Missing amount_usd".to_string()))?;
-
-    if amount_usd <= 0.0 {
+    if body.amount_usd <= 0.0 {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             "Amount must be greater than 0".to_string(),
@@ -1297,18 +1291,20 @@ pub async fn create_provider_topup(
     let provider_arc = providers.into_iter().find(|p| p.slug() == slug)
         .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST, "Provider not found in router".to_string()))?;
 
-    // Convert USD to CurrencyAmount (we'll use usd_micro for now, providers will convert as needed)
-    let amount = CurrencyAmount::UsdMicro((amount_usd * 1_000_000.0) as i64);
+    // Convert USD to CurrencyAmount
+    let amount = CurrencyAmount::UsdMicro((body.amount_usd * 1_000_000.0) as i64);
     
-    let invoice_data = provider_arc.create_topup(amount).await
-        .ok_or_else(|| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to create top-up invoice".to_string()))?;
+    let instruction = provider_arc.create_topup(amount).await
+        .ok_or_else(|| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Provider does not support top-ups".to_string()))?;
 
-    Ok(Json(serde_json::json!({
-        "message": "Invoice created! Pay the invoice to top up your provider balance.",
-        "provider": { "slug": provider.slug, "name": provider.name },
-        "amount_usd": amount_usd,
-        "invoice": invoice_data,
-    })))
+    Ok(Json(crate::payments::instructions::TopupResponse {
+        provider: crate::payments::instructions::ProviderInfo {
+            slug: provider.slug.clone(),
+            name: provider.name.clone(),
+        },
+        instruction,
+        message: Some(format!("Complete payment to top up {} balance", provider.name)),
+    }))
 }
 pub async fn delete_provider(
     Path(slug): Path<String>,

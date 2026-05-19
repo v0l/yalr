@@ -309,7 +309,8 @@ impl Provider for RoutstrProvider {
         }
     }
 
-    async fn create_topup(&self, amount: CurrencyAmount) -> Option<serde_json::Value> {
+    async fn create_topup(&self, amount: CurrencyAmount) -> Option<crate::payments::instructions::PaymentInstruction> {
+        use crate::payments::instructions::PaymentInstruction;
         use reqwest::Client;
         
         // Routstr only accepts sats
@@ -340,7 +341,26 @@ impl Provider for RoutstrProvider {
             return None;
         }
 
-        response.json().await.ok()
+        let result: serde_json::Value = response.json().await.ok()?;
+        
+        // Parse Routstr's response and convert to PaymentInstruction
+        let bolt11 = result.get("bolt11").and_then(|v| v.as_str())?;
+        let payment_hash = result.get("payment_hash").and_then(|v| v.as_str())?.to_string();
+        let expires_at = result.get("expires_at").and_then(|v| v.as_str());
+        
+        Some(PaymentInstruction::LightningBolt11 {
+            bolt11: bolt11.to_string(),
+            payment_hash,
+            amount_sats,
+            amount_msat: amount_sats * 1000,
+            memo: Some(format!("Routstr top-up for {}", self.name())),
+            expires_at: expires_at.and_then(|s| {
+                chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                    .ok()
+                    .map(|dt| dt.and_utc().timestamp())
+            }),
+            invoice_id: None,
+        })
     }
 }
 

@@ -351,6 +351,59 @@ export interface LightningInvoice {
   paid_at: string | null
 }
 
+// Payment Instruction Types for Top-up
+export interface TopupResponse {
+  provider: {
+    slug: string
+    name: string
+  }
+  instruction: PaymentInstruction
+  message?: string
+}
+
+export type PaymentInstruction =
+  | LightningBolt11Instruction
+  | RedirectInstruction
+  | ManualInstruction
+  | PaymentLinkInstruction
+
+export interface LightningBolt11Instruction {
+  type: 'lightning_bolt11'
+  bolt11: string
+  payment_hash: string
+  amount_sats: number
+  amount_msat: number
+  memo?: string
+  expires_at?: number // Unix timestamp
+  invoice_id?: number
+}
+
+export interface RedirectInstruction {
+  type: 'redirect'
+  url: string
+  amount_usd?: number
+  session_token?: string
+}
+
+export interface ManualInstruction {
+  type: 'manual'
+  instructions: string
+  amount_usd?: number
+  reference_code?: string
+}
+
+export interface PaymentLinkInstruction {
+  type: 'payment_link'
+  url: string
+  amount_usd?: number
+  label?: string
+}
+
+export interface TopupRequest {
+  amount_usd: number
+  preferred_method?: 'lightning' | 'redirect' | 'manual' | 'payment_link'
+}
+
 export interface AdminCreditRequest {
   user_id: number
   amount_sats: number

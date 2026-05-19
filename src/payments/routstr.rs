@@ -175,17 +175,22 @@ pub async fn create_lightning_invoice(
         .create_invoice(user.id, body.amount_sats, &body.memo, body.expire_seconds)
         .await
     {
-        Ok(invoice) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({
-                "invoice_id": invoice.id,
-                "bolt11": invoice.bolt11,
-                "payment_hash": invoice.payment_hash,
-                "amount_sats": invoice.amount_sats,
-                "expires_at": invoice.expires_at,
-            })),
-        )
-            .into_response(),
+        Ok(instruction) => {
+            // Return the instruction wrapped in a TopupResponse
+            use crate::payments::instructions::{TopupResponse, ProviderInfo};
+            (
+                StatusCode::CREATED,
+                Json(TopupResponse {
+                    provider: ProviderInfo {
+                        slug: "user-balance".to_string(),
+                        name: "User Balance".to_string(),
+                    },
+                    instruction,
+                    message: Some("Pay this invoice to top up your balance".to_string()),
+                }),
+            )
+                .into_response()
+        }
         Err(e) => {
             tracing::error!(user_id = user.id, error = %e, "Failed to create Lightning invoice");
             (
@@ -362,15 +367,55 @@ pub async fn create_provider_invoice(
                 }
             };
 
-            // Return the invoice data
+            // Parse the upstream response and convert to PaymentInstruction
+            use crate::payments::instructions::{PaymentInstruction, TopupResponse, ProviderInfo};
+            
+            let bolt11 = upstream_invoice.get("bolt11").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let payment_hash = upstream_invoice.get("payment_hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let expires_at = upstream_invoice.get("expires_at").and_then(|v| v.as_str());
+            
+            let instruction = if bolt11.is_empty() {
+                // If no bolt11, try to extract a redirect URL
+                if let Some(url) = upstream_invoice.get("payment_url").and_then(|v| v.as_str()) {
+                    PaymentInstruction::Redirect {
+                        url: url.to_string(),
+                        amount_usd: None,
+                        session_token: None,
+                    }
+                } else {
+                    PaymentInstruction::Manual {
+                        instructions: format!("Contact provider {} for payment instructions", slug),
+                        amount_usd: None,
+                        reference_code: None,
+                    }
+                }
+            } else {
+                PaymentInstruction::LightningBolt11 {
+                    bolt11,
+                    payment_hash,
+                    amount_sats: body.amount_sats as i64,
+                    amount_msat: (body.amount_sats * 1000) as i64,
+                    memo: Some(format!("Top-up for {}", slug)),
+                    expires_at: expires_at.and_then(|s| {
+                        chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                            .ok()
+                            .map(|dt| dt.and_utc().timestamp())
+                    }),
+                    invoice_id: None,
+                }
+            };
+
+            // Return wrapped in TopupResponse
             (
                 StatusCode::CREATED,
-                Json(serde_json::json!({
-                    "bolt11": upstream_invoice.get("bolt11").and_then(|v| v.as_str()).unwrap_or(""),
-                    "payment_hash": upstream_invoice.get("payment_hash").and_then(|v| v.as_str()).unwrap_or(""),
-                    "amount_sats": body.amount_sats,
-                    "expires_at": upstream_invoice.get("expires_at").and_then(|v| v.as_str()),
-                })),
+                Json(TopupResponse {
+                    provider: ProviderInfo {
+                        slug: slug.clone(),
+                        name: provider.name.clone(),
+                    },
+                    instruction,
+                    message: Some(format!("Complete payment to top up {} balance", slug)),
+                }),
             )
                 .into_response()
         }

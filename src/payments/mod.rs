@@ -1,6 +1,7 @@
 pub mod balance;
 pub mod biller;
 pub mod guard;
+pub mod instructions;
 pub mod lightning;
 pub mod pricing;
 pub mod routstr;

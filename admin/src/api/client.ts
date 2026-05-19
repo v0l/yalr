@@ -19,6 +19,8 @@ import type {
   RoutingConfigProviderCreateRequest,
   RoutingConfigProviderUpdateRequest,
   ProviderListItem,
+  TopupResponse,
+  TopupRequest,
 } from '../types'
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL || window.location.origin
@@ -166,7 +168,7 @@ export const api = {
     return response.json()
   },
 
-  async topupProvider(slug: string, data: { amount_usd: number; currency: string }): Promise<{ message: string }> {
+  async topupProvider(slug: string, data: TopupRequest): Promise<TopupResponse> {
     const headers = await getAuthHeaders()
     const response = await fetch(`${API_BASE_URL}/api/providers/${slug}/topup`, {
       method: 'POST',

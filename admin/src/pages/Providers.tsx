@@ -433,7 +433,6 @@ export default function Providers() {
           }}
           providerSlug={topupProvider.slug}
           providerName={topupProvider.name}
-          providerType={topupProvider.provider_type}
         />
       )}
 

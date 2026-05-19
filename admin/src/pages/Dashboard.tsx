@@ -297,7 +297,6 @@ export default function Dashboard() {
           onOpenChange={setTopupDialogOpen}
           providerSlug={selectedProvider.slug}
           providerName={selectedProvider.name}
-          providerType={selectedProvider.provider_type}
         />
       )}
     </div>

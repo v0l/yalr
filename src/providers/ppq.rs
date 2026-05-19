@@ -3,7 +3,7 @@ use async_openai::types::chat::{CreateChatCompletionRequest, CreateChatCompletio
 use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
 use reqwest::Client as HttpClient;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use url::Url;
@@ -270,12 +270,13 @@ impl Provider for PpqProvider {
         }
     }
 
-    async fn create_topup(&self, amount: CurrencyAmount) -> Option<serde_json::Value> {
+    async fn create_topup(&self, amount: CurrencyAmount) -> Option<crate::payments::instructions::PaymentInstruction> {
+        use crate::payments::instructions::PaymentInstruction;
         use reqwest::Client;
         
         // PPQ accepts USD amounts
         let amount_usd = match amount {
-            CurrencyAmount::UsdMicro(µs) => (µs as f64) / 1_000_000.0,
+            CurrencyAmount::UsdMicro(usd_micro) => (usd_micro as f64) / 1_000_000.0,
             _ => return None, // PPQ only supports USD
         };
         
@@ -297,7 +298,25 @@ impl Provider for PpqProvider {
             return None;
         }
 
-        response.json().await.ok()
+        let result: serde_json::Value = response.json().await.ok()?;
+        
+        // Parse PPQ's response and convert to PaymentInstruction
+        // PPQ typically returns: { "invoice": "lnbc...", "payment_hash": "...", "amount_sats": ... }
+        let bolt11 = result.get("invoice").and_then(|v| v.as_str())
+            .or_else(|| result.get("bolt11").and_then(|v| v.as_str()))?;
+        
+        let payment_hash = result.get("payment_hash").and_then(|v| v.as_str())?.to_string();
+        let amount_sats = result.get("amount_sats").and_then(|v| v.as_i64()).unwrap_or(0);
+        
+        Some(PaymentInstruction::LightningBolt11 {
+            bolt11: bolt11.to_string(),
+            payment_hash,
+            amount_sats,
+            amount_msat: amount_sats * 1000,
+            memo: Some(format!("PPQ top-up for ${:.2}", amount_usd)),
+            expires_at: None,
+            invoice_id: None,
+        })
     }
 }
 

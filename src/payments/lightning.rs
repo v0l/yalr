@@ -23,7 +23,7 @@ impl LightningService {
         amount_sats: u64,
         memo: &str,
         expire_seconds: Option<u32>,
-    ) -> Result<InvoiceResponse, LightningError> {
+    ) -> Result<crate::payments::instructions::PaymentInstruction, LightningError> {
         let amount_msat = amount_sats * 1000;
 
         let invoice = self
@@ -59,15 +59,18 @@ impl LightningService {
             "Created Lightning invoice"
         );
 
-        Ok(InvoiceResponse {
-            id: db_invoice.id,
-            payment_hash,
+        Ok(crate::payments::instructions::PaymentInstruction::LightningBolt11 {
             bolt11,
+            payment_hash,
             amount_sats: amount_sats as i64,
             amount_msat: amount_msat as i64,
-            status: "pending".to_string(),
-            created_at: db_invoice.created_at,
-            expires_at: db_invoice.expires_at,
+            memo: Some(memo.to_string()),
+            expires_at: db_invoice.expires_at.and_then(|s| {
+                chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                    .ok()
+                    .map(|dt| dt.and_utc().timestamp())
+            }),
+            invoice_id: Some(db_invoice.id),
         })
     }
 
