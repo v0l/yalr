@@ -611,8 +611,27 @@ impl Provider for AnthropicProvider {
             req = req.header("x-api-key", &self.api_key);
         }
         match req.send().await {
-            Ok(resp) => Ok(resp.status().is_success()),
-            Err(_) => Ok(false),
+            Ok(resp) => {
+                let status = resp.status();
+                if !status.is_success() {
+                    tracing::warn!(
+                        provider = %self.name(),
+                        url = %url,
+                        status = %status,
+                        "Health check returned non-success status"
+                    );
+                }
+                Ok(status.is_success())
+            },
+            Err(e) => {
+                tracing::warn!(
+                    provider = %self.name(),
+                    url = %url,
+                    error = %e,
+                    "Health check request failed"
+                );
+                Ok(false)
+            }
         }
     }
 }
