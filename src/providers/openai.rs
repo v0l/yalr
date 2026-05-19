@@ -53,6 +53,8 @@ pub struct OpenAiProvider {
     http_client: reqwest::Client,
     /// Base URL (no trailing slash) for constructing health check URLs
     base_url: String,
+    /// API key for health check auth (empty string = no auth)
+    api_key: String,
     /// Cached model list
     models_cache: Arc<RwLock<Option<(Vec<Model>, Instant)>>>,
 }
@@ -74,6 +76,7 @@ impl OpenAiProvider {
             client: Client::with_config(config),
             http_client: reqwest::Client::new(),
             base_url: base_url.to_string(),
+            api_key: api_key.unwrap_or("").to_string(),
             models_cache: Arc::new(RwLock::new(None)),
         }
     }
@@ -213,7 +216,11 @@ impl Provider for OpenAiProvider {
         // Lightweight GET request to /v1/models — just check if server responds.
         // Avoids deserializing the full model list every health check interval.
         let url = format!("{}/v1/models", self.base_url);
-        match self.http_client.get(&url).send().await {
+        let mut req = self.http_client.get(&url);
+        if !self.api_key.is_empty() {
+            req = req.bearer_auth(&self.api_key);
+        }
+        match req.send().await {
             Ok(resp) => Ok(resp.status().is_success()),
             Err(_) => Ok(false),
         }
