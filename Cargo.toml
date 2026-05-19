@@ -30,6 +30,7 @@ async-openai = { version = "0.34.0", features = [
   "model",
   "byot",
 ] }
+async-anthropic = "0.6.0"
 nostr = "0.44"
 base64 = "0.22"
 url = "2.5"
