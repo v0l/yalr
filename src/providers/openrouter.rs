@@ -137,7 +137,47 @@ impl Provider for OpenRouterProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<Model>, ProviderError> {
-        self.inner.list_models().await
+        // Use custom OpenRouter model format instead of OpenAI's standard format
+        let models_url = format!("{}/models", self.base_url.trim_end_matches('/'));
+        
+        let mut req = self.http_client.get(&models_url);
+        if let Some(ref key) = self.api_key {
+            req = req.bearer_auth(key);
+        }
+        
+        let response = req.send().await.map_err(|e| ProviderError::Other(e.into()))?;
+        
+        if !response.status().is_success() {
+            return Err(ProviderError::ServerError {
+                message: format!("Failed to list models: {}", response.status()),
+                status_code: Some(response.status().as_u16()),
+            });
+        }
+        
+        let body: serde_json::Value = response.json().await.map_err(|e| ProviderError::Other(e.into()))?;
+        
+        let data_array = body
+            .get("data")
+            .and_then(|d| d.as_array())
+            .ok_or_else(|| ProviderError::Other("Missing 'data' field in models response".into()))?;
+        
+        // Parse OpenRouter models and convert to standard Model type
+        let mut models = Vec::new();
+        for item in data_array {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                let created = item.get("created").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
+                let owned_by = item.get("owned_by").and_then(|v| v.as_str()).unwrap_or("openrouter").to_string();
+                
+                models.push(Model {
+                    id: id.to_string(),
+                    object: "model".to_string(),
+                    created,
+                    owned_by,
+                });
+            }
+        }
+        
+        Ok(models)
     }
 
     async fn chat_completions(
