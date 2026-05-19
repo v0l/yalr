@@ -113,6 +113,7 @@ export type WsMetricsEvent =
   | 'Success'
   | { Failure: WsFailureDetails }
   | { ProviderLoad: { in_flight: number; max_concurrency: number | null } }
+  | { Balance: CurrencyAmount }
 
 export interface WsFailureDetails {
   error_type: 'RateLimit' | 'ServerError' | 'Timeout' | 'Authentication' | 'NotFound' | 'Other'

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { api, API_BASE_URL } from '../api/client'
-import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse } from '../types'
+import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse, CurrencyAmount } from '../types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
+import { cn, formatBalance } from '@/lib/utils'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import {
   ActivityIcon, GaugeIcon, ShieldAlertIcon, BarChart3Icon,
@@ -54,6 +54,10 @@ function fmt(e: WsProviderMetrics['event']): { label: string; value: string; kin
       label: 'Load', value: `${l.in_flight}${l.max_concurrency ? `/${l.max_concurrency}` : ''}`,
       kind: l.in_flight > 0 ? 'warn' : 'ok'
     }
+  }
+  if (has(e, 'Balance')) {
+    const b = e.Balance as CurrencyAmount
+    return { label: 'Balance', value: formatBalance(b.amount, b.currency), kind: 'info' }
   }
   return { label: '?', value: JSON.stringify(e), kind: 'info' }
 }

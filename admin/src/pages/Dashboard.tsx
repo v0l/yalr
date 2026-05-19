@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { api, API_BASE_URL } from '../api/client'
-import type { MetricsResponse, Provider, ProviderHealthEntry, HealthOverviewResponse } from '../types'
+import type { MetricsResponse, Provider, ProviderHealthEntry, HealthOverviewResponse, CurrencyAmount } from '../types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { TopupDialog } from '@/components/TopupDialog'
-import { cn } from '@/lib/utils'
+import { cn, formatBalance } from '@/lib/utils'
 
 function HealthBadge({ state }: { state: string }) {
   switch (state) {
@@ -26,13 +26,9 @@ function HealthBadge({ state }: { state: string }) {
 function BalanceDisplay({ health }: { health?: ProviderHealthEntry }) {
   if (!health?.balance) return <span className="text-muted-foreground">—</span>
   const { currency, amount } = health.balance
-  // Convert msats to sats for display
-  const amountInSats = currency === 'msats' ? Math.floor(amount / 1000) : amount
-  const label = currency === 'msats' || currency === 'sats' ? 'sats' : ''
-  const display = currency === 'usd_micro' ? `$${(amount / 1_000_000).toFixed(2)}` : amountInSats.toLocaleString()
   return (
     <span className="font-mono text-sm">
-      {display}{label && <span className="text-muted-foreground ml-0.5">{label}</span>}
+      {formatBalance(amount, currency)}
     </span>
   )
 }
