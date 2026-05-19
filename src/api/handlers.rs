@@ -302,9 +302,16 @@ pub async fn list_models(State(state): State<std::sync::Arc<AppState>>) -> Json<
                 }
             }
             Err(e) => {
+                let error_msg = e.to_string();
+                // Truncate error message to avoid logging huge JSON responses
+                let short_error = if error_msg.len() > 200 {
+                    format!("{}... (truncated)", &error_msg[..200])
+                } else {
+                    error_msg
+                };
                 tracing::warn!(
                     provider = provider.name(),
-                    error = %e,
+                    error = %short_error,
                     "Failed to list models from provider"
                 );
             }
