@@ -28,11 +28,11 @@ function BalanceDisplay({ health }: { health?: ProviderHealthEntry }) {
   const { currency, amount } = health.balance
   // Convert msats to sats for display
   const amountInSats = currency === 'msats' ? Math.floor(amount / 1000) : amount
-  const label = currency === 'msats' || currency === 'sats' ? 'sats' : 'µ$'
-  const display = currency === 'usd_micro' ? `$${(amount / 1_000_000).toFixed(4)}` : amountInSats.toLocaleString()
+  const label = currency === 'msats' || currency === 'sats' ? 'sats' : ''
+  const display = currency === 'usd_micro' ? `$${(amount / 1_000_000).toFixed(2)}` : amountInSats.toLocaleString()
   return (
     <span className="font-mono text-sm">
-      {display}<span className="text-muted-foreground ml-0.5">{label}</span>
+      {display}{label && <span className="text-muted-foreground ml-0.5">{label}</span>}
     </span>
   )
 }
