@@ -40,6 +40,7 @@ const DEFAULT_BASE_URLS: Record<string, string> = {
   openai: 'https://api.openai.com/v1',
   anthropic: 'https://api.anthropic.com',
   openrouter: 'https://openrouter.ai/api/v1',
+  ppq: 'https://api.ppq.ai',
 }
 
 const emptyForm: ProviderFormData = {
@@ -224,11 +225,11 @@ export default function Providers() {
                     <TableCell className="font-mono text-muted-foreground">{provider.base_url}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
-                        {provider.provider_type === 'routstr' && (
+                        {provider.provider_type === 'routstr' || provider.provider_type === 'ppq' ? (
                           <Button variant="ghost" size="icon-xs" onClick={() => openTopup(provider)} title="Top-up provider balance">
                             <WalletIcon />
                           </Button>
-                        )}
+                        ) : null}
                         <Button variant="ghost" size="icon-xs" onClick={() => openEdit(provider)}>
                           <PencilIcon />
                         </Button>
@@ -298,6 +299,7 @@ export default function Providers() {
                       <SelectItem value="ollama">Ollama</SelectItem>
                       <SelectItem value="routstr">Routstr</SelectItem>
                       <SelectItem value="openrouter">OpenRouter</SelectItem>
+                      <SelectItem value="ppq">PPQ.ai</SelectItem>
                     </SelectGroup>
                   </SelectContent>
                 </Select>

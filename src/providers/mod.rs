@@ -6,6 +6,7 @@ pub mod anthropic;
 pub mod provider_trait;
 pub mod routstr;
 pub mod vllm;
+pub mod ppq;
 
 pub use llamacpp::LlamaCppProvider;
 pub use ollama::OllamaProvider;
@@ -14,6 +15,7 @@ pub use openrouter::OpenRouterProvider;
 pub use anthropic::AnthropicProvider;
 pub use routstr::RoutstrProvider;
 pub use vllm::VllmProvider;
+pub use ppq::PpqProvider;
 
 use crate::db::ProviderType;
 use std::sync::Arc;
@@ -34,6 +36,7 @@ pub fn create_provider(
         ProviderType::Routstr => Arc::new(RoutstrProvider::new(name, slug, base_url, api_key)),
         ProviderType::OpenRouter => Arc::new(OpenRouterProvider::new(name, slug, base_url, api_key)),
         ProviderType::Anthropic => Arc::new(AnthropicProvider::new(name, slug, base_url, api_key)),
+        ProviderType::Ppq => Arc::new(PpqProvider::new(name, slug, base_url, api_key)),
     }
 }
 

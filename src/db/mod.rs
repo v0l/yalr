@@ -38,6 +38,7 @@ pub enum ProviderType {
     Routstr = 4,
     OpenRouter = 5,
     Anthropic = 6,
+    Ppq = 7,
 }
 
 impl ProviderType {
@@ -50,6 +51,7 @@ impl ProviderType {
             ProviderType::Routstr => "routstr",
             ProviderType::OpenRouter => "openrouter",
             ProviderType::Anthropic => "anthropic",
+            ProviderType::Ppq => "ppq",
         }
     }
     
@@ -62,6 +64,7 @@ impl ProviderType {
             "routstr" => Some(ProviderType::Routstr),
             "openrouter" => Some(ProviderType::OpenRouter),
             "anthropic" => Some(ProviderType::Anthropic),
+            "ppq" => Some(ProviderType::Ppq),
             _ => None,
         }
     }

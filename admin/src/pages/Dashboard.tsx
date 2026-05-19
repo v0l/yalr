@@ -273,11 +273,11 @@ export default function Dashboard() {
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <BalanceDisplay health={h} />
-                            {provider.provider_type === 'routstr' && (
+                            {provider.provider_type === 'routstr' || provider.provider_type === 'ppq' ? (
                               <Button variant="outline" size="sm" onClick={() => handleTopup(provider)}>
                                 Top-up
                               </Button>
-                            )}
+                            ) : null}
                           </div>
                         </TableCell>
                         <TableCell className="font-mono">
