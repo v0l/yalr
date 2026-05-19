@@ -605,7 +605,10 @@ impl Provider for AnthropicProvider {
 
     async fn health_check(&self) -> Result<bool, ProviderError> {
         // Lightweight GET to /v1/models — just check if the server responds.
-        let url = format!("{}/v1/models?limit=1", self.base_url);
+        // Normalize base_url to not have trailing /v1, then append /v1/models
+        let base = self.base_url.trim_end_matches('/');
+        let base = base.strip_suffix("/v1").unwrap_or(base);
+        let url = format!("{}/v1/models", base);
         let mut req = self.http_client.get(&url).header("anthropic-version", "2023-06-01");
         if !self.api_key.is_empty() {
             req = req.header("x-api-key", &self.api_key);

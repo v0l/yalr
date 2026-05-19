@@ -213,9 +213,12 @@ impl Provider for OpenAiProvider {
     }
 
     async fn health_check(&self) -> Result<bool, ProviderError> {
-        // Lightweight GET request to /v1/models — just check if server responds.
+        // Lightweight GET request to /models — just check if server responds.
         // Avoids deserializing the full model list every health check interval.
-        let url = format!("{}/v1/models", self.base_url);
+        // Normalize base_url to not have trailing /v1, then append /models
+        let base = self.base_url.trim_end_matches('/');
+        let base = base.strip_suffix("/v1").unwrap_or(base);
+        let url = format!("{}/models", base);
         let mut req = self.http_client.get(&url);
         if !self.api_key.is_empty() {
             req = req.bearer_auth(&self.api_key);
