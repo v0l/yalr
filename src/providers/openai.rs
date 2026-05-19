@@ -5,6 +5,9 @@ use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::RwLock;
 use crate::router::{Modality, ModelRuntimeInfo};
 
 /// Error response from API - supports both direct and nested formats via untagged enum
@@ -46,6 +49,12 @@ pub struct OpenAiProvider {
     name: String,
     slug: String,
     pub(crate) client: Client<OpenAIConfig>,
+    /// Raw reqwest client for lightweight health checks
+    http_client: reqwest::Client,
+    /// Base URL (no trailing slash) for constructing health check URLs
+    base_url: String,
+    /// Cached model list
+    models_cache: Arc<RwLock<Option<(Vec<Model>, Instant)>>>,
 }
 
 impl OpenAiProvider {
@@ -63,6 +72,9 @@ impl OpenAiProvider {
             name: name.to_string(),
             slug,
             client: Client::with_config(config),
+            http_client: reqwest::Client::new(),
+            base_url: base_url.to_string(),
+            models_cache: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -78,8 +90,19 @@ impl Provider for OpenAiProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<Model>, ProviderError> {
+        // Return cached models if fresh (< 5 min)
+        {
+            let guard = self.models_cache.read().await;
+            if let Some((ref cached, cached_at)) = *guard {
+                if cached_at.elapsed() < std::time::Duration::from_secs(300) {
+                    return Ok(cached.clone());
+                }
+            }
+        }
         let response = self.client.models().list().await?;
-        Ok(response.data)
+        let models = response.data;
+        *self.models_cache.write().await = Some((models.clone(), Instant::now()));
+        Ok(models)
     }
 
     async fn chat_completions(
@@ -187,8 +210,11 @@ impl Provider for OpenAiProvider {
     }
 
     async fn health_check(&self) -> Result<bool, ProviderError> {
-        match self.client.models().list().await {
-            Ok(_) => Ok(true),
+        // Lightweight GET request to /v1/models — just check if server responds.
+        // Avoids deserializing the full model list every health check interval.
+        let url = format!("{}/v1/models", self.base_url);
+        match self.http_client.get(&url).send().await {
+            Ok(resp) => Ok(resp.status().is_success()),
             Err(_) => Ok(false),
         }
     }

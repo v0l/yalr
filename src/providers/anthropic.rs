@@ -6,7 +6,9 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use futures::StreamExt;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::RwLock;
 
 use super::*;
 
@@ -19,6 +21,14 @@ pub struct AnthropicProvider {
     name: String,
     slug: String,
     client: async_anthropic::Client,
+    /// Raw reqwest client for lightweight health checks
+    http_client: reqwest::Client,
+    /// Base URL for constructing health check URLs
+    base_url: String,
+    /// API key for health check auth header
+    api_key: String,
+    /// Cached model list
+    models_cache: Arc<RwLock<Option<(Vec<Model>, Instant)>>>,
 }
 
 impl AnthropicProvider {
@@ -36,6 +46,10 @@ impl AnthropicProvider {
             name: name.to_string(),
             slug,
             client,
+            http_client: reqwest::Client::new(),
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key: api_key.unwrap_or("").to_string(),
+            models_cache: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -413,6 +427,12 @@ impl Provider for AnthropicProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<Model>, ProviderError> {
+        // Return cached models if fresh (< 5 min)
+        if let Some((ref cached, cached_at)) = *self.models_cache.read().await {
+            if cached_at.elapsed() < std::time::Duration::from_secs(300) {
+                return Ok(cached.clone());
+            }
+        }
         let response = self
             .client
             .models()
@@ -420,7 +440,7 @@ impl Provider for AnthropicProvider {
             .await
             .map_err(map_anthropic_error)?;
 
-        let models = response
+        let models: Vec<Model> = response
             .data
             .into_iter()
             .map(|m| Model {
@@ -431,6 +451,7 @@ impl Provider for AnthropicProvider {
             })
             .collect();
 
+        *self.models_cache.write().await = Some((models.clone(), Instant::now()));
         Ok(models)
     }
 
@@ -583,8 +604,14 @@ impl Provider for AnthropicProvider {
     }
 
     async fn health_check(&self) -> Result<bool, ProviderError> {
-        match self.client.models().list().await {
-            Ok(_) => Ok(true),
+        // Lightweight GET to /v1/models — just check if the server responds.
+        let url = format!("{}/v1/models?limit=1", self.base_url);
+        let mut req = self.http_client.get(&url).header("anthropic-version", "2023-06-01");
+        if !self.api_key.is_empty() {
+            req = req.header("x-api-key", &self.api_key);
+        }
+        match req.send().await {
+            Ok(resp) => Ok(resp.status().is_success()),
             Err(_) => Ok(false),
         }
     }

@@ -3,6 +3,9 @@ use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
 use reqwest::Client as HttpClient;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::RwLock;
 use url::Url;
 use crate::router::{Modality, ModelRuntimeInfo};
 
@@ -19,6 +22,8 @@ pub struct OllamaProvider {
     inner: OpenAiProvider,
     http_client: HttpClient,
     base_url: Url,
+    /// Cached model list
+    models_cache: Arc<RwLock<Option<(Vec<Model>, Instant)>>>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -61,6 +66,7 @@ impl OllamaProvider {
             inner: OpenAiProvider::new(name, slug, openai_base_url.as_str(), api_key),
             http_client: HttpClient::new(),
             base_url,
+            models_cache: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -97,6 +103,12 @@ impl Provider for OllamaProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<Model>, ProviderError> {
+        // Return cached models if fresh (< 5 min)
+        if let Some((ref cached, cached_at)) = *self.models_cache.read().await {
+            if cached_at.elapsed() < std::time::Duration::from_secs(300) {
+                return Ok(cached.clone());
+            }
+        }
         let ollama_response = self.fetch_models().await?;
         
         // Convert Ollama models to OpenAI Model format
@@ -111,6 +123,7 @@ impl Provider for OllamaProvider {
             })
             .collect();
 
+        *self.models_cache.write().await = Some((models.clone(), Instant::now()));
         Ok(models)
     }
 
