@@ -296,7 +296,7 @@ pub async fn create_provider_invoice(
 
     tracing::info!(slug = %slug, url = %upstream_url.as_str(), "Creating provider invoice via upstream");
 
-    // Get a valid model name for the provider
+    // Get a valid model name for the provider (optional for top-ups)
     // Try to get models from routing_config_providers (which stores the actual model name)
     let model_name = {
         // Query routing config providers for this provider to get associated model names
@@ -306,25 +306,26 @@ pub async fn create_provider_invoice(
             .unwrap_or_default();
         
         // Find the first active entry with a non-empty model name
-        if let Some(rcp) = routing_config_providers.iter().find(|rcp| rcp.is_active && !rcp.model.as_ref().map(|m| m.is_empty()).unwrap_or(true)) {
-            rcp.model.clone().unwrap_or("unknown".to_string())
-        } else {
-            // No models configured for this provider, use a placeholder
-            // This will fail on the upstream if the model doesn't exist
-            "unknown".to_string()
-        }
+        routing_config_providers
+            .iter()
+            .find(|rcp| rcp.is_active && rcp.model.as_ref().map(|m| !m.is_empty()).unwrap_or(false))
+            .and_then(|rcp| rcp.model.clone())
     };
 
     // Build the upstream request body - routstr expects:
     // - amount_sats: required
     // - purpose: "create" or "topup" (required)
-    // - model: required (routstr validates model existence)
-    // Note: memo and expire_seconds are not used by routstr
-    let upstream_body = serde_json::json!({
+    // - model: optional (only needed if routing to a specific model)
+    // For general top-ups, we can omit the model or send empty string
+    let mut upstream_body = serde_json::json!({
         "amount_sats": body.amount_sats,
         "purpose": "topup",
-        "model": model_name,
     });
+    
+    // Add model if we have a valid one
+    if let Some(name) = model_name {
+        upstream_body["model"] = serde_json::json!(name);
+    }
 
     let mut request_builder = Client::new()
         .post(upstream_url.as_str())
