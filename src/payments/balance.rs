@@ -224,8 +224,9 @@ mod tests {
 
         let txs = svc.get_transactions(1, 10).await.unwrap();
         assert_eq!(txs.len(), 3);
-        assert_eq!(txs[0].amount_msat, 100_000);
+        // Transactions returned newest first (ORDER BY created_at DESC, id DESC)
+        assert_eq!(txs[0].amount_msat, 50_000);
         assert_eq!(txs[1].amount_msat, -20_000);
-        assert_eq!(txs[2].amount_msat, 50_000);
+        assert_eq!(txs[2].amount_msat, 100_000);
     }
 }

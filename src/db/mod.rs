@@ -834,7 +834,7 @@ impl Database {
         limit: i64,
     ) -> Result<Vec<BalanceTransactionRow>, sqlx::Error> {
         sqlx::query_as::<_, BalanceTransactionRow>(
-            "SELECT id, user_id, amount_msat, transaction_type, reference_id, metadata, created_at FROM balance_transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?"
+            "SELECT id, user_id, amount_msat, transaction_type, reference_id, metadata, created_at FROM balance_transactions WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?"
         )
         .bind(user_id)
         .bind(limit)
