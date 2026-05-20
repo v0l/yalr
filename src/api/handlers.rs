@@ -946,7 +946,14 @@ pub async fn chat_completions_handler(
     };
     // ──────────────────────────────────────────────────────────
 
-    match state.config.router.chat_completions(&request).await {
+    let metrics_user = crate::metrics::MetricsUser {
+        id: Some(user.id),
+        name: user.username.clone(),
+        api_key_id: None,
+        api_key_name: None,
+    };
+
+    match state.config.router.chat_completions(&request, Some(metrics_user)).await {
         Ok(response) => {
             tracing::info!(
                 model = request.model,
@@ -1035,9 +1042,16 @@ pub async fn chat_completions_stream(
     };
     // ──────────────────────────────────────────────────────────
 
+    let metrics_user = crate::metrics::MetricsUser {
+        id: Some(user.id),
+        name: user.username.clone(),
+        api_key_id: None,
+        api_key_name: None,
+    };
+
     let model = request.model.clone();
     let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send + 'static>> = 
-        match state.config.router.chat_completions_stream(&request).await {
+        match state.config.router.chat_completions_stream(&request, Some(metrics_user)).await {
             Ok(stream) => {
                 let billing_guard = billing_guard.clone();
                 let converted_stream = async_stream::stream! {
@@ -1669,7 +1683,14 @@ pub async fn create_response(
     };
     // ──────────────────────────────────────────────────────────
 
-    match state.config.router.responses(&request).await {
+    let metrics_user = user.as_ref().map(|u| crate::metrics::MetricsUser {
+        id: Some(u.id),
+        name: u.username.clone(),
+        api_key_id: None,
+        api_key_name: None,
+    });
+
+    match state.config.router.responses(&request, metrics_user).await {
         Ok(response) => {
             tracing::info!(
                 model = request.model.as_deref().unwrap_or("unknown"),

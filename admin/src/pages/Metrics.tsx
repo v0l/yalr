@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { api, API_BASE_URL } from '../api/client'
-import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse, CurrencyAmount } from '../types'
+import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse, CurrencyAmount, MetricsUser } from '../types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { cn, formatBalance } from '@/lib/utils'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import {
   ActivityIcon, GaugeIcon, ShieldAlertIcon, BarChart3Icon,
-  AlertTriangleIcon, CheckCircle2Icon, ClockIcon
+  AlertTriangleIcon, CheckCircle2Icon, ClockIcon, UserIcon, KeyIcon
 } from 'lucide-react'
 
 /* ------------------------------------------------------------------ */
@@ -61,6 +61,14 @@ function fmt(e: WsProviderMetrics['event']): { label: string; value: string; kin
     return { label: 'Balance', value: formatBalance(b.amount, b.currency), kind: 'info' }
   }
   return { label: '?', value: JSON.stringify(e), kind: 'info' }
+}
+
+function fmtUser(u?: MetricsUser | null): string {
+  if (!u) return ''
+  if (u.api_key_name) return `API: ${u.api_key_name}`
+  if (u.name) return u.name
+  if (u.id) return `ID: ${u.id}`
+  return ''
 }
 
 const MAXL = 200, MAXA = 500
@@ -420,11 +428,15 @@ export default function Metrics() {
               const d=new Date(ev.timestamp_ms);const t=d.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'})
               const ms=String(d.getMilliseconds()).padStart(3,'0')
               const kc=kind==='ok'?'bg-emerald-500/10 text-emerald-500':kind==='err'?'bg-destructive/15 text-destructive':kind==='warn'?'bg-amber-500/10 text-amber-500':'bg-muted text-muted-foreground'
+              const userText=fmtUser(ev.user)
               return <div key={`${ev.timestamp_ms}-${i}`} className={cn('flex items-center gap-2 px-1.5 py-0.5 rounded',i===0&&'bg-accent/10')}>
                 <span className="text-muted-foreground shrink-0">{t}.{ms}</span><span className="font-medium shrink-0 w-24 truncate" title={ev.provider}>{ev.provider}</span>
                 {ev.model&&<span className="text-muted-foreground shrink-0 w-28 truncate" title={ev.model}>{ev.model}</span>}
                 <Badge variant="outline" className={cn('shrink-0 text-[10px] px-1 py-0 border-0',kc)}>{label}</Badge>
-                <span className="truncate" title={value}>{value}</span></div>})}
+                <span className="truncate flex-1 min-w-0" title={value}>{value}</span>
+                {userText&&<span className="shrink-0 text-[10px] text-muted-foreground flex items-center gap-1" title={userText}>
+                  {userText.includes('API')?<KeyIcon className="size-3"/>:<UserIcon className="size-3"/>}{userText}</span>}
+              </div>})}
             <div ref={endRef}/></div></CardContent></Card></div>
       </div>
     </div>

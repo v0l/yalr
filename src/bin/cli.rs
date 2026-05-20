@@ -296,7 +296,8 @@ async fn chat_with_providers(db: Arc<Database>, message: &str, model: &str) {
         print!("Assistant: ");
         let _ = std::io::stdout().flush();
 
-        match router.chat_completions_stream(&request).await {
+        let metrics_user = crate::metrics::MetricsUser::default();
+        match router.chat_completions_stream(&request, Some(metrics_user)).await {
             Ok(stream) => {
                 let mut response_text = String::new();
                 let mut first_token = true;

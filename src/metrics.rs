@@ -10,6 +10,15 @@ use tokio::task::JoinHandle;
 use crate::router::ModelRuntimeInfo;
 use crate::providers::CurrencyAmount;
 
+/// User context for metrics tracking
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct MetricsUser {
+    pub id: Option<i64>,
+    pub name: Option<String>,
+    pub api_key_id: Option<i64>,
+    pub api_key_name: Option<String>,
+}
+
 type InstantMillis = u64;
 
 fn now_ms() -> u64 {
@@ -26,6 +35,9 @@ pub struct ProviderMetrics {
     pub model: String,
     pub timestamp_ms: u64,
     pub event: MetricsEvent,
+    /// User context for the request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<MetricsUser>,
 }
 
 /// Metrics event types (value only, no provider/model info)
@@ -115,12 +127,13 @@ impl MetricsEmitter {
         )
     }
 
-    fn emit(&self, provider: String, model: String, event: MetricsEvent) {
+    fn emit(&self, provider: String, model: String, event: MetricsEvent, user: Option<MetricsUser>) {
         let metrics = ProviderMetrics {
             timestamp_ms: now_ms(),
             provider: provider.clone(),
             model: model.clone(),
             event: event.clone(),
+            user,
         };
 
         // Increment monotonic counters for outcome events
@@ -152,32 +165,32 @@ impl MetricsEmitter {
         }
     }
 
-    pub fn emit_ttft(&self, provider: &str, model: &str, value_ms: u32) {
-        self.emit(provider.to_string(), model.to_string(), MetricsEvent::TTFT(value_ms));
+    pub fn emit_ttft(&self, provider: &str, model: &str, value_ms: u32, user: Option<MetricsUser>) {
+        self.emit(provider.to_string(), model.to_string(), MetricsEvent::TTFT(value_ms), user);
     }
 
-    pub fn emit_output_tokens_per_second(&self, provider: &str, model: &str, value: f32) {
-        self.emit(provider.to_string(), model.to_string(), MetricsEvent::OutputTokensPerSecond(value));
+    pub fn emit_output_tokens_per_second(&self, provider: &str, model: &str, value: f32, user: Option<MetricsUser>) {
+        self.emit(provider.to_string(), model.to_string(), MetricsEvent::OutputTokensPerSecond(value), user);
     }
 
-    pub fn emit_input_tokens_per_second(&self, provider: &str, model: &str, value: f32) {
-        self.emit(provider.to_string(), model.to_string(), MetricsEvent::InputTokensPerSecond(value));
+    pub fn emit_input_tokens_per_second(&self, provider: &str, model: &str, value: f32, user: Option<MetricsUser>) {
+        self.emit(provider.to_string(), model.to_string(), MetricsEvent::InputTokensPerSecond(value), user);
     }
 
-    pub fn emit_total_latency(&self, provider: &str, model: &str, value_ms: u32) {
-        self.emit(provider.to_string(), model.to_string(), MetricsEvent::TotalLatency(value_ms));
+    pub fn emit_total_latency(&self, provider: &str, model: &str, value_ms: u32, user: Option<MetricsUser>) {
+        self.emit(provider.to_string(), model.to_string(), MetricsEvent::TotalLatency(value_ms), user);
     }
 
-    pub fn emit_input_tokens(&self, provider: &str, model: &str, value: u32) {
-        self.emit(provider.to_string(), model.to_string(), MetricsEvent::InputTokens(value));
+    pub fn emit_input_tokens(&self, provider: &str, model: &str, value: u32, user: Option<MetricsUser>) {
+        self.emit(provider.to_string(), model.to_string(), MetricsEvent::InputTokens(value), user);
     }
 
-    pub fn emit_output_tokens(&self, provider: &str, model: &str, value: u32) {
-        self.emit(provider.to_string(), model.to_string(), MetricsEvent::OutputTokens(value));
+    pub fn emit_output_tokens(&self, provider: &str, model: &str, value: u32, user: Option<MetricsUser>) {
+        self.emit(provider.to_string(), model.to_string(), MetricsEvent::OutputTokens(value), user);
     }
 
- pub fn emit_success(&self, provider: &str, model: &str) {
-        self.emit(provider.to_string(), model.to_string(), MetricsEvent::Success);
+    pub fn emit_success(&self, provider: &str, model: &str, user: Option<MetricsUser>) {
+        self.emit(provider.to_string(), model.to_string(), MetricsEvent::Success, user);
     }
 
     pub fn emit_failure(
@@ -186,6 +199,7 @@ impl MetricsEmitter {
         model: &str,
         error_type: ErrorType,
         error_message: &str,
+        user: Option<MetricsUser>,
     ) {
         self.emit_failure_with_details(
             provider,
@@ -195,6 +209,7 @@ impl MetricsEmitter {
             error_message,
             None,
             None,
+            user,
         );
     }
 
@@ -207,6 +222,7 @@ impl MetricsEmitter {
         error_message: &str,
         retry_after_ms: Option<u64>,
         status_code: Option<u16>,
+        user: Option<MetricsUser>,
     ) {
         let details = FailureDetails {
             error_type,
@@ -219,6 +235,7 @@ impl MetricsEmitter {
             provider.to_string(),
             model.to_string(),
             MetricsEvent::Failure(details),
+            user,
         );
     }
 
@@ -228,6 +245,7 @@ impl MetricsEmitter {
         model: &str,
         retry_after_ms: u64,
         status_code: Option<u16>,
+        user: Option<MetricsUser>,
     ) {
         self.emit_failure_with_details(
             provider,
@@ -237,10 +255,11 @@ impl MetricsEmitter {
             "Rate limit exceeded",
             Some(retry_after_ms),
             status_code,
+            user,
         );
     }
 
-    pub fn emit_provider_load(&self, provider: &str, in_flight: u32, max_concurrency: Option<u32>) {
+    pub fn emit_provider_load(&self, provider: &str, in_flight: u32, max_concurrency: Option<u32>, user: Option<MetricsUser>) {
         self.emit(
             provider.to_string(),
             String::new(),
@@ -248,12 +267,13 @@ impl MetricsEmitter {
                 in_flight,
                 max_concurrency,
             },
+            user,
         );
     }
 
     /// Emit a balance snapshot for a provider.
-    pub fn emit_balance(&self, provider: &str, amount: CurrencyAmount) {
-        self.emit(provider.to_string(), String::new(), MetricsEvent::Balance(amount));
+    pub fn emit_balance(&self, provider: &str, amount: CurrencyAmount, user: Option<MetricsUser>) {
+        self.emit(provider.to_string(), String::new(), MetricsEvent::Balance(amount), user);
     }
 }
 
@@ -1010,6 +1030,7 @@ mod tests {
             model: "test-model".to_string(),
             timestamp_ms: now.saturating_sub(timestamp_offset_ms),
             event,
+            user: None,
         }
     }
 

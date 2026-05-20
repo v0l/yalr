@@ -1,5 +1,5 @@
 use crate::db::Database;
-use crate::metrics::MetricsStore;
+use crate::metrics::{MetricsStore, MetricsUser};
 use crate::providers::{create_provider, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
 use crate::router::strategies::ProviderEntry;
 use crate::{ChatCompletionRequest, ChatCompletionResponse, ProviderError};
@@ -39,7 +39,7 @@ impl InFlightGuard {
                 let _ = metrics.decrement_in_flight(&name).await;
                 let current = metrics.get_in_flight(&name).await;
                 let max_conc = metrics.get_provider_max_concurrency(&name).await;
-                metrics.emitter().emit_provider_load(&name, current, max_conc);
+                metrics.emitter().emit_provider_load(&name, current, max_conc, None);
             });
             self.decremented = true;
         }
@@ -129,6 +129,7 @@ impl HealthCheckRouter {
             model: String::new(),
             timestamp_ms: now,
             event: crate::metrics::MetricsEvent::Success,
+            user: None,
         }).await;
     }
 
@@ -148,6 +149,7 @@ impl HealthCheckRouter {
                 retry_after_ms: None,
                 status_code: None,
             }),
+            user: None,
         }).await;
     }
 }
@@ -363,7 +365,7 @@ impl Router {
                         tokio::spawn(async move {
                             // Fetch and emit balance snapshot
                             if let Some(amount) = provider_clone.fetch_balance().await {
-                                router_clone.metrics_store.emitter().emit_balance(&provider_name, amount);
+                                router_clone.metrics_store.emitter().emit_balance(&provider_name, amount, None);
                             }
 
                             let result = tokio::time::timeout(timeout_duration, provider_clone.health_check()).await;
@@ -588,6 +590,7 @@ impl Router {
     pub async fn chat_completions(
         &self,
         request: &ChatCompletionRequest,
+        user: Option<MetricsUser>,
     ) -> Result<ChatCompletionResponse, RouterError> {
         let start = Instant::now();
         let original_model = request.model.clone();
@@ -634,7 +637,7 @@ impl Router {
 
             self.metrics_store
                 .emitter()
-                .emit_provider_load(&provider_name, in_flight, max_concurrency);
+                .emit_provider_load(&provider_name, in_flight, max_concurrency, user.clone());
 
             let result = provider.chat_completions(&actual_request).await;
             let total_latency = start.elapsed();
@@ -646,10 +649,10 @@ impl Router {
                     let latency_ms = total_latency.as_millis() as u32;
                     self.metrics_store
                         .emitter()
-                        .emit_total_latency(&provider_name, &original_model, latency_ms);
+                        .emit_total_latency(&provider_name, &original_model, latency_ms, user.clone());
                     self.metrics_store
                         .emitter()
-                        .emit_success(&provider_name, &original_model);
+                        .emit_success(&provider_name, &original_model, user.clone());
 
                     if let Some(tokens) = response.usage.as_ref() {
                         let latency_secs = total_latency.as_secs_f64().max(0.001);
@@ -672,21 +675,25 @@ impl Router {
                             &provider_name,
                             &original_model,
                             output_tokens_per_sec,
+                            user.clone(),
                         );
                         self.metrics_store.emitter().emit_input_tokens_per_second(
                             &provider_name,
                             &original_model,
                             input_tokens_per_sec,
+                            user.clone(),
                         );
                         self.metrics_store.emitter().emit_input_tokens(
                             &provider_name,
                             &original_model,
                             tokens.prompt_tokens,
+                            user.clone(),
                         );
                         self.metrics_store.emitter().emit_output_tokens(
                             &provider_name,
                             &original_model,
                             tokens.completion_tokens,
+                            user.clone(),
                         );
                     }
 
@@ -705,6 +712,7 @@ impl Router {
                         &e.to_string(),
                         e.retry_after_ms(),
                         e.status_code(),
+                        user.clone(),
                     );
 
                     if e.is_transient() {
@@ -740,6 +748,7 @@ impl Router {
     pub async fn chat_completions_stream(
         &self,
         request: &ChatCompletionRequest,
+        user: Option<MetricsUser>,
     ) -> Result<BoxStream<'static, Result<StreamingChunk, RouterError>>, RouterError>
     {
         let original_model = request.model.clone();
@@ -797,7 +806,7 @@ impl Router {
 
                 metrics_store
                     .emitter()
-                    .emit_provider_load(&provider_name, in_flight, max_concurrency);
+                    .emit_provider_load(&provider_name, in_flight, max_concurrency, user.clone());
 
                 match provider.chat_completions_stream(&actual_request) {
                     Ok(provider_stream) => {
@@ -816,7 +825,7 @@ impl Router {
                                     if first_token {
                                         first_token = false;
                                         ttft_ms = start.elapsed().as_millis() as u32;
-                                        metrics_store.emitter().emit_ttft(&provider_name, &original_model, ttft_ms);
+                                        metrics_store.emitter().emit_ttft(&provider_name, &original_model, ttft_ms, user.clone());
                                     }
 
                                     if let Some(usage) = chunk.usage.clone() {
@@ -837,6 +846,7 @@ impl Router {
                                         &e.to_string(),
                                         e.retry_after_ms(),
                                         e.status_code(),
+                                        user.clone(),
                                     );
 
                                     // Log detailed error context for debugging
@@ -907,9 +917,9 @@ impl Router {
 
                         // Stream completed normally (no error)
                         if !first_token {
-                            metrics_store.emitter().emit_success(&provider_name, &original_model);
+                            metrics_store.emitter().emit_success(&provider_name, &original_model, user.clone());
                             let total_latency_ms = start.elapsed().as_millis() as u32;
-                            metrics_store.emitter().emit_total_latency(&provider_name, &original_model, total_latency_ms);
+                            metrics_store.emitter().emit_total_latency(&provider_name, &original_model, total_latency_ms, user.clone());
 
                             if total_tokens > 0 {
                                 let generation_time_ms = total_latency_ms.saturating_sub(ttft_ms) as f32;
@@ -936,10 +946,10 @@ impl Router {
                                     "Emitting tokens metrics"
                                 );
 
-                                metrics_store.emitter().emit_output_tokens_per_second(&provider_name, &original_model, output_tokens_per_sec);
-                                metrics_store.emitter().emit_input_tokens_per_second(&provider_name, &original_model, input_tokens_per_sec);
-                                metrics_store.emitter().emit_input_tokens(&provider_name, &original_model, prompt_tokens);
-                                metrics_store.emitter().emit_output_tokens(&provider_name, &original_model, completion_tokens);
+                                metrics_store.emitter().emit_output_tokens_per_second(&provider_name, &original_model, output_tokens_per_sec, user.clone());
+                                metrics_store.emitter().emit_input_tokens_per_second(&provider_name, &original_model, input_tokens_per_sec, user.clone());
+                                metrics_store.emitter().emit_input_tokens(&provider_name, &original_model, prompt_tokens, user.clone());
+                                metrics_store.emitter().emit_output_tokens(&provider_name, &original_model, completion_tokens, user.clone());
                             }
 
                             guard.decrement();
@@ -964,6 +974,7 @@ impl Router {
                             &e.to_string(),
                             e.retry_after_ms(),
                             e.status_code(),
+                            user.clone(),
                         );
 
                         if e.is_transient() {
@@ -1057,6 +1068,7 @@ impl Router {
     pub async fn responses(
         &self,
         request: &CreateResponse,
+        user: Option<MetricsUser>,
     ) -> Result<ApiResponse, RouterError> {
         let start = Instant::now();
         let original_model = request.model.clone().unwrap_or_default();
@@ -1102,7 +1114,7 @@ impl Router {
 
             self.metrics_store
                 .emitter()
-                .emit_provider_load(&provider_name, in_flight, max_concurrency);
+                .emit_provider_load(&provider_name, in_flight, max_concurrency, user.clone());
 
             let result = provider.responses(&actual_request).await;
             let total_latency = start.elapsed();
@@ -1114,10 +1126,10 @@ impl Router {
                     let latency_ms = total_latency.as_millis() as u32;
                     self.metrics_store
                         .emitter()
-                        .emit_total_latency(&provider_name, &original_model, latency_ms);
+                        .emit_total_latency(&provider_name, &original_model, latency_ms, user.clone());
                     self.metrics_store
                         .emitter()
-                        .emit_success(&provider_name, &original_model);
+                        .emit_success(&provider_name, &original_model, user.clone());
 
                     tracing::info!(
                         provider = provider_name,
@@ -1141,6 +1153,7 @@ impl Router {
                         &e.to_string(),
                         e.retry_after_ms(),
                         e.status_code(),
+                        user.clone(),
                     );
 
                     if e.is_transient() {
@@ -1286,6 +1299,7 @@ mod tests {
                     retry_after_ms: None,
                     status_code: None,
                 }),
+                user: None,
             }).await;
         }
         
@@ -1365,10 +1379,11 @@ mod tests {
                     retry_after_ms: None,
                     status_code: None,
                 }),
+                user: None,
             }).await;
             
             metrics_store.record(ProviderMetrics {
-                provider: "Provider2".to_string(),
+                provider: "Provider1".to_string(),
                 model: "default".to_string(),
                 timestamp_ms: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1381,6 +1396,7 @@ mod tests {
                     retry_after_ms: None,
                     status_code: None,
                 }),
+                user: None,
             }).await;
         }
         

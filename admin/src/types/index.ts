@@ -113,6 +113,14 @@ export interface WsProviderMetrics {
   model: string
   timestamp_ms: number
   event: WsMetricsEvent
+  user?: MetricsUser | null
+}
+
+export interface MetricsUser {
+  id?: number | null
+  name?: string | null
+  api_key_id?: number | null
+  api_key_name?: string | null
 }
 
 export type WsMetricsEvent =

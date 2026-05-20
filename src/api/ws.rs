@@ -242,7 +242,7 @@ mod tests {
         let mut receiver = state.metrics_emitter.receiver();
 
         // Emit an event
-        emitter.emit_ttft("test-provider", "test-model", 42);
+        emitter.emit_ttft("test-provider", "test-model", 42, None);
 
         // Receive it
         let event = receiver.recv().await.unwrap();
@@ -261,7 +261,7 @@ mod tests {
 
         let mut receiver = state.metrics_emitter.receiver();
 
-        emitter.emit_success("test-provider", "test-model");
+        emitter.emit_success("test-provider", "test-model", None);
 
         let event = receiver.recv().await.unwrap();
         let json = serde_json::to_string(&event).unwrap();
