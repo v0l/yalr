@@ -197,6 +197,9 @@ impl Router {
 
         let mut tables = HashMap::new();
 
+        // Track which provider slugs are actually configured for use
+        let mut configured_provider_slugs = std::collections::HashSet::new();
+
         let routing_configs = self.db.list_routing_configs().await?;
         for rc in &routing_configs {
             let rcp_records = self.db.list_active_routing_config_providers(rc.id).await?;
@@ -211,6 +214,7 @@ impl Router {
                     Some(p) => p,
                     None => continue,
                 };
+                configured_provider_slugs.insert(slug.clone());
                 entries.push(ProviderEntry {
                     provider: provider.clone(),
                     model_override: rcp.model.clone(),
@@ -218,10 +222,12 @@ impl Router {
                 });
             }
 
+            let entry_names: Vec<&str> = entries.iter().map(|e| e.provider.name()).collect();
             tracing::info!(
                 routing_config = rc.name,
                 strategy = rc.strategy,
                 provider_count = entries.len(),
+                providers = ?entry_names,
                 "Loaded routing config"
             );
 
@@ -238,6 +244,9 @@ impl Router {
         for model in &model_records {
             model_id_to_name.insert(model.id, model.name.clone());
         }
+
+        // Track which provider slugs are actually configured for use
+        let mut configured_provider_slugs = std::collections::HashSet::new();
 
         for mp in &mp_records {
             if !mp.is_active {
@@ -261,6 +270,8 @@ impl Router {
                 Some(p) => p,
                 None => continue,
             };
+            
+            configured_provider_slugs.insert(slug.clone());
 
             tables
                 .entry(model_name.clone())
@@ -272,20 +283,24 @@ impl Router {
                 });
         }
 
-        if !tables.contains_key("default") && !providers.is_empty() {
+        // Build default table only from providers that are actually configured
+        if !tables.contains_key("default") && !providers.is_empty() && !configured_provider_slugs.is_empty() {
             let entries: Vec<ProviderEntry> = providers
-                .values()
-                .map(|provider| ProviderEntry {
+                .iter()
+                .filter(|(slug, _)| configured_provider_slugs.contains(*slug))
+                .map(|(_, provider)| ProviderEntry {
                     provider: provider.clone(),
                     model_override: None,
                     weight: 100,
                 })
                 .collect();
 
-            tables.insert(
-                "default".to_string(),
-                RoutingTable::new(entries),
-            );
+            if !entries.is_empty() {
+                tables.insert(
+                    "default".to_string(),
+                    RoutingTable::new(entries),
+                );
+            }
         }
 
         *self.providers.write().await = providers;
@@ -491,6 +506,7 @@ impl Router {
         // Load score = in_flight / max(weight, 1). Lower is better.
         let mut available: Vec<(f32, (Arc<dyn Provider>, String))> = Vec::new();
         let mut unavailable = Vec::new();
+        let mut low_balance = Vec::new();
 
         for entry in ordered {
             let resolved_model = entry
@@ -498,11 +514,41 @@ impl Router {
                 .clone()
                 .unwrap_or_else(|| model.to_string());
             let pair = (entry.provider.clone(), resolved_model);
-            if self.metrics_store.is_provider_available(entry.provider.name()).await {
-                let in_flight = self.metrics_store.get_in_flight(entry.provider.name()).await;
-                let weight = entry.weight.max(1) as f32;
-                let load_score = in_flight as f32 / weight;
-                available.push((load_score, pair));
+            let provider_name = entry.provider.name();
+            
+            // Check if provider has sufficient balance (if balance tracking is supported)
+            // Only exclude providers that explicitly have zero/negative balance
+            // Providers without balance tracking (None) are treated as having sufficient balance
+            let balance_opt = self.metrics_store.get_balance(provider_name).await;
+            let has_sufficient_balance = balance_opt
+                .map_or(true, |b| {
+                    // Check if balance is greater than zero (convert to msats for comparison)
+                    // Minimum threshold: 1 msat (practically, you'd want more like 1000 msats)
+                    b.as_msats().map_or(true, |msats| msats > 0)
+                });
+            
+            let is_available = self.metrics_store.is_provider_available(provider_name).await;
+            
+            tracing::debug!(
+                provider = provider_name,
+                is_available = is_available,
+                has_balance = has_sufficient_balance,
+                balance = ?balance_opt,
+                "Evaluating provider for routing"
+            );
+            
+            if is_available {
+                // Provider is available AND has balance (or doesn't track balance)
+                if has_sufficient_balance {
+                    let in_flight = self.metrics_store.get_in_flight(provider_name).await;
+                    let weight = entry.weight.max(1) as f32;
+                    let load_score = in_flight as f32 / weight;
+                    available.push((load_score, pair));
+                } else {
+                    // Provider is available but has low/zero balance
+                    tracing::info!(provider = provider_name, "Provider excluded due to low/zero balance");
+                    low_balance.push(pair);
+                }
             } else {
                 unavailable.push(pair);
             }
@@ -518,6 +564,17 @@ impl Router {
             .map(|(_, pair)| pair)
             .collect();
 
+        // Only fall back to low-balance providers if there are no healthy ones at all.
+        // This avoids routing to providers that are known to have no funds.
+        if candidates.is_empty() && !low_balance.is_empty() {
+            tracing::warn!(
+                model = %model,
+                low_balance_count = low_balance.len(),
+                "No providers with sufficient balance, falling back to low-balance providers"
+            );
+            candidates.extend(low_balance);
+        }
+        
         // Only fall back to unavailable providers if there are no healthy ones at all.
         // This avoids hammering providers that are known to be down/dead/gone.
         if candidates.is_empty() {
