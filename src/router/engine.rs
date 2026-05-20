@@ -283,25 +283,7 @@ impl Router {
                 });
         }
 
-        // Build default table only from providers that are actually configured
-        if !tables.contains_key("default") && !providers.is_empty() && !configured_provider_slugs.is_empty() {
-            let entries: Vec<ProviderEntry> = providers
-                .iter()
-                .filter(|(slug, _)| configured_provider_slugs.contains(*slug))
-                .map(|(_, provider)| ProviderEntry {
-                    provider: provider.clone(),
-                    model_override: None,
-                    weight: 100,
-                })
-                .collect();
-
-            if !entries.is_empty() {
-                tables.insert(
-                    "default".to_string(),
-                    RoutingTable::new(entries),
-                );
-            }
-        }
+        // No default routing table - all routing must be explicitly configured
 
         *self.providers.write().await = providers;
         *self.routing_tables.write().await = tables;
@@ -440,15 +422,8 @@ impl Router {
         let slug = provider.slug().to_string();
         self.providers.write().await.insert(slug.clone(), provider.clone());
 
-        let mut tables = self.routing_tables.write().await;
-        let default = tables
-            .entry("default".to_string())
-            .or_insert_with(|| RoutingTable::new(Vec::new()));
-        default.entries.push(ProviderEntry {
-            provider,
-            model_override: None,
-            weight: 100,
-        });
+        // Note: add_provider() no longer auto-adds to a default table.
+        // Providers must be added via explicit routing config in the database.
     }
 
     pub async fn remove_provider(&self, slug: &str) {
@@ -490,7 +465,7 @@ impl Router {
         }
 
         let tables = self.routing_tables.read().await;
-        let table = match tables.get(model).or_else(|| tables.get("default")) {
+        let table = match tables.get(model) {
             Some(t) => t,
             None => return vec![],
         };
