@@ -85,11 +85,22 @@ pub struct ProviderInfo {
 /// Request to create a topup invoice.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TopupRequest {
-    /// Amount to top up in USD.
-    pub amount_usd: f64,
+    /// Amount to top up.
+    pub amount: i64,
+    /// Currency unit for the amount.
+    pub currency: CurrencyType,
     /// Optional: specific instruction type preference.
     #[serde(default)]
     pub preferred_method: Option<PaymentMethodPreference>,
+}
+
+/// Currency type for topup amounts.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CurrencyType {
+    Sats,
+    Msats,
+    UsdMicro,
 }
 
 /// Preferred payment method for topup.

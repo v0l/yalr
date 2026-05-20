@@ -7,6 +7,18 @@ export interface Provider {
   created_at: string
   updated_at: string
   health?: ProviderHealthEntry
+  payment_options: PaymentOption[]
+}
+
+export interface PaymentOption {
+  currency: 'msats' | 'sats' | 'usd_micro'
+  payment_method: 'lightning' | 'redirect' | 'manual' | 'payment_link'
+}
+
+export interface TopupRequest {
+  amount: number
+  currency: 'msats' | 'sats' | 'usd_micro'
+  preferred_method?: 'lightning' | 'redirect' | 'manual' | 'payment_link'
 }
 
 export interface Model {
@@ -397,11 +409,6 @@ export interface PaymentLinkInstruction {
   url: string
   amount_usd?: number
   label?: string
-}
-
-export interface TopupRequest {
-  amount_usd: number
-  preferred_method?: 'lightning' | 'redirect' | 'manual' | 'payment_link'
 }
 
 export interface AdminCreditRequest {

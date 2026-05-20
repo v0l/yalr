@@ -125,6 +125,31 @@ pub struct ProviderResponse {
     /// Only present when the router has the provider loaded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub health: Option<ProviderHealthEntry>,
+    /// Supported payment options for this provider.
+    pub payment_options: Vec<PaymentOption>,
+}
+
+#[derive(Serialize)]
+pub struct PaymentOption {
+    pub currency: SupportedCurrencyType,
+    pub payment_method: PaymentMethod,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaymentMethod {
+    Lightning,
+    Redirect,
+    Manual,
+    PaymentLink,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportedCurrencyType {
+    Msats,
+    Sats,
+    UsdMicro,
 }
 
 #[derive(Serialize)]
@@ -1121,15 +1146,31 @@ pub async fn list_providers(State(state): State<std::sync::Arc<AppState>>) -> Js
 
     let providers_list: Vec<ProviderResponse> = providers
         .into_iter()
-        .map(|p| ProviderResponse {
-            id: p.id,
-            name: p.name.clone(),
-            slug: p.slug.clone(),
-            base_url: p.base_url,
-            provider_type: p.provider_type.as_str().to_string(),
-            created_at: p.created_at,
-            updated_at: p.updated_at,
-            health: health_by_slug.remove(&p.slug),
+        .map(|p| {
+            // Determine supported currencies based on provider type
+            let supported_currencies = match p.provider_type {
+                crate::db::ProviderType::Routstr => vec![PaymentOption {
+                    currency: SupportedCurrencyType::Sats,
+                    payment_method: PaymentMethod::Lightning,
+                }],
+                crate::db::ProviderType::Ppq => vec![PaymentOption {
+                    currency: SupportedCurrencyType::UsdMicro,
+                    payment_method: PaymentMethod::Lightning,
+                }],
+                _ => vec![], // Other providers don't support direct top-ups
+            };
+
+            ProviderResponse {
+                id: p.id,
+                name: p.name.clone(),
+                slug: p.slug.clone(),
+                base_url: p.base_url,
+                provider_type: p.provider_type.as_str().to_string(),
+                created_at: p.created_at,
+                updated_at: p.updated_at,
+                health: health_by_slug.remove(&p.slug),
+                payment_options: supported_currencies,
+            }
         })
         .collect();
 
@@ -1279,7 +1320,7 @@ pub async fn create_provider_topup(
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, format!("Provider '{}' not found", slug)))?;
 
-    if body.amount_usd <= 0.0 {
+    if body.amount <= 0 {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             "Amount must be greater than 0".to_string(),
@@ -1291,11 +1332,22 @@ pub async fn create_provider_topup(
     let provider_arc = providers.into_iter().find(|p| p.slug() == slug)
         .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST, "Provider not found in router".to_string()))?;
 
-    // Convert USD to CurrencyAmount
-    let amount = CurrencyAmount::UsdMicro((body.amount_usd * 1_000_000.0) as i64);
+    // Convert to CurrencyAmount based on currency type
+    let amount = match body.currency {
+        crate::payments::instructions::CurrencyType::Sats => CurrencyAmount::Sats(body.amount),
+        crate::payments::instructions::CurrencyType::Msats => CurrencyAmount::Msats(body.amount),
+        crate::payments::instructions::CurrencyType::UsdMicro => CurrencyAmount::UsdMicro(body.amount),
+    };
     
     let instruction = provider_arc.create_topup(amount).await
-        .ok_or_else(|| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Provider does not support top-ups".to_string()))?;
+        .ok_or_else(|| {
+            tracing::error!(
+                provider_slug = slug,
+                provider_type = provider.provider_type.as_str(),
+                "Provider does not support top-ups or top-up failed"
+            );
+            (axum::http::StatusCode::BAD_REQUEST, format!("Provider '{}' does not support top-ups or the top-up request failed. Check server logs for details.", provider.name))
+        })?;
 
     Ok(Json(crate::payments::instructions::TopupResponse {
         provider: crate::payments::instructions::ProviderInfo {
@@ -1370,6 +1422,19 @@ pub async fn update_provider(
 
     tracing::info!(provider_slug = slug, "Provider updated and config reloaded");
 
+    // Determine supported currencies based on provider type
+    let payment_options = match updated.provider_type {
+        crate::db::ProviderType::Routstr => vec![PaymentOption {
+            currency: SupportedCurrencyType::Sats,
+            payment_method: PaymentMethod::Lightning,
+        }],
+        crate::db::ProviderType::Ppq => vec![PaymentOption {
+            currency: SupportedCurrencyType::UsdMicro,
+            payment_method: PaymentMethod::Lightning,
+        }],
+        _ => vec![],
+    };
+
     Ok(Json(ProviderResponse {
         id: updated.id,
         name: updated.name,
@@ -1379,6 +1444,7 @@ pub async fn update_provider(
         created_at: updated.created_at,
         updated_at: updated.updated_at,
         health: None,
+        payment_options,
     }))
 }
 

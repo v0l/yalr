@@ -317,7 +317,10 @@ impl Provider for RoutstrProvider {
         let amount_sats = match amount {
             CurrencyAmount::Sats(sats) => sats,
             CurrencyAmount::Msats(msats) => msats / 1000,
-            _ => return None, // Routstr only supports Lightning
+            _ => {
+                tracing::warn!(provider = self.name(), "Routstr only supports Lightning top-ups in sats");
+                return None;
+            }
         };
         
         let api_key = self.api_key.as_ref()?;
@@ -326,7 +329,14 @@ impl Provider for RoutstrProvider {
         // Build the upstream URL: {base_url}/v1/lightning/invoice
         let invoice_url = self.base_url.join("v1/lightning/invoice").ok()?;
         
-        let response = client
+        tracing::info!(
+            provider = self.name(),
+            amount_sats,
+            invoice_url = invoice_url.as_str(),
+            "Creating Routstr top-up invoice"
+        );
+        
+        let response = match client
             .post(invoice_url.as_str())
             .bearer_auth(api_key)
             .json(&serde_json::json!({
@@ -335,17 +345,67 @@ impl Provider for RoutstrProvider {
             }))
             .send()
             .await
-            .ok()?;
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::error!(
+                    provider = self.name(),
+                    error = %e,
+                    "Failed to create Routstr top-up invoice"
+                );
+                return None;
+            }
+        };
 
         if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await.unwrap_or_default();
+            tracing::error!(
+                provider = self.name(),
+                status = %status,
+                error_body = %error_body,
+                "Routstr invoice creation failed"
+            );
             return None;
         }
 
-        let result: serde_json::Value = response.json().await.ok()?;
+        let result: serde_json::Value = match response.json().await {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::error!(
+                    provider = self.name(),
+                    error = %e,
+                    "Failed to parse Routstr invoice response"
+                );
+                return None;
+            }
+        };
         
         // Parse Routstr's response and convert to PaymentInstruction
-        let bolt11 = result.get("bolt11").and_then(|v| v.as_str())?;
-        let payment_hash = result.get("payment_hash").and_then(|v| v.as_str())?.to_string();
+        let bolt11 = match result.get("bolt11").and_then(|v| v.as_str()) {
+            Some(bolt11) => bolt11,
+            None => {
+                tracing::error!(
+                    provider = self.name(),
+                    response = ?result,
+                    "Routstr did not return bolt11 in invoice response"
+                );
+                return None;
+            }
+        };
+        
+        let payment_hash = match result.get("payment_hash").and_then(|v| v.as_str()) {
+            Some(hash) => hash.to_string(),
+            None => {
+                tracing::error!(
+                    provider = self.name(),
+                    response = ?result,
+                    "Routstr did not return payment_hash in invoice response"
+                );
+                return None;
+            }
+        };
+        
         let expires_at = result.get("expires_at").and_then(|v| v.as_str());
         
         Some(PaymentInstruction::LightningBolt11 {

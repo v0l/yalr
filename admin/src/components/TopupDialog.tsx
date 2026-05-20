@@ -7,21 +7,31 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Card, CardContent } from '@/components/ui/card'
-import type { TopupResponse, PaymentInstruction, LightningBolt11Instruction, TopupRequest } from '../types'
+import type { TopupResponse, PaymentInstruction, LightningBolt11Instruction, TopupRequest, PaymentOption } from '../types'
 
 interface TopupDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   providerSlug: string
   providerName: string
+  supportedPaymentMethods?: PaymentOption[]
 }
 
-export function TopupDialog({ open, onOpenChange, providerSlug, providerName }: TopupDialogProps) {
+export function TopupDialog({ open, onOpenChange, providerSlug, providerName, supportedPaymentMethods = [] }: TopupDialogProps) {
   const [amount, setAmount] = useState('10')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [topupResult, setTopupResult] = useState<TopupResponse | null>(null)
+  
+  // Get the first payment option for this provider (or default to usd_micro/lightning)
+  const paymentOption = supportedPaymentMethods?.[0] || {
+    currency: 'usd_micro' as const,
+    payment_method: 'lightning' as const
+  }
+  const currencyLabel = paymentOption.currency === 'sats' ? 'Sats' : 
+                        paymentOption.currency === 'msats' ? 'Millisatoshis' : 
+                        paymentOption.currency === 'usd_micro' ? 'USD (micro)' : 'Amount'
 
   // Reset state when dialog opens/closes
   useEffect(() => {
@@ -47,7 +57,8 @@ export function TopupDialog({ open, onOpenChange, providerSlug, providerName }: 
     
     try {
       const data: TopupRequest = {
-        amount_usd: amountNum,
+        amount: paymentOption.currency === 'usd_micro' ? Math.round(amountNum * 1_000_000) : amountNum,
+        currency: paymentOption.currency,
       }
       
       const result = await api.topupProvider(providerSlug, data)
@@ -237,15 +248,15 @@ export function TopupDialog({ open, onOpenChange, providerSlug, providerName }: 
         {!topupResult ? (
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="amount">Amount (USD)</Label>
+              <Label htmlFor="amount">Amount ({currencyLabel})</Label>
               <Input
                 id="amount"
                 type="number"
                 min="0.01"
-                step="0.01"
+                step={paymentOption.currency === 'usd_micro' ? "0.01" : "1"}
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
-                placeholder="10"
+                placeholder={paymentOption.currency === 'usd_micro' ? "10" : "1000"}
               />
             </div>
             

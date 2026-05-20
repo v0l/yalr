@@ -433,6 +433,7 @@ export default function Providers() {
           }}
           providerSlug={topupProvider.slug}
           providerName={topupProvider.name}
+          supportedPaymentMethods={topupProvider.payment_options}
         />
       )}
 
