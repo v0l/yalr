@@ -178,7 +178,7 @@ export default function Dashboard() {
       </div>
       <p className="text-sm text-muted-foreground">Overview of your YALR instance</p>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm text-muted-foreground">Total Requests</CardTitle>
@@ -223,16 +223,6 @@ export default function Dashboard() {
             </p>
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Quick Actions</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Button onClick={() => handleTopup(providers[0])} disabled={providers.length === 0}>
-              Top-up Balance
-            </Button>
-          </CardContent>
-        </Card>
       </div>
 
       {/* Provider Health Table */}
@@ -273,6 +263,11 @@ export default function Dashboard() {
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <BalanceDisplay health={h} />
+                            {(provider.provider_type === 'routstr' || provider.provider_type === 'ppq') && (
+                              <Button variant="outline" size="sm" onClick={() => handleTopup(provider)}>
+                                Top-up
+                              </Button>
+                            )}
                           </div>
                         </TableCell>
                         <TableCell className="font-mono">
