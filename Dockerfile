@@ -59,6 +59,9 @@ RUN touch src/lib.rs src/bin/server.rs src/bin/cli.rs
 # Rebuild - dependencies cached, only source files recompile
 RUN cargo build --release --bin yalr-server --bin yalr-cli
 
+# Run tests to ensure nothing is broken
+RUN cargo test --lib
+
 # Runtime image
 FROM debian:trixie-slim
 

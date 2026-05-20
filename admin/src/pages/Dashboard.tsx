@@ -292,6 +292,7 @@ export default function Dashboard() {
           onOpenChange={setTopupDialogOpen}
           providerSlug={selectedProvider.slug}
           providerName={selectedProvider.name}
+          supportedPaymentMethods={selectedProvider.payment_options}
         />
       )}
     </div>

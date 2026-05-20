@@ -95,7 +95,7 @@ pub struct TopupRequest {
 }
 
 /// Currency type for topup amounts.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum CurrencyType {
     Sats,
@@ -191,17 +191,19 @@ mod tests {
 
     #[test]
     fn test_topup_request_deserialization() {
-        let json = r#"{"amount_usd": 10.5, "preferred_method": "lightning"}"#;
+        let json = r#"{"amount": 1050000, "currency": "usd_micro", "preferred_method": "lightning"}"#;
         let request: TopupRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.amount_usd, 10.5);
+        assert_eq!(request.amount, 1050000);
+        assert_eq!(request.currency, CurrencyType::UsdMicro);
         assert_eq!(request.preferred_method, Some(PaymentMethodPreference::Lightning));
     }
 
     #[test]
     fn test_topup_request_default_preferred_method() {
-        let json = r#"{"amount_usd": 10.5}"#;
+        let json = r#"{"amount": 1000, "currency": "sats"}"#;
         let request: TopupRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.amount_usd, 10.5);
+        assert_eq!(request.amount, 1000);
+        assert_eq!(request.currency, CurrencyType::Sats);
         assert_eq!(request.preferred_method, None);
     }
 }

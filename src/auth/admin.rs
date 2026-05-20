@@ -9,10 +9,18 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use crate::state::AppState;
-use crate::db::{User, UserType};
+use crate::db::{User, UserType, ApiKey};
 use async_trait::async_trait;
 
-pub struct UserExtractor(pub User);
+/// Authenticated user context with optional API key information
+#[derive(Clone)]
+pub struct AuthenticatedUser {
+    pub user: User,
+    /// API key used for authentication (only set when authenticating via API key)
+    pub api_key: Option<ApiKey>,
+}
+
+pub struct UserExtractor(pub AuthenticatedUser);
 
 #[async_trait]
 impl<S> FromRequestParts<S> for UserExtractor
@@ -23,14 +31,14 @@ where
 
     async fn from_request_parts(req: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         req.extensions
-            .get::<User>()
+            .get::<AuthenticatedUser>()
             .cloned()
             .map(UserExtractor)
             .ok_or((StatusCode::UNAUTHORIZED, "User not found in request".to_string()))
     }
 }
 
-pub struct AdminExtractor(pub User);
+pub struct AdminExtractor(pub AuthenticatedUser);
 
 #[async_trait]
 impl<S> FromRequestParts<S> for AdminExtractor
@@ -40,16 +48,16 @@ where
     type Rejection = (StatusCode, String);
 
     async fn from_request_parts(req: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let user = req.extensions
-            .get::<User>()
+        let auth_user = req.extensions
+            .get::<AuthenticatedUser>()
             .cloned()
             .ok_or((StatusCode::UNAUTHORIZED, "User not found in request".to_string()))?;
         
-        if !user.is_admin {
+        if !auth_user.user.is_admin {
             return Err((StatusCode::FORBIDDEN, "Admin access required".to_string()));
         }
         
-        Ok(AdminExtractor(user))
+        Ok(AdminExtractor(auth_user))
     }
 }
 
@@ -306,8 +314,12 @@ pub async fn auth_middleware(
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             
-            // Attach user to request extensions
-            req.extensions_mut().insert(user);
+            // Attach authenticated user to request extensions
+            let authenticated_user = AuthenticatedUser {
+                user,
+                api_key: None,
+            };
+            req.extensions_mut().insert(authenticated_user);
             return Ok(next.run(req).await);
         } else if auth.starts_with("Bearer ") {
             // Bearer token auth - check session or API key
@@ -318,14 +330,18 @@ pub async fn auth_middleware(
                 // First check session
                 if let Some(session) = session_store.validate(token).await {
                     if let Ok(Some(user)) = state.db.get_user_by_username(&session.username).await {
-                        req.extensions_mut().insert(user);
+                        let authenticated_user = AuthenticatedUser {
+                            user,
+                            api_key: None,
+                        };
+                        req.extensions_mut().insert(authenticated_user);
                         return Ok(next.run(req).await);
                     }
                 }
                 
                 // Then check API key
-                if let Some(user) = validate_api_key(&state, token).await {
-                    req.extensions_mut().insert(user);
+                if let Some(authenticated_user) = validate_api_key(&state, token).await {
+                    req.extensions_mut().insert(authenticated_user);
                     return Ok(next.run(req).await);
                 }
             }
@@ -370,8 +386,12 @@ pub async fn admin_middleware(
                 return Err(StatusCode::FORBIDDEN);
             }
             
-            // Attach user to request extensions
-            req.extensions_mut().insert(user);
+            // Attach authenticated user to request extensions
+            let authenticated_user = AuthenticatedUser {
+                user,
+                api_key: None,
+            };
+            req.extensions_mut().insert(authenticated_user);
             return Ok(next.run(req).await);
         } else if auth.starts_with("Bearer ") {
             // Bearer token auth - check session or API key
@@ -383,7 +403,11 @@ pub async fn admin_middleware(
                 if let Some(session) = session_store.validate(token).await {
                     if session.is_admin {
                         if let Ok(Some(user)) = state.db.get_user_by_username(&session.username).await {
-                            req.extensions_mut().insert(user);
+                            let authenticated_user = AuthenticatedUser {
+                                user,
+                                api_key: None,
+                            };
+                            req.extensions_mut().insert(authenticated_user);
                             return Ok(next.run(req).await);
                         }
                     } else {
@@ -392,9 +416,9 @@ pub async fn admin_middleware(
                 }
                 
                 // Then check API key (admin only)
-                if let Some(user) = validate_api_key(&state, token).await {
-                    if user.is_admin {
-                        req.extensions_mut().insert(user);
+                if let Some(authenticated_user) = validate_api_key(&state, token).await {
+                    if authenticated_user.user.is_admin {
+                        req.extensions_mut().insert(authenticated_user);
                         return Ok(next.run(req).await);
                     } else {
                         return Err(StatusCode::FORBIDDEN);
@@ -407,7 +431,7 @@ pub async fn admin_middleware(
     Err(StatusCode::UNAUTHORIZED)
 }
 
-async fn validate_api_key(state: &Arc<AppState>, token: &str) -> Option<User> {
+async fn validate_api_key(state: &Arc<AppState>, token: &str) -> Option<AuthenticatedUser> {
     use sha2::{Digest, Sha256};
     
     // Hash the provided token
@@ -423,7 +447,10 @@ async fn validate_api_key(state: &Arc<AppState>, token: &str) -> Option<User> {
             if !is_expired {
                 // Get the user associated with this API key
                 if let Ok(Some(user)) = state.db.get_user_by_id(api_key.user_id).await {
-                    return Some(user);
+                    return Some(AuthenticatedUser {
+                        user,
+                        api_key: Some(api_key),
+                    });
                 }
             }
         }

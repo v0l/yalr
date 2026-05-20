@@ -12,10 +12,10 @@ use crate::db::NewApiKey;
 
 pub async fn create_api_key(
     State(state): State<Arc<AppState>>,
-    UserExtractor(user): UserExtractor,
+    UserExtractor(authenticated_user): UserExtractor,
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<Json<ApiKeyResponse>, (StatusCode, String)> {
-    let user_id = user.id;
+    let user_id = authenticated_user.user.id;
     
     let plain_key = generate_api_key();
     let key_hash = hash_api_key(&plain_key);
@@ -86,9 +86,9 @@ pub async fn create_api_key_for_user(
 
 pub async fn list_api_keys(
     State(state): State<Arc<AppState>>,
-    UserExtractor(user): UserExtractor,
+    UserExtractor(authenticated_user): UserExtractor,
 ) -> Result<Json<Vec<ApiKeyListItem>>, (StatusCode, String)> {
-    let keys = state.db.list_api_keys_for_user(user.id)
+    let keys = state.db.list_api_keys_for_user(authenticated_user.user.id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 

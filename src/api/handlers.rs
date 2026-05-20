@@ -888,14 +888,14 @@ pub async fn get_metrics_history(State(state): State<std::sync::Arc<AppState>>) 
 #[axum::debug_handler]
 pub async fn chat_handler(
     State(state): State<std::sync::Arc<AppState>>,
-    Extension(user): Extension<crate::db::User>,
+    Extension(authenticated_user): Extension<crate::auth::admin::AuthenticatedUser>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, String)> {
     if request.stream.unwrap_or(false) {
-        let stream_response = chat_completions_stream(State(state), Extension(user), Json(request)).await;
+        let stream_response = chat_completions_stream(State(state), Extension(authenticated_user), Json(request)).await;
         Ok(stream_response.into_response())
     } else {
-        let response = chat_completions_handler(State(state), Extension(user), Json(request)).await?;
+        let response = chat_completions_handler(State(state), Extension(authenticated_user), Json(request)).await?;
         Ok(response.into_response())
     }
 }
@@ -903,9 +903,11 @@ pub async fn chat_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_handler(
     State(state): State<std::sync::Arc<AppState>>,
-    Extension(user): Extension<crate::db::User>,
+    Extension(authenticated_user): Extension<crate::auth::admin::AuthenticatedUser>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Json<ChatCompletionResponse>, (axum::http::StatusCode, String)> {
+    let user = &authenticated_user.user;
+    
     tracing::info!(
         model = request.model,
         stream = false,
@@ -949,8 +951,8 @@ pub async fn chat_completions_handler(
     let metrics_user = crate::metrics::MetricsUser {
         id: Some(user.id),
         name: user.username.clone(),
-        api_key_id: None,
-        api_key_name: None,
+        api_key_id: authenticated_user.api_key.as_ref().map(|k| k.id),
+        api_key_name: authenticated_user.api_key.as_ref().map(|k| k.name.clone()),
     };
 
     match state.config.router.chat_completions(&request, Some(metrics_user)).await {
@@ -990,9 +992,11 @@ pub async fn chat_completions_handler(
 #[axum::debug_handler]
 pub async fn chat_completions_stream(
     State(state): State<std::sync::Arc<AppState>>,
-    Extension(user): Extension<crate::db::User>,
+    Extension(authenticated_user): Extension<crate::auth::admin::AuthenticatedUser>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>> + Send + 'static>, (axum::http::StatusCode, String)> {
+    let user = &authenticated_user.user;
+    
     tracing::info!(
         model = request.model,
         stream = true,
@@ -1045,8 +1049,8 @@ pub async fn chat_completions_stream(
     let metrics_user = crate::metrics::MetricsUser {
         id: Some(user.id),
         name: user.username.clone(),
-        api_key_id: None,
-        api_key_name: None,
+        api_key_id: authenticated_user.api_key.as_ref().map(|k| k.id),
+        api_key_name: authenticated_user.api_key.as_ref().map(|k| k.name.clone()),
     };
 
     let model = request.model.clone();

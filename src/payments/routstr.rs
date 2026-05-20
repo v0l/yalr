@@ -15,7 +15,7 @@ use axum::{
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::db::User;
+use crate::auth::admin::AuthenticatedUser;
 use crate::state::AppState;
 
 /// GET /v1/info — Node information (per RIP-01)
@@ -40,8 +40,9 @@ pub async fn routstr_info(State(state): State<Arc<AppState>>) -> axum::response:
 /// GET /v1/balance/info — Current balance for authenticated user (per RIP-01)
 pub async fn balance_info(
     State(state): State<Arc<AppState>>,
-    Extension(user): Extension<User>,
+    Extension(authenticated_user): Extension<AuthenticatedUser>,
 ) -> axum::response::Response {
+    let user = &authenticated_user.user;
     let payments = match &state.payments_state {
         Some(ps) => ps,
         None => return payments_disabled(),
@@ -74,9 +75,10 @@ pub async fn balance_info(
 /// Body must contain an `invoice` (Bolt11) to pay to.
 pub async fn balance_refund(
     State(state): State<Arc<AppState>>,
-    Extension(user): Extension<User>,
+    Extension(authenticated_user): Extension<AuthenticatedUser>,
     Json(body): Json<RefundRequest>,
 ) -> axum::response::Response {
+    let user = &authenticated_user.user;
     let payments = match &state.payments_state {
         Some(ps) => ps,
         None => return payments_disabled(),
@@ -152,9 +154,10 @@ pub async fn balance_refund(
 /// POST /lightning/invoice — Create a Bolt11 invoice for top-up (per RIP-08)
 pub async fn create_lightning_invoice(
     State(state): State<Arc<AppState>>,
-    Extension(user): Extension<User>,
+    Extension(authenticated_user): Extension<AuthenticatedUser>,
     Json(body): Json<CreateInvoiceRequest>,
 ) -> axum::response::Response {
+    let user = &authenticated_user.user;
     let payments = match &state.payments_state {
         Some(ps) => ps,
         None => return payments_disabled(),
@@ -251,7 +254,7 @@ pub async fn check_lightning_invoice(
 /// an invoice for topping up the provider's balance.
 pub async fn create_provider_invoice(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<User>, // Admin authentication
+    Extension(_authenticated_user): Extension<AuthenticatedUser>, // Admin authentication
     Path(slug): Path<String>,
     Json(body): Json<CreateInvoiceRequest>,
 ) -> axum::response::Response {
