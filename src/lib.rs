@@ -8,7 +8,7 @@ pub mod providers;
 pub mod router;
 pub mod state;
 
-pub use metrics::{HealthConfig, HealthState, ProviderHealthState};
+pub use metrics::{HealthConfig, HealthState};
 
 // Re-export types from providers module for centralized type management
 pub use providers::{

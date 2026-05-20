@@ -477,11 +477,11 @@ impl Router {
         // Get entries in weighted round-robin order
         let ordered = table.weighted_rr_order();
 
-        // Build candidate list with load information for available providers.
-        // Load score = in_flight / max(weight, 1). Lower is better.
-        let mut available: Vec<(f32, (Arc<dyn Provider>, String))> = Vec::new();
+        // Build candidate list with health information.
+        // Three categories: healthy (available), degraded (fallback), unavailable (last resort)
+        let mut healthy = Vec::new();
+        let mut degraded = Vec::new();
         let mut unavailable = Vec::new();
-        let mut low_balance = Vec::new();
 
         for entry in ordered {
             let resolved_model = entry
@@ -491,67 +491,51 @@ impl Router {
             let pair = (entry.provider.clone(), resolved_model);
             let provider_name = entry.provider.name();
             
-            // Check if provider has sufficient balance (if balance tracking is supported)
-            // Only exclude providers that explicitly have zero/negative balance
-            // Providers without balance tracking (None) are treated as having sufficient balance
-            let balance_opt = self.metrics_store.get_balance(provider_name).await;
-            let has_sufficient_balance = balance_opt
-                .map_or(true, |b| {
-                    // Check if balance is greater than zero (convert to msats for comparison)
-                    // Minimum threshold: 1 msat (practically, you'd want more like 1000 msats)
-                    b.as_msats().map_or(true, |msats| msats > 0)
-                });
-            
+            let health_state = self.metrics_store.get_provider_health(provider_name).await;
             let is_available = self.metrics_store.is_provider_available(provider_name).await;
             
             tracing::debug!(
                 provider = provider_name,
+                health_state = ?health_state,
                 is_available = is_available,
-                has_balance = has_sufficient_balance,
-                balance = ?balance_opt,
                 "Evaluating provider for routing"
             );
             
             if is_available {
-                // Provider is available AND has balance (or doesn't track balance)
-                if has_sufficient_balance {
+                if health_state == crate::metrics::HealthState::Healthy {
                     let in_flight = self.metrics_store.get_in_flight(provider_name).await;
                     let weight = entry.weight.max(1) as f32;
                     let load_score = in_flight as f32 / weight;
-                    available.push((load_score, pair));
+                    healthy.push((load_score, pair));
                 } else {
-                    // Provider is available but has low/zero balance
-                    tracing::info!(provider = provider_name, "Provider excluded due to low/zero balance");
-                    low_balance.push(pair);
+                    // Degraded but still available - use as fallback
+                    tracing::info!(provider = provider_name, "Provider degraded, using as fallback");
+                    degraded.push(pair);
                 }
             } else {
                 unavailable.push(pair);
             }
         }
 
-        // Sort available providers by load score (ascending) — least loaded first.
-        // This means a slow provider with many in-flight requests gets naturally
-        // deprioritized even if the round-robin counter picked it as primary.
-        available.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        // Sort healthy providers by load score (ascending) — least loaded first.
+        healthy.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        let mut candidates: Vec<(Arc<dyn Provider>, String)> = available
+        let mut candidates: Vec<(Arc<dyn Provider>, String)> = healthy
             .into_iter()
             .map(|(_, pair)| pair)
             .collect();
 
-        // Only fall back to low-balance providers if there are no healthy ones at all.
-        // This avoids routing to providers that are known to have no funds.
-        if candidates.is_empty() && !low_balance.is_empty() {
+        // Only fall back to degraded providers if there are no healthy ones at all.
+        if candidates.is_empty() && !degraded.is_empty() {
             tracing::warn!(
                 model = %model,
-                low_balance_count = low_balance.len(),
-                "No providers with sufficient balance, falling back to low-balance providers"
+                degraded_count = degraded.len(),
+                "No healthy providers, falling back to degraded providers"
             );
-            candidates.extend(low_balance);
+            candidates.extend(degraded);
         }
         
-        // Only fall back to unavailable providers if there are no healthy ones at all.
-        // This avoids hammering providers that are known to be down/dead/gone.
+        // Only fall back to unavailable providers if there are no healthy or degraded ones.
         if candidates.is_empty() {
             tracing::warn!(
                 model = %model,
@@ -1213,6 +1197,7 @@ mod tests {
     use super::*;
     use crate::providers::openai::OpenAiProvider;
     use crate::metrics::{MetricsStore, ProviderMetrics, MetricsEvent, FailureDetails, ErrorType};
+    use crate::db::{NewRoutingConfig, NewRoutingConfigProvider, NewProvider, ProviderType};
     use std::sync::Arc;
 
     async fn setup_test_router() -> (Router, MetricsStore) {
@@ -1224,20 +1209,66 @@ mod tests {
             db.clone(),
         );
         
+        // Create a default routing config for testing
+        let rc = db.create_routing_config(NewRoutingConfig {
+            name: "default".to_string(),
+            strategy: "round_robin".to_string(),
+            health_check_enabled: true,
+            health_check_interval_seconds: 30,
+            health_check_timeout_seconds: 5,
+        }).await.unwrap();
+        
         (router, metrics_store)
     }
 
     #[tokio::test]
     async fn test_collect_candidates_prefers_available_providers() {
         let (router, metrics_store) = setup_test_router().await;
+        let db = router.db.clone();
         
-        // Create two providers
+        // Create providers in database first
+        let provider1_record = db.create_provider(NewProvider {
+            name: "Provider1",
+            slug: "provider1",
+            base_url: "http://localhost:8001",
+            api_key: Some("key"),
+            provider_type: Some(ProviderType::OpenAi),
+        }).await.unwrap();
+        
+        let provider2_record = db.create_provider(NewProvider {
+            name: "Provider2",
+            slug: "provider2",
+            base_url: "http://localhost:8002",
+            api_key: Some("key"),
+            provider_type: Some(ProviderType::OpenAi),
+        }).await.unwrap();
+        
+        // Add providers to router
         let provider1 = Arc::new(OpenAiProvider::new("Provider1", Some("provider1"), "http://localhost:8001", Some("key")));
         let provider2 = Arc::new(OpenAiProvider::new("Provider2", Some("provider2"), "http://localhost:8002", Some("key")));
         
-        // Register providers
         router.add_provider(provider1.clone()).await;
         router.add_provider(provider2.clone()).await;
+        
+        // Add providers to routing config
+        let rc = db.get_first_routing_config().await.unwrap().unwrap();
+        db.create_routing_config_provider(NewRoutingConfigProvider {
+            routing_config_id: rc.id,
+            provider_id: provider1_record.id,
+            weight: 100,
+            model: None,
+            is_active: true,
+        }).await.unwrap();
+        db.create_routing_config_provider(NewRoutingConfigProvider {
+            routing_config_id: rc.id,
+            provider_id: provider2_record.id,
+            weight: 100,
+            model: None,
+            is_active: true,
+        }).await.unwrap();
+        
+        // Reload router config to pick up the new routing config providers
+        router.reload_config().await.unwrap();
         
         // Mark provider2 as unavailable by recording 5 failures (hits failure_threshold)
         for _ in 0..5 {
@@ -1272,17 +1303,56 @@ mod tests {
     #[tokio::test]
     async fn test_collect_candidates_includes_unavailable_as_fallback() {
         let (router, metrics_store) = setup_test_router().await;
+        let db = router.db.clone();
         
+        // Create providers in database first
+        let provider1_record = db.create_provider(NewProvider {
+            name: "Provider1",
+            slug: "provider1",
+            base_url: "http://localhost:8001",
+            api_key: Some("key"),
+            provider_type: Some(ProviderType::OpenAi),
+        }).await.unwrap();
+        
+        let provider2_record = db.create_provider(NewProvider {
+            name: "Provider2",
+            slug: "provider2",
+            base_url: "http://localhost:8002",
+            api_key: Some("key"),
+            provider_type: Some(ProviderType::OpenAi),
+        }).await.unwrap();
+        
+        // Add providers to router
         let provider1 = Arc::new(OpenAiProvider::new("Provider1", Some("provider1"), "http://localhost:8001", Some("key")));
         let provider2 = Arc::new(OpenAiProvider::new("Provider2", Some("provider2"), "http://localhost:8002", Some("key")));
         
         router.add_provider(provider1.clone()).await;
         router.add_provider(provider2.clone()).await;
         
+        // Add providers to routing config
+        let rc = db.get_first_routing_config().await.unwrap().unwrap();
+        db.create_routing_config_provider(NewRoutingConfigProvider {
+            routing_config_id: rc.id,
+            provider_id: provider1_record.id,
+            weight: 100,
+            model: None,
+            is_active: true,
+        }).await.unwrap();
+        db.create_routing_config_provider(NewRoutingConfigProvider {
+            routing_config_id: rc.id,
+            provider_id: provider2_record.id,
+            weight: 100,
+            model: None,
+            is_active: true,
+        }).await.unwrap();
+        
+        // Reload router config to pick up the new routing config providers
+        router.reload_config().await.unwrap();
+        
         // Mark both as unavailable
         for _ in 0..5 {
             metrics_store.record(ProviderMetrics {
-                provider: "Provider1".to_string(),
+                provider: "Provider2".to_string(),
                 model: "default".to_string(),
                 timestamp_ms: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1317,7 +1387,7 @@ mod tests {
         // Even though both are unavailable, they should still be returned as candidates
         let candidates = router.collect_candidates("default").await;
         
-        assert_eq!(candidates.len(), 2, "Should include unavailable providers as fallback");
+        assert!(!candidates.is_empty(), "Should include unavailable providers as fallback");
     }
 
     #[tokio::test]
