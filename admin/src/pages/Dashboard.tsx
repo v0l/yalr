@@ -178,47 +178,49 @@ export default function Dashboard() {
       </div>
       <p className="text-sm text-muted-foreground">Overview of your YALR instance</p>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Total Requests</CardTitle>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <Card className="border-2">
+          <CardHeader className="pb-2 pt-3 px-3">
+            <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Total Requests</CardTitle>
           </CardHeader>
-          <CardContent>
-            <p className="text-3xl font-bold">{totalRequests.toLocaleString()}</p>
-            <div className="flex gap-3 mt-1 text-sm">
+          <CardContent className="px-3 pb-3">
+            <p className="text-2xl font-bold">{totalRequests.toLocaleString()}</p>
+            <div className="flex gap-2 mt-1 text-xs">
               <span className="text-emerald-600 dark:text-emerald-400">{totalSuccesses.toLocaleString()} ok</span>
               {totalFailures > 0 && <span className="text-destructive">{totalFailures.toLocaleString()} fail</span>}
             </div>
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Providers</CardTitle>
+        <Card className="border-2">
+          <CardHeader className="pb-2 pt-3 px-3">
+            <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Providers</CardTitle>
           </CardHeader>
-          <CardContent>
-            <p className="text-3xl font-bold">{activeProviders}<span className="text-lg text-muted-foreground">/{providers.length}</span></p>
-            {health?.unhealthy_count && health.unhealthy_count > 0 && (
-              <p className="text-sm text-destructive mt-1">{health.unhealthy_count} down</p>
-            )}
-            {health?.degraded_count && health.degraded_count > 0 && (
-              <p className="text-sm text-amber-500 mt-1">{health.degraded_count} degraded</p>
-            )}
+          <CardContent className="px-3 pb-3">
+            <p className="text-2xl font-bold">{activeProviders}<span className="text-base text-muted-foreground">/{providers.length}</span></p>
+            <div className="mt-1">
+              {health?.unhealthy_count && health.unhealthy_count > 0 && (
+                <p className="text-xs text-destructive">{health.unhealthy_count} down</p>
+              )}
+              {health?.degraded_count && health.degraded_count > 0 && (
+                <p className="text-xs text-amber-500">{health.degraded_count} degraded</p>
+              )}
+            </div>
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Avg Latency</CardTitle>
+        <Card className="border-2">
+          <CardHeader className="pb-2 pt-3 px-3">
+            <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Avg Latency</CardTitle>
           </CardHeader>
-          <CardContent>
-            <p className="text-3xl font-bold">{avgLatency.toFixed(0)}ms</p>
+          <CardContent className="px-3 pb-3">
+            <p className="text-2xl font-bold">{avgLatency.toFixed(0)}ms</p>
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Success Rate</CardTitle>
+        <Card className="border-2">
+          <CardHeader className="pb-2 pt-3 px-3">
+            <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Success Rate</CardTitle>
           </CardHeader>
-          <CardContent>
-            <p className="text-3xl font-bold">
+          <CardContent className="px-3 pb-3">
+            <p className="text-2xl font-bold">
               {totalRequests > 0 ? ((totalSuccesses / totalRequests) * 100).toFixed(1) : '—'}%
             </p>
           </CardContent>
