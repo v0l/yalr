@@ -326,8 +326,18 @@ impl Provider for RoutstrProvider {
         let api_key = self.api_key.as_ref()?;
         let client = Client::new();
         
-        // Build the upstream URL: {base_url}/v1/lightning/invoice
-        let invoice_url = self.base_url.join("v1/lightning/invoice").ok()?;
+        // Note: This implementation uses /v1/balance/lightning/invoice (not RIP-08 /lightning/invoice)
+        // and requires api_key in request body (not Authorization header).
+        // RIP-08 spec: https://github.com/Routstr/protocol/blob/main/RIP-08.md
+        let invoice_url = self.base_url.join("v1/balance/lightning/invoice").ok()?;
+        
+        // Per RIP-08 spec, only amount_sats and purpose are required.
+        // This specific Routstr implementation also requires api_key in the body.
+        let request_body = serde_json::json!({
+            "amount_sats": amount_sats,
+            "purpose": "topup",
+            "api_key": api_key
+        });
         
         tracing::info!(
             provider = self.name(),
@@ -338,11 +348,8 @@ impl Provider for RoutstrProvider {
         
         let response = match client
             .post(invoice_url.as_str())
-            .bearer_auth(api_key)
-            .json(&serde_json::json!({
-                "amount_sats": amount_sats,
-                "purpose": "topup"
-            }))
+            .header("content-type", "application/json")
+            .json(&request_body)
             .send()
             .await
         {
