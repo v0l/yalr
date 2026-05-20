@@ -20,12 +20,30 @@ enum ErrorResponse {
     Nested { detail: NestedDetail },
 }
 
-/// Error detail structure
+/// Error detail structure - code can be string or int (OpenRouter returns int)
 #[derive(Debug, Clone, Deserialize)]
 struct ErrorDetail {
     message: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_string_or_number")]
     code: Option<String>,
+}
+
+/// Deserialize a field that can be either string or integer, returning Option<String>
+/// Reusable helper for error codes and similar fields that vary between providers
+fn deserialize_optional_string_or_number<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    use serde_json::Value;
+
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::String(s) => Ok(Some(s)),
+        Value::Number(n) => Ok(Some(n.to_string())),
+        Value::Null => Ok(None),
+        _ => Err(D::Error::custom("expected string or number")),
+    }
 }
 
 /// Nested detail wrapper for { "detail": { "error": ... } }
