@@ -21,6 +21,9 @@ import type {
   ProviderListItem,
   TopupResponse,
   TopupRequest,
+  UserModelPermission,
+  CreateUserModelPermission,
+  DeleteUserModelPermissionResponse,
 } from '../types'
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL || window.location.origin
@@ -742,6 +745,38 @@ export const api = {
       headers,
     })
     if (!response.ok) throw new Error('Failed to check invoice status')
+    return response.json()
+  },
+
+  // ── Model Access Control ───────────────────────────────────────────
+
+  async listUserModelPermissions(userId: number): Promise<UserModelPermission[]> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/users/${userId}/models`, {
+      headers,
+    })
+    if (!response.ok) throw new Error('Failed to fetch model permissions')
+    return response.json()
+  },
+
+  async createUserModelPermission(data: CreateUserModelPermission): Promise<UserModelPermission> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/users/${data.user_id}/models`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!response.ok) throw new Error('Failed to create model permission')
+    return response.json()
+  },
+
+  async deleteUserModelPermission(userId: number, model: string): Promise<DeleteUserModelPermissionResponse> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/users/${userId}/models/${encodeURIComponent(model)}`, {
+      method: 'DELETE',
+      headers,
+    })
+    if (!response.ok) throw new Error('Failed to delete model permission')
     return response.json()
   },
 }

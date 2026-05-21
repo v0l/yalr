@@ -120,7 +120,7 @@ pub async fn run_with_shutdown<F>(
 
     use crate::auth::admin::{login, logout, auth_status, check_setup_complete, setup_first_user, auth_middleware, admin_middleware};
     use crate::auth::api_keys::{create_api_key, list_api_keys, delete_api_key, disable_api_key, enable_api_key, create_api_key_for_user};
-    use handlers::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, admin_credit_user, admin_debit_user, list_admin_transactions, list_admin_invoices};
+    use handlers::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, admin_credit_user, admin_debit_user, list_admin_transactions, list_admin_invoices, list_user_model_permissions, create_user_model_permission, delete_user_model_permission};
     
     let public_auth_routes = Router::new()
         .route("/auth/setup", post(setup_first_user))
@@ -174,6 +174,9 @@ pub async fn run_with_shutdown<F>(
         .route("/payments/debit", post(admin_debit_user))
         .route("/payments/transactions", get(list_admin_transactions))
         .route("/payments/invoices", get(list_admin_invoices))
+        .route("/users/:user_id/models", get(list_user_model_permissions))
+        .route("/users/:user_id/models", post(create_user_model_permission))
+        .route("/users/:user_id/models/:model", delete(delete_user_model_permission))
         .layer(axum::middleware::from_fn_with_state(state.clone(), admin_middleware));
 
     let all_protected = protected_routes.merge(admin_routes);

@@ -358,6 +358,29 @@ export interface UserBalanceDetail {
   transactions: BalanceTransaction[]
 }
 
+// ── Model Access Control ─────────────────────────────────────────────
+
+export interface UserModelPermission {
+  id: number
+  user_id: number
+  model: string
+  allow: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateUserModelPermission {
+  user_id: number
+  model: string
+  allow: boolean
+}
+
+export interface DeleteUserModelPermissionResponse {
+  message: string
+  user_id: number
+  model: string
+}
+
 export interface LightningInvoice {
   id: number
   user_id: number

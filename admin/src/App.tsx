@@ -9,6 +9,7 @@ import Login from './pages/Login'
 import Setup from './pages/Setup'
 import Users from './pages/Users'
 import UserDetail from './pages/UserDetail'
+import ModelPermissions from './pages/ModelPermissions'
 import Chat from './pages/Chat'
 import Payments from './pages/Payments'
 import { api } from './api/client'
@@ -87,6 +88,7 @@ function App() {
           <Route path="metrics" element={<Metrics />} />
           <Route path="users" element={<Users />} />
           <Route path="users/:id" element={<UserDetail />} />
+          <Route path="users/:userId/models" element={<ModelPermissions />} />
           <Route path="payments" element={<Payments />} />
           <Route path="chat" element={<Chat />} />
         </Route>

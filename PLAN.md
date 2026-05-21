@@ -19,6 +19,7 @@ YALR (Yet Another LLM Router) is an async LLM routing proxy with load balancing,
 | Payments (Beta) | 🟡 Partial | Routstr balance tracking, top-ups, billing guards |
 | Rate Limiting/Quotas | ❌ Pending | Phase 6 - not yet implemented |
 | Per-Model Access Control | ❌ Pending | Future enhancement |
+| **RIP Protocol Compliance** | 🟡 **Partial** | See table below |
 
 ---
 
@@ -264,6 +265,24 @@ CREATE TABLE transactions (
 
 ---
 
+## Routstr Protocol (RIP) Compliance
+
+| RIP | Title | Status | Implementation Notes |
+|-----|-------|--------|---------------------|
+| RIP-01 | Proxy / Payments | ✅ **Partial** | ✅ OpenAI-compatible proxy (`/v1/chat/completions`)<br>✅ `/v1/info` endpoint<br>✅ `/v1/models` endpoint<br>✅ `/v1/balance/info` endpoint<br>✅ `/v1/balance/refund` endpoint<br>❌ Cashu token redemption (not implemented)<br>❌ `/v1/balance/create` (Cashu-based)<br>❌ `/v1/balance/topup` (Cashu-based)<br>❌ `X-Cashu` header protocol |
+| RIP-02 | Discovery | ❌ **Not Started** | ❌ Nostr Kind 38421 Provider Announcements<br>❌ Nostr Kind 38000 Recommendations<br>❌ Nostr relay subscription/publishing |
+| RIP-03 | Clients | 🟡 **Partial** | ✅ OpenAI API compatibility (drop-in replacement)<br>✅ Ephemeral auth via API keys (`sk-...`)<br>✅ Balance tracking per user<br>❌ Cashu-as-Key workflow (token minting/blinding)<br>❌ Automatic overpay-then-refund cycle<br>❌ Client-side wallet management (NIP-60) |
+| RIP-04 | Auditing | 🟡 **Partial** | ✅ Uptime/health checks via `/v1/models`<br>✅ Latency tracking in MetricsStore<br>✅ Provider health states (Healthy/Degraded/Unhealthy)<br>❌ Nostr-based audit event publishing<br>❌ Public audit score aggregation |
+| RIP-05 | Pricing | ✅ **Complete** | ✅ Millisat (msat) as base unit<br>✅ Per-token pricing (input/output)<br>✅ Request fees support<br>✅ `/v1/models` exposes pricing<br>✅ Max cost calculation<br>✅ Client-side cost verification support |
+| RIP-06 | Routing | ✅ **Complete** | ✅ Provider selection algorithms<br>✅ Weighted scoring (price/trust/performance)<br>✅ Failover hierarchies<br>✅ Model matching filters<br>✅ Round-robin load balancing |
+| RIP-07 | Admin API | ✅ **Complete** | ✅ Settings management (via DB)<br>✅ Upstream providers CRUD<br>✅ Models management<br>✅ Wallet/balance viewing<br>✅ Logs/tracing (via `tracing`) |
+| RIP-08 | Payment Methods | ✅ **Complete** | ✅ Lightning Bolt11 invoices (`/lightning/invoice`)<br>✅ Invoice status polling (`/lightning/invoice/:hash/status`)<br>✅ Provider top-up via upstream calls<br>✅ RIP-08 gateway flow (Lightning → internal balance)<br>❌ NIP-47 (Nostr Wallet Connect)<br>❌ Bolt12 offers<br>❌ On-chain Bitcoin |
+| RIP-09 | Evaluations | ❌ **Not Started** | ❌ Mystery shopping benchmarks<br>❌ Model authenticity verification<br>❌ Performance benchmarks (TPS/TTFT)<br>❌ Safety evaluations |
+| RIP-10 | Marketplace | ❌ **Not Started** | ❌ Decentralized order book<br>❌ Limit sell/market buy orders<br>❌ Spot markets |
+| RIP-11 | Specialized Nodes | ❌ **Not Started** | ❌ General/Personal/Worker/Routing node profiles<br>❌ Configuration presets |
+
+---
+
 ## Implementation Phases
 
 ### Phase 1-5: Foundation ✅ COMPLETED
@@ -386,10 +405,12 @@ CREATE TABLE transactions (
 ### Phase 9: Access Control (Future) ❌ PENDING
 
 #### Phase 9a: Model Access Control
-- [ ] Create `user_model_permissions` table
-- [ ] Allow/deny model access per user or role
-- [ ] Check permissions in chat handler
-- [ ] Admin UI for permission management
+- [x] Create `user_model_permissions` table
+- [x] Implement `check_model_access()` with wildcard support
+- [x] Add CRUD endpoints for managing permissions
+- [x] Integrate permission checks in chat handlers
+- [x] Support exact model matches and wildcard (`*`) patterns
+- [x] Add comprehensive unit tests
 
 #### Phase 9b: Role-Based Access (Optional)
 - [ ] Define roles (admin, power_user, regular, restricted)

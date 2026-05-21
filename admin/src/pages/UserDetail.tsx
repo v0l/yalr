@@ -14,7 +14,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
-import { ArrowLeftIcon, PencilIcon, PlusIcon, CopyIcon, BanIcon, TrashIcon } from 'lucide-react'
+import { ArrowLeftIcon, PencilIcon, PlusIcon, CopyIcon, BanIcon, TrashIcon, Shield } from 'lucide-react'
 
 export default function UserDetail() {
   const { id } = useParams<{ id: string }>()
@@ -241,6 +241,24 @@ export default function UserDetail() {
             )}
           </CardContent>
         )}
+      </Card>
+
+      <Separator />
+
+      {/* Model Access Permissions */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Model Access Permissions</CardTitle>
+          <Button size="sm" variant="outline" onClick={() => navigate(`/users/${id}/models`)}>
+            <Shield className="mr-2 h-4 w-4" />
+            Manage Permissions
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Control which models this user can access. Permissions can be set to allow or deny specific models, including wildcard rules for all models.
+          </p>
+        </CardContent>
       </Card>
 
       <Separator />

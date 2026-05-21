@@ -1032,6 +1032,118 @@ impl Database {
             .await?;
         Ok(result.rows_affected() > 0)
     }
+
+    // ── Model Access Control ───────────────────────────────────────────
+
+    /// Check if a user has access to a specific model.
+    /// Returns:
+    /// - `Some(true)` if access is explicitly allowed
+    /// - `Some(false)` if access is explicitly denied
+    /// - `None` if no permission rule exists (default: allow)
+    pub async fn check_model_access(
+        &self,
+        user_id: i64,
+        model: &str,
+    ) -> Result<Option<bool>, sqlx::Error> {
+        // First check for exact match
+        let exact_match = sqlx::query_as::<_, (bool,)>(
+            "SELECT allow FROM user_model_permissions WHERE user_id = ? AND model = ?"
+        )
+        .bind(user_id)
+        .bind(model)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some((allow,)) = exact_match {
+            return Ok(Some(allow));
+        }
+
+        // Then check for wildcard match (*)
+        let wildcard_match = sqlx::query_as::<_, (bool,)>(
+            "SELECT allow FROM user_model_permissions WHERE user_id = ? AND model = '*'"
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(wildcard_match.map(|(allow,)| allow))
+    }
+
+    pub async fn create_user_model_permission(
+        &self,
+        perm: NewUserModelPermission<'_>,
+    ) -> Result<UserModelPermission, sqlx::Error> {
+        sqlx::query_as::<_, UserModelPermission>(
+            "INSERT INTO user_model_permissions (user_id, model, allow) VALUES (?, ?, ?) RETURNING *"
+        )
+        .bind(perm.user_id)
+        .bind(perm.model)
+        .bind(perm.allow)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn get_user_model_permission(
+        &self,
+        user_id: i64,
+        model: &str,
+    ) -> Result<Option<UserModelPermission>, sqlx::Error> {
+        sqlx::query_as::<_, UserModelPermission>(
+            "SELECT * FROM user_model_permissions WHERE user_id = ? AND model = ?"
+        )
+        .bind(user_id)
+        .bind(model)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn list_user_model_permissions(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<UserModelPermission>, sqlx::Error> {
+        sqlx::query_as::<_, UserModelPermission>(
+            "SELECT * FROM user_model_permissions WHERE user_id = ? ORDER BY model"
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn update_user_model_permission(
+        &self,
+        user_id: i64,
+        model: &str,
+        updates: UpdateUserModelPermission,
+    ) -> Result<UserModelPermission, sqlx::Error> {
+        let mut query = String::from("UPDATE user_model_permissions SET updated_at = CURRENT_TIMESTAMP");
+        
+        if let Some(_allow) = updates.allow {
+            query.push_str(", allow = ?");
+        }
+
+        query.push_str(" WHERE user_id = ? AND model = ? RETURNING *");
+
+        let mut query_builder = sqlx::query_as::<_, UserModelPermission>(&query);
+        
+        if let Some(allow) = updates.allow {
+            query_builder = query_builder.bind(allow);
+        }
+        
+        query_builder.bind(user_id).bind(model).fetch_one(&self.pool).await
+    }
+
+    pub async fn delete_user_model_permission(
+        &self,
+        user_id: i64,
+        model: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM user_model_permissions WHERE user_id = ? AND model = ?")
+            .bind(user_id)
+            .bind(model)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 pub type DbPool = Arc<SqlitePool>;
@@ -1131,6 +1243,30 @@ pub struct UpdateModelPricing {
     pub price_per_request_sats: Option<Option<i64>>,
     pub context_window: Option<Option<i32>>,
     pub max_output_tokens: Option<Option<i32>>,
+}
+
+// ── Model Access Control ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct UserModelPermission {
+    pub id: i64,
+    pub user_id: i64,
+    pub model: String,
+    pub allow: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewUserModelPermission<'a> {
+    pub user_id: i64,
+    pub model: &'a str,
+    pub allow: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateUserModelPermission {
+    pub allow: Option<bool>,
 }
 
 #[cfg(test)]
@@ -1993,5 +2129,224 @@ mod tests {
         assert!(rc1_providers.iter().any(|p| p.provider_id == provider2.id));
         assert!(rc2_providers.iter().any(|p| p.provider_id == provider2.id));
         assert!(rc2_providers.iter().any(|p| p.provider_id == provider3.id));
+    }
+
+    // ── Model Access Control Tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_check_model_access_no_rules_allows() {
+        let db = setup_test_db().await;
+        let user = db.create_user(NewUser {
+            username: Some("test_user"),
+            password_hash: None,
+            external_id: None,
+            user_type: UserType::Internal,
+            is_admin: false,
+        }).await.unwrap();
+
+        // No permission rules exist, should allow by default
+        let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
+        assert!(result.is_none()); // No rule means allow by default
+    }
+
+    #[tokio::test]
+    async fn test_check_model_access_explicit_allow() {
+        let db = setup_test_db().await;
+        let user = db.create_user(NewUser {
+            username: Some("test_user"),
+            password_hash: None,
+            external_id: None,
+            user_type: UserType::Internal,
+            is_admin: false,
+        }).await.unwrap();
+
+        db.create_user_model_permission(NewUserModelPermission {
+            user_id: user.id,
+            model: "gpt-4",
+            allow: true,
+        }).await.unwrap();
+
+        let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
+        assert_eq!(result, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_check_model_access_explicit_deny() {
+        let db = setup_test_db().await;
+        let user = db.create_user(NewUser {
+            username: Some("test_user"),
+            password_hash: None,
+            external_id: None,
+            user_type: UserType::Internal,
+            is_admin: false,
+        }).await.unwrap();
+
+        db.create_user_model_permission(NewUserModelPermission {
+            user_id: user.id,
+            model: "gpt-4",
+            allow: false,
+        }).await.unwrap();
+
+        let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
+        assert_eq!(result, Some(false));
+    }
+
+    #[tokio::test]
+    async fn test_check_model_access_wildcard_allow() {
+        let db = setup_test_db().await;
+        let user = db.create_user(NewUser {
+            username: Some("test_user"),
+            password_hash: None,
+            external_id: None,
+            user_type: UserType::Internal,
+            is_admin: false,
+        }).await.unwrap();
+
+        db.create_user_model_permission(NewUserModelPermission {
+            user_id: user.id,
+            model: "*",
+            allow: true,
+        }).await.unwrap();
+
+        // Wildcard should apply to all models
+        let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
+        assert_eq!(result, Some(true));
+
+        let result2 = db.check_model_access(user.id, "claude-3").await.unwrap();
+        assert_eq!(result2, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_check_model_access_wildcard_deny() {
+        let db = setup_test_db().await;
+        let user = db.create_user(NewUser {
+            username: Some("test_user"),
+            password_hash: None,
+            external_id: None,
+            user_type: UserType::Internal,
+            is_admin: false,
+        }).await.unwrap();
+
+        db.create_user_model_permission(NewUserModelPermission {
+            user_id: user.id,
+            model: "*",
+            allow: false,
+        }).await.unwrap();
+
+        // Wildcard deny should apply to all models
+        let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
+        assert_eq!(result, Some(false));
+    }
+
+    #[tokio::test]
+    async fn test_check_model_access_exact_overrides_wildcard() {
+        let db = setup_test_db().await;
+        let user = db.create_user(NewUser {
+            username: Some("test_user"),
+            password_hash: None,
+            external_id: None,
+            user_type: UserType::Internal,
+            is_admin: false,
+        }).await.unwrap();
+
+        // Set wildcard deny
+        db.create_user_model_permission(NewUserModelPermission {
+            user_id: user.id,
+            model: "*",
+            allow: false,
+        }).await.unwrap();
+
+        // Set specific allow for gpt-4
+        db.create_user_model_permission(NewUserModelPermission {
+            user_id: user.id,
+            model: "gpt-4",
+            allow: true,
+        }).await.unwrap();
+
+        // Exact match should take precedence
+        let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
+        assert_eq!(result, Some(true));
+
+        // Other models should still be denied
+        let result2 = db.check_model_access(user.id, "claude-3").await.unwrap();
+        assert_eq!(result2, Some(false));
+    }
+
+    #[tokio::test]
+    async fn test_list_user_model_permissions() {
+        let db = setup_test_db().await;
+        let user = db.create_user(NewUser {
+            username: Some("test_user"),
+            password_hash: None,
+            external_id: None,
+            user_type: UserType::Internal,
+            is_admin: false,
+        }).await.unwrap();
+
+        db.create_user_model_permission(NewUserModelPermission {
+            user_id: user.id,
+            model: "gpt-4",
+            allow: true,
+        }).await.unwrap();
+        db.create_user_model_permission(NewUserModelPermission {
+            user_id: user.id,
+            model: "claude-3",
+            allow: false,
+        }).await.unwrap();
+
+        let permissions = db.list_user_model_permissions(user.id).await.unwrap();
+        assert_eq!(permissions.len(), 2);
+        assert!(permissions.iter().any(|p| p.model == "gpt-4" && p.allow));
+        assert!(permissions.iter().any(|p| p.model == "claude-3" && !p.allow));
+    }
+
+    #[tokio::test]
+    async fn test_update_user_model_permission() {
+        let db = setup_test_db().await;
+        let user = db.create_user(NewUser {
+            username: Some("test_user"),
+            password_hash: None,
+            external_id: None,
+            user_type: UserType::Internal,
+            is_admin: false,
+        }).await.unwrap();
+
+        db.create_user_model_permission(NewUserModelPermission {
+            user_id: user.id,
+            model: "gpt-4",
+            allow: false,
+        }).await.unwrap();
+
+        db.update_user_model_permission(user.id, "gpt-4", UpdateUserModelPermission {
+            allow: Some(true),
+        }).await.unwrap();
+
+        let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
+        assert_eq!(result, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_delete_user_model_permission() {
+        let db = setup_test_db().await;
+        let user = db.create_user(NewUser {
+            username: Some("test_user"),
+            password_hash: None,
+            external_id: None,
+            user_type: UserType::Internal,
+            is_admin: false,
+        }).await.unwrap();
+
+        db.create_user_model_permission(NewUserModelPermission {
+            user_id: user.id,
+            model: "gpt-4",
+            allow: false,
+        }).await.unwrap();
+
+        let deleted = db.delete_user_model_permission(user.id, "gpt-4").await.unwrap();
+        assert!(deleted);
+
+        // Should return None after deletion (no rule = allow by default)
+        let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
+        assert!(result.is_none());
     }
 }

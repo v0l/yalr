@@ -948,6 +948,32 @@ pub async fn chat_completions_handler(
     };
     // ──────────────────────────────────────────────────────────
 
+    // ── Model Access Control ───────────────────────────────────────
+    // Check if user has access to this model
+    let access_check = state.db.check_model_access(user.id, &request.model).await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to check model access");
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to check model access: {}", e))
+        })?;
+    
+    // If there's an explicit permission rule, enforce it
+    // None means no rule exists, so we allow by default
+    if let Some(allowed) = access_check {
+        if !allowed {
+            return Err((
+                axum::http::StatusCode::FORBIDDEN,
+                serde_json::json!({
+                    "error": {
+                        "message": format!("User does not have access to model '{}'", request.model),
+                        "type": "model_access_denied",
+                    }
+                })
+                .to_string(),
+            ));
+        }
+    }
+    // ──────────────────────────────────────────────────────────
+
     let metrics_user = crate::metrics::MetricsUser {
         id: Some(user.id),
         name: user.username.clone(),
@@ -1044,6 +1070,32 @@ pub async fn chat_completions_stream(
     } else {
         None
     };
+    // ──────────────────────────────────────────────────────────
+
+    // ── Model Access Control ───────────────────────────────────────
+    // Check if user has access to this model
+    let access_check = state.db.check_model_access(user.id, &request.model).await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to check model access");
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to check model access: {}", e))
+        })?;
+    
+    // If there's an explicit permission rule, enforce it
+    // None means no rule exists, so we allow by default
+    if let Some(allowed) = access_check {
+        if !allowed {
+            return Err((
+                axum::http::StatusCode::FORBIDDEN,
+                serde_json::json!({
+                    "error": {
+                        "message": format!("User does not have access to model '{}'", request.model),
+                        "type": "model_access_denied",
+                    }
+                })
+                .to_string(),
+            ));
+        }
+    }
     // ──────────────────────────────────────────────────────────
 
     let metrics_user = crate::metrics::MetricsUser {
@@ -2775,4 +2827,111 @@ pub async fn list_admin_invoices(
     let user_id = params.get("user_id").and_then(|v| v.parse::<i64>().ok());
     let invoices = state.db.list_all_lightning_invoices(user_id, 200).await.unwrap_or_default();
     Json(invoices)
+}
+
+// ── Model Access Control Admin APIs ───────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct UserModelPermissionResponse {
+    pub id: i64,
+    pub user_id: i64,
+    pub model: String,
+    pub allow: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct CreateUserModelPermissionRequest {
+    pub user_id: i64,
+    pub model: String,
+    pub allow: bool,
+}
+
+#[derive(serde::Deserialize)]
+pub struct UpdateUserModelPermissionRequest {
+    pub allow: Option<bool>,
+}
+
+/// GET /api/users/:user_id/models — List model permissions for a user
+#[axum::debug_handler]
+pub async fn list_user_model_permissions(
+    Path(user_id): Path<i64>,
+    State(state): State<std::sync::Arc<AppState>>,
+) -> Result<Json<Vec<UserModelPermissionResponse>>, (axum::http::StatusCode, String)> {
+    let permissions = state.db
+        .list_user_model_permissions(user_id)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let responses: Vec<UserModelPermissionResponse> = permissions
+        .into_iter()
+        .map(|p| UserModelPermissionResponse {
+            id: p.id,
+            user_id: p.user_id,
+            model: p.model,
+            allow: p.allow,
+            created_at: p.created_at,
+            updated_at: p.updated_at,
+        })
+        .collect();
+
+    Ok(Json(responses))
+}
+
+/// POST /api/users/:user_id/models — Create or update model permission for a user
+#[axum::debug_handler]
+pub async fn create_user_model_permission(
+    Path(user_id): Path<i64>,
+    State(state): State<std::sync::Arc<AppState>>,
+    Json(request): Json<CreateUserModelPermissionRequest>,
+) -> Result<Json<UserModelPermissionResponse>, (axum::http::StatusCode, String)> {
+    // Verify user exists
+    state.db.get_user_by_id(user_id).await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, "User not found".to_string()))?;
+
+    // Upsert permission (INSERT OR REPLACE)
+    let permission = sqlx::query_as::<_, crate::db::UserModelPermission>(
+        "INSERT INTO user_model_permissions (user_id, model, allow) VALUES (?, ?, ?)
+         ON CONFLICT(user_id, model) DO UPDATE SET allow = excluded.allow, updated_at = CURRENT_TIMESTAMP
+         RETURNING *"
+    )
+    .bind(request.user_id)
+    .bind(request.model)
+    .bind(request.allow)
+    .fetch_one(&state.db.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(UserModelPermissionResponse {
+        id: permission.id,
+        user_id: permission.user_id,
+        model: permission.model,
+        allow: permission.allow,
+        created_at: permission.created_at,
+        updated_at: permission.updated_at,
+    }))
+}
+
+/// DELETE /api/users/:user_id/models/:model — Remove model permission for a user
+#[axum::debug_handler]
+pub async fn delete_user_model_permission(
+    Path((user_id, model)): Path<(i64, String)>,
+    State(state): State<std::sync::Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let deleted = state.db
+        .delete_user_model_permission(user_id, &model)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if !deleted {
+        return Err((axum::http::StatusCode::NOT_FOUND, "Permission not found".to_string()));
+    }
+
+    Ok(Json(serde_json::json!({
+        "message": "Permission deleted successfully",
+        "user_id": user_id,
+        "model": model
+    })))
 }
