@@ -1,4 +1,5 @@
-use crate::api::handlers::{self, chat_handler};
+use crate::api::chat::chat_handler;
+use crate::api::{health, config, routing, providers, model_pricing, models as model_handlers, responses as responses_handlers, users};
 use crate::api::ws;
 use crate::auth::admin::SessionStore;
 use crate::config::AppConfig;
@@ -120,7 +121,7 @@ pub async fn run_with_shutdown<F>(
 
     use crate::auth::admin::{login, logout, auth_status, check_setup_complete, setup_first_user, auth_middleware, admin_middleware};
     use crate::auth::api_keys::{create_api_key, list_api_keys, delete_api_key, disable_api_key, enable_api_key, create_api_key_for_user};
-    use handlers::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, admin_credit_user, admin_debit_user, list_admin_transactions, list_admin_invoices, list_user_model_permissions, create_user_model_permission, delete_user_model_permission};
+    use users::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, admin_credit_user, admin_debit_user, list_admin_transactions, list_admin_invoices, list_user_model_permissions, create_user_model_permission, delete_user_model_permission};
     
     let public_auth_routes = Router::new()
         .route("/auth/setup", post(setup_first_user))
@@ -133,30 +134,30 @@ pub async fn run_with_shutdown<F>(
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let admin_routes = Router::new()
-        .route("/providers", get(handlers::list_providers))
-        .route("/providers", post(handlers::create_provider))
-        .route("/providers/:slug/topup", post(handlers::create_provider_topup))
-        .route("/providers/:slug", put(handlers::update_provider))
-        .route("/providers/:slug/generate-api-key", post(handlers::generate_provider_api_key))
-        .route("/providers/:slug", delete(handlers::delete_provider))
-        .route("/metrics", get(handlers::get_metrics))
-        .route("/metrics/history", get(handlers::get_metrics_history))
-        .route("/metrics/health", get(handlers::get_health_overview))
-        .route("/config", get(handlers::get_router_config))
-        .route("/routing-configs", get(handlers::list_routing_configs))
-        .route("/routing-configs", post(handlers::create_routing_config))
-        .route("/routing-configs/:id", put(handlers::update_routing_config))
-        .route("/routing-configs/:id", delete(handlers::delete_routing_config))
-        .route("/routing-configs/providers", post(handlers::create_routing_config_provider))
-        .route("/routing-configs/providers/:id", put(handlers::update_routing_config_provider))
-        .route("/routing-configs/providers/:id", delete(handlers::delete_routing_config_provider))
-        .route("/providers/:slug/models", get(handlers::list_provider_models))
-        .route("/models/sync/:provider_slug", get(handlers::sync_provider_models))
-        .route("/models/discrepancies", post(handlers::detect_model_discrepancies))
-        .route("/model-pricing", get(handlers::list_model_pricing))
-        .route("/model-pricing", post(handlers::create_model_pricing))
-        .route("/model-pricing/:model_name", put(handlers::update_model_pricing))
-        .route("/model-pricing/:model_name", delete(handlers::delete_model_pricing))
+        .route("/providers", get(providers::list_providers))
+        .route("/providers", post(providers::create_provider))
+        .route("/providers/:slug/topup", post(providers::create_provider_topup))
+        .route("/providers/:slug", put(providers::update_provider))
+        .route("/providers/:slug/generate-api-key", post(providers::generate_provider_api_key))
+        .route("/providers/:slug", delete(providers::delete_provider))
+        .route("/metrics", get(health::get_metrics))
+        .route("/metrics/history", get(health::get_metrics_history))
+        .route("/metrics/health", get(health::get_health_overview))
+        .route("/config", get(config::get_router_config))
+        .route("/routing-configs", get(routing::list_routing_configs))
+        .route("/routing-configs", post(routing::create_routing_config))
+        .route("/routing-configs/:id", put(routing::update_routing_config))
+        .route("/routing-configs/:id", delete(routing::delete_routing_config))
+        .route("/routing-configs/providers", post(routing::create_routing_config_provider))
+        .route("/routing-configs/providers/:id", put(routing::update_routing_config_provider))
+        .route("/routing-configs/providers/:id", delete(routing::delete_routing_config_provider))
+        .route("/providers/:slug/models", get(model_handlers::list_provider_models))
+        .route("/models/sync/:provider_slug", get(model_handlers::sync_provider_models))
+        .route("/models/discrepancies", post(model_handlers::detect_model_discrepancies))
+        .route("/model-pricing", get(model_pricing::list_model_pricing))
+        .route("/model-pricing", post(model_pricing::create_model_pricing))
+        .route("/model-pricing/:model_name", put(model_pricing::update_model_pricing))
+        .route("/model-pricing/:model_name", delete(model_pricing::delete_model_pricing))
         .route("/api-keys", get(list_api_keys))
         .route("/api-keys", post(create_api_key))
         .route("/api-keys/:id", delete(delete_api_key))
@@ -186,7 +187,7 @@ pub async fn run_with_shutdown<F>(
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let responses_routes = Router::new()
-        .route("/v1/responses", post(handlers::create_response))
+        .route("/v1/responses", post(responses_handlers::create_response))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let routstr_protected_routes = Router::new()
@@ -203,9 +204,9 @@ pub async fn run_with_shutdown<F>(
         .merge(chat_completions_routes)
         .merge(responses_routes)
         .merge(routstr_protected_routes)
-        .route("/v1/models", get(handlers::list_models))
+        .route("/v1/models", get(model_handlers::list_models))
         .route("/v1/info", get(crate::payments::routstr::routstr_info))
-        .route("/api/health", get(handlers::health_check))
+        .route("/api/health", get(health::health_check))
         .fallback(axum::routing::get({
             let admin_ui_path = admin_ui_path.clone();
             move |req: axum::extract::Request| serve_admin_fallback(req, admin_ui_path.clone())
@@ -241,7 +242,7 @@ pub async fn run(
 pub async fn create_test_app(state: Arc<AppState>) -> Router {
     use crate::auth::admin::{login, logout, auth_status, check_setup_complete, setup_first_user, auth_middleware, admin_middleware, AdminExtractor};
     use crate::auth::api_keys::{create_api_key, list_api_keys, delete_api_key, disable_api_key, enable_api_key, create_api_key_for_user};
-    use handlers::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, admin_credit_user, admin_debit_user, list_admin_transactions, list_admin_invoices};
+    use users::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, admin_credit_user, admin_debit_user, list_admin_transactions, list_admin_invoices};
     use tower_http::cors::CorsLayer;
     use tower_http::trace::TraceLayer;
     
@@ -256,28 +257,28 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let admin_routes = Router::new()
-        .route("/providers", get(handlers::list_providers))
-        .route("/providers", post(handlers::create_provider))
-        .route("/providers/:slug", put(handlers::update_provider))
-        .route("/providers/:slug", delete(handlers::delete_provider))
-        .route("/metrics", get(handlers::get_metrics))
-        .route("/metrics/history", get(handlers::get_metrics_history))
-        .route("/metrics/health", get(handlers::get_health_overview))
-        .route("/config", get(handlers::get_router_config))
-        .route("/routing-configs", get(handlers::list_routing_configs))
-        .route("/routing-configs", post(handlers::create_routing_config))
-        .route("/routing-configs/:id", put(handlers::update_routing_config))
-        .route("/routing-configs/:id", delete(handlers::delete_routing_config))
-        .route("/routing-configs/providers", post(handlers::create_routing_config_provider))
-        .route("/routing-configs/providers/:id", put(handlers::update_routing_config_provider))
-        .route("/routing-configs/providers/:id", delete(handlers::delete_routing_config_provider))
-        .route("/providers/:slug/models", get(handlers::list_provider_models))
-        .route("/models/sync/:provider_slug", get(handlers::sync_provider_models))
-        .route("/models/discrepancies", post(handlers::detect_model_discrepancies))
-        .route("/model-pricing", get(handlers::list_model_pricing))
-        .route("/model-pricing", post(handlers::create_model_pricing))
-        .route("/model-pricing/:model_name", put(handlers::update_model_pricing))
-        .route("/model-pricing/:model_name", delete(handlers::delete_model_pricing))
+        .route("/providers", get(providers::list_providers))
+        .route("/providers", post(providers::create_provider))
+        .route("/providers/:slug", put(providers::update_provider))
+        .route("/providers/:slug", delete(providers::delete_provider))
+        .route("/metrics", get(health::get_metrics))
+        .route("/metrics/history", get(health::get_metrics_history))
+        .route("/metrics/health", get(health::get_health_overview))
+        .route("/config", get(config::get_router_config))
+        .route("/routing-configs", get(routing::list_routing_configs))
+        .route("/routing-configs", post(routing::create_routing_config))
+        .route("/routing-configs/:id", put(routing::update_routing_config))
+        .route("/routing-configs/:id", delete(routing::delete_routing_config))
+        .route("/routing-configs/providers", post(routing::create_routing_config_provider))
+        .route("/routing-configs/providers/:id", put(routing::update_routing_config_provider))
+        .route("/routing-configs/providers/:id", delete(routing::delete_routing_config_provider))
+        .route("/providers/:slug/models", get(model_handlers::list_provider_models))
+        .route("/models/sync/:provider_slug", get(model_handlers::sync_provider_models))
+        .route("/models/discrepancies", post(model_handlers::detect_model_discrepancies))
+        .route("/model-pricing", get(model_pricing::list_model_pricing))
+        .route("/model-pricing", post(model_pricing::create_model_pricing))
+        .route("/model-pricing/:model_name", put(model_pricing::update_model_pricing))
+        .route("/model-pricing/:model_name", delete(model_pricing::delete_model_pricing))
         .route("/api-keys", get(list_api_keys))
         .route("/api-keys", post(create_api_key))
         .route("/api-keys/:id", delete(delete_api_key))
@@ -304,7 +305,7 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let responses_routes = Router::new()
-        .route("/v1/responses", post(handlers::create_response))
+        .route("/v1/responses", post(responses_handlers::create_response))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let routstr_protected_routes = Router::new()
@@ -318,9 +319,9 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .merge(chat_completions_routes)
         .merge(responses_routes)
         .merge(routstr_protected_routes)
-        .route("/v1/models", get(handlers::list_models))
+        .route("/v1/models", get(model_handlers::list_models))
         .route("/v1/info", get(crate::payments::routstr::routstr_info))
-        .route("/api/health", get(handlers::health_check))
+        .route("/api/health", get(health::health_check))
         .route("/api/metrics/ws", get(ws::ws_metrics_handler))
         .nest("/api", public_auth_routes.merge(all_protected))
         .fallback_service(axum::routing::get({

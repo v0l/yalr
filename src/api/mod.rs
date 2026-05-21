@@ -1,3 +1,13 @@
+pub mod chat;
+pub mod config;
+pub mod health;
+pub mod model_pricing;
+pub mod models;
+pub mod providers;
+pub mod responses;
+pub mod routing;
+pub mod shared;
+pub mod users;
 pub mod handlers;
 pub mod server;
 pub mod ws;
