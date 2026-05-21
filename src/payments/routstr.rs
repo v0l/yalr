@@ -12,11 +12,113 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::auth::admin::AuthenticatedUser;
 use crate::state::AppState;
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+/// Simple error response helper — replaces repetitive `serde_json::json!({ "error": ... })`
+fn error_response(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
+    (status, Json(ErrorResponse { error: message.into() })).into_response()
+}
+
+fn payments_disabled() -> axum::response::Response {
+    error_response(StatusCode::NOT_FOUND, "Payments not enabled")
+}
+
+// ── Request types ─────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RefundRequest {
+    /// Bolt11 invoice to pay the refund to
+    pub invoice: String,
+    /// Optional: max amount in sats to refund (defaults to full balance)
+    pub amount_sats: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateInvoiceRequest {
+    pub amount_sats: u64,
+    #[serde(default = "default_invoice_memo")]
+    pub memo: String,
+    pub expire_seconds: Option<u32>,
+}
+
+fn default_invoice_memo() -> String {
+    "YALR balance top-up".to_string()
+}
+
+// ── Response types ────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+#[derive(Serialize)]
+struct RoutstrInfoResponse {
+    name: &'static str,
+    description: &'static str,
+    version: &'static str,
+    payments: RoutstrInfoPayments,
+}
+
+#[derive(Serialize)]
+struct RoutstrInfoPayments {
+    enabled: bool,
+    methods: Vec<&'static str>,
+}
+
+#[derive(Serialize)]
+struct BalanceInfoResponse {
+    balance_msat: i64,
+    balance_sats: i64,
+    available_sats: i64,
+}
+
+#[derive(Serialize)]
+struct RefundResponse {
+    refunded_msat: i64,
+    refunded_sats: i64,
+    payment_hash: String,
+}
+
+#[derive(Serialize)]
+struct InvoiceStatusResponse {
+    status: String,
+    payment_hash: String,
+    amount_sats: i64,
+    created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_at: Option<String>,
+}
+
+/// Upstream invoice request body (RIP-08)
+#[derive(Serialize)]
+struct ProviderInvoiceRequest {
+    amount_sats: u64,
+    purpose: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+}
+
+/// Upstream invoice response from a Routstr provider
+#[derive(Deserialize)]
+struct UpstreamInvoiceResponse {
+    #[serde(default)]
+    bolt11: Option<String>,
+    #[serde(default)]
+    payment_hash: Option<String>,
+    #[serde(default)]
+    expires_at: Option<i64>,
+    #[serde(default)]
+    payment_url: Option<String>,
+}
+
+// ── Endpoints ─────────────────────────────────────────────────────────────
 
 /// GET /v1/info — Node information (per RIP-01)
 pub async fn routstr_info(State(state): State<Arc<AppState>>) -> axum::response::Response {
@@ -25,15 +127,15 @@ pub async fn routstr_info(State(state): State<Arc<AppState>>) -> axum::response:
         None => return payments_disabled(),
     };
 
-    Json(serde_json::json!({
-        "name": "yalr",
-        "description": "YALR - LLM Router",
-        "version": env!("CARGO_PKG_VERSION"),
-        "payments": {
-            "enabled": true,
-            "methods": if payments.lightning_service.is_some() { vec!["lightning"] } else { vec![] },
+    Json(RoutstrInfoResponse {
+        name: "yalr",
+        description: "YALR - LLM Router",
+        version: env!("CARGO_PKG_VERSION"),
+        payments: RoutstrInfoPayments {
+            enabled: true,
+            methods: if payments.lightning_service.is_some() { vec!["lightning"] } else { vec![] },
         },
-    }))
+    })
     .into_response()
 }
 
@@ -51,20 +153,16 @@ pub async fn balance_info(
     match payments.balance_service.get_balance(user.id).await {
         Ok(balance_msat) => {
             let sats = balance_msat / 1000;
-            Json(serde_json::json!({
-                "balance_msat": balance_msat,
-                "balance_sats": sats,
-                "available_sats": sats,
-            }))
+            Json(BalanceInfoResponse {
+                balance_msat,
+                balance_sats: sats,
+                available_sats: sats,
+            })
             .into_response()
         }
         Err(e) => {
             tracing::error!(user_id = user.id, error = %e, "Failed to get balance");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Failed to get balance"})),
-            )
-                .into_response()
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to get balance")
         }
     }
 }
@@ -86,13 +184,7 @@ pub async fn balance_refund(
 
     let lightning = match &payments.lightning_service {
         Some(ls) => ls.clone(),
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Lightning payments not configured on this node"})),
-            )
-                .into_response()
-        }
+        None => return error_response(StatusCode::NOT_FOUND, "Lightning payments not configured on this node"),
     };
 
     // Check balance
@@ -100,16 +192,12 @@ pub async fn balance_refund(
         Ok(b) => b,
         Err(e) => {
             tracing::error!(user_id = user.id, error = %e, "Failed to get balance for refund");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Failed to get balance"}))).into_response();
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to get balance");
         }
     };
 
     if balance <= 0 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "No balance to refund"})),
-        )
-            .into_response();
+        return error_response(StatusCode::BAD_REQUEST, "No balance to refund");
     }
 
     // Debit the full balance first (atomic)
@@ -118,7 +206,7 @@ pub async fn balance_refund(
         Ok(_) => {}
         Err(e) => {
             tracing::error!(user_id = user.id, error = %e, "Failed to debit balance for refund");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Failed to process refund"}))).into_response();
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to process refund");
         }
     }
 
@@ -131,22 +219,18 @@ pub async fn balance_refund(
                 payment_hash = %result.payment_hash,
                 "Balance refunded via Lightning"
             );
-            Json(serde_json::json!({
-                "refunded_msat": balance,
-                "refunded_sats": balance / 1000,
-                "payment_hash": result.payment_hash,
-            }))
+            Json(RefundResponse {
+                refunded_msat: balance,
+                refunded_sats: balance / 1000,
+                payment_hash: result.payment_hash,
+            })
             .into_response()
         }
         Err(e) => {
             // Credit back the balance since the payment failed
             tracing::error!(user_id = user.id, error = %e, "Refund payment failed, crediting back balance");
             let _ = payments.balance_service.credit(user.id, balance, "refund_reversal", &ref_id).await;
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Refund payment failed: {}", e)})),
-            )
-                .into_response()
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Refund payment failed: {}", e))
         }
     }
 }
@@ -165,13 +249,7 @@ pub async fn create_lightning_invoice(
 
     let lightning = match &payments.lightning_service {
         Some(ls) => ls.clone(),
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Lightning payments not configured on this node"})),
-            )
-                .into_response()
-        }
+        None => return error_response(StatusCode::NOT_FOUND, "Lightning payments not configured on this node"),
     };
 
     match lightning
@@ -179,7 +257,6 @@ pub async fn create_lightning_invoice(
         .await
     {
         Ok(instruction) => {
-            // Return the instruction wrapped in a TopupResponse
             use crate::payments::instructions::{TopupResponse, ProviderInfo};
             (
                 StatusCode::CREATED,
@@ -196,11 +273,7 @@ pub async fn create_lightning_invoice(
         }
         Err(e) => {
             tracing::error!(user_id = user.id, error = %e, "Failed to create Lightning invoice");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to create invoice: {}", e)})),
-            )
-                .into_response()
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create invoice: {}", e))
         }
     }
 }
@@ -217,29 +290,22 @@ pub async fn check_lightning_invoice(
 
     let lightning = match &payments.lightning_service {
         Some(ls) => ls.clone(),
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Lightning payments not configured on this node"})),
-            )
-                .into_response()
-        }
+        None => return error_response(StatusCode::NOT_FOUND, "Lightning payments not configured on this node"),
     };
 
     match lightning.check_invoice(&payment_hash).await {
         Ok(invoice) => {
-            Json(serde_json::json!({
-                "status": invoice.status,
-                "payment_hash": invoice.payment_hash,
-                "amount_sats": invoice.amount_sats,
-                "created_at": invoice.created_at,
-                "expires_at": invoice.expires_at,
-            }))
+            Json(InvoiceStatusResponse {
+                status: invoice.status,
+                payment_hash: invoice.payment_hash,
+                amount_sats: invoice.amount_sats,
+                created_at: invoice.created_at,
+                expires_at: invoice.expires_at,
+            })
             .into_response()
         }
         Err(crate::payments::lightning::LightningError::NotFound(_)) => {
-            (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Invoice not found"})))
-                .into_response()
+            error_response(StatusCode::NOT_FOUND, "Invoice not found")
         }
         Err(e) => {
             tracing::error!(payment_hash = %payment_hash, error = %e, "Failed to check invoice");
@@ -263,30 +329,16 @@ pub async fn create_provider_invoice(
     // Find the provider
     let provider = match state.db.get_provider_by_slug(&slug).await {
         Ok(Some(p)) => p,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Provider not found"})),
-            )
-                .into_response()
-        }
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Provider not found"),
         Err(e) => {
             tracing::error!(slug = %slug, error = %e, "Failed to get provider");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Failed to get provider"})),
-            )
-                .into_response()
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to get provider");
         }
     };
 
     // Check if it's a Routstr provider
     if provider.provider_type != crate::db::ProviderType::Routstr {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Provider is not a Routstr provider"})),
-        )
-            .into_response()
+        return error_response(StatusCode::BAD_REQUEST, "Provider is not a Routstr provider");
     }
 
     // Build the upstream invoice request - routstr expects /v1/lightning/invoice
@@ -294,52 +346,35 @@ pub async fn create_provider_invoice(
         Ok(u) => u.join("v1/lightning/invoice").unwrap_or_else(|_| url::Url::parse("/v1/lightning/invoice").unwrap()),
         Err(e) => {
             tracing::error!(slug = %slug, error = %e, "Invalid provider base URL");
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid provider base URL"})),
-            )
-                .into_response()
+            return error_response(StatusCode::BAD_REQUEST, "Invalid provider base URL");
         }
     };
 
     tracing::info!(slug = %slug, url = %upstream_url.as_str(), "Creating provider invoice via upstream");
 
     // Get a valid model name for the provider (optional for top-ups)
-    // Try to get models from routing_config_providers (which stores the actual model name)
     let model_name = {
-        // Query routing config providers for this provider to get associated model names
         let routing_config_providers = state.db
             .list_routing_config_providers_for_provider(provider.id)
             .await
             .unwrap_or_default();
         
-        // Find the first active entry with a non-empty model name
         routing_config_providers
             .iter()
             .find(|rcp| rcp.is_active && rcp.model.as_ref().map(|m| !m.is_empty()).unwrap_or(false))
             .and_then(|rcp| rcp.model.clone())
     };
 
-    // Build the upstream request body - routstr expects:
-    // - amount_sats: required
-    // - purpose: "create" or "topup" (required)
-    // - model: optional (only needed if routing to a specific model)
-    // For general top-ups, we can omit the model or send empty string
-    let mut upstream_body = serde_json::json!({
-        "amount_sats": body.amount_sats,
-        "purpose": "topup",
-    });
-    
-    // Add model if we have a valid one
-    if let Some(name) = model_name {
-        upstream_body["model"] = serde_json::json!(name);
-    }
+    let upstream_body = ProviderInvoiceRequest {
+        amount_sats: body.amount_sats,
+        purpose: "topup".to_string(),
+        model: model_name,
+    };
 
     let mut request_builder = Client::new()
         .post(upstream_url.as_str())
         .json(&upstream_body);
 
-    // Add API key if present (routstr requires auth for topup)
     if let Some(ref api_key) = provider.api_key {
         request_builder = request_builder.bearer_auth(api_key);
     }
@@ -351,61 +386,42 @@ pub async fn create_provider_invoice(
             if !status.is_success() {
                 let error_text = resp.text().await.unwrap_or_default();
                 tracing::error!(slug = %slug, status = %status, error = %error_text, "Upstream invoice creation failed");
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": format!("Upstream error: {}", error_text)})),
-                )
-                    .into_response()
+                return error_response(StatusCode::BAD_REQUEST, format!("Upstream error: {}", error_text));
             }
 
-            let upstream_invoice: serde_json::Value = match resp.json().await {
+            let upstream_invoice: UpstreamInvoiceResponse = match resp.json().await {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!(slug = %slug, error = %e, "Failed to parse upstream response");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": "Failed to parse upstream response"})),
-                    )
-                        .into_response()
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to parse upstream response");
                 }
             };
 
             // Parse the upstream response and convert to PaymentInstruction
             use crate::payments::instructions::{PaymentInstruction, TopupResponse, ProviderInfo};
             
-            let bolt11 = upstream_invoice.get("bolt11").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let payment_hash = upstream_invoice.get("payment_hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let expires_at = upstream_invoice.get("expires_at").and_then(|v| v.as_str());
-            
-            let instruction = if bolt11.is_empty() {
-                // If no bolt11, try to extract a redirect URL
-                if let Some(url) = upstream_invoice.get("payment_url").and_then(|v| v.as_str()) {
-                    PaymentInstruction::Redirect {
-                        url: url.to_string(),
-                        amount_usd: None,
-                        session_token: None,
-                    }
-                } else {
-                    PaymentInstruction::Manual {
-                        instructions: format!("Contact provider {} for payment instructions", slug),
-                        amount_usd: None,
-                        reference_code: None,
-                    }
-                }
-            } else {
-                PaymentInstruction::LightningBolt11 {
+            let instruction = match upstream_invoice.bolt11 {
+                Some(bolt11) if !bolt11.is_empty() => PaymentInstruction::LightningBolt11 {
                     bolt11,
-                    payment_hash,
+                    payment_hash: upstream_invoice.payment_hash.unwrap_or_default(),
                     amount_sats: body.amount_sats as i64,
                     amount_msat: (body.amount_sats * 1000) as i64,
                     memo: Some(format!("Top-up for {}", slug)),
-                    expires_at: expires_at.and_then(|s| {
-                        chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
-                            .ok()
-                            .map(|dt| dt.and_utc().timestamp())
-                    }),
+                    expires_at: upstream_invoice.expires_at,
                     invoice_id: None,
-                }
+                },
+                _ => match upstream_invoice.payment_url {
+                    Some(url) => PaymentInstruction::Redirect {
+                        url,
+                        amount_usd: None,
+                        session_token: None,
+                    },
+                    None => PaymentInstruction::Manual {
+                        instructions: format!("Contact provider {} for payment instructions", slug),
+                        amount_usd: None,
+                        reference_code: None,
+                    },
+                },
             };
 
             // Return wrapped in TopupResponse
@@ -424,45 +440,9 @@ pub async fn create_provider_invoice(
         }
         Err(e) => {
             tracing::error!(slug = %slug, error = %e, "Failed to connect to upstream provider");
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({"error": format!("Failed to connect to upstream provider: {}", e)})),
-            )
-                .into_response()
+            error_response(StatusCode::BAD_GATEWAY, format!("Failed to connect to upstream provider: {}", e))
         }
     }
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────
-
-fn payments_disabled() -> axum::response::Response {
-    (
-        StatusCode::NOT_FOUND,
-        Json(serde_json::json!({"error": "Payments not enabled"})),
-    )
-        .into_response()
-}
-
-// ── Request types ─────────────────────────────────────────────────────────
-
-#[derive(Deserialize)]
-pub struct RefundRequest {
-    /// Bolt11 invoice to pay the refund to
-    pub invoice: String,
-    /// Optional: max amount in sats to refund (defaults to full balance)
-    pub amount_sats: Option<u64>,
-}
-
-#[derive(Deserialize)]
-pub struct CreateInvoiceRequest {
-    pub amount_sats: u64,
-    #[serde(default = "default_invoice_memo")]
-    pub memo: String,
-    pub expire_seconds: Option<u32>,
-}
-
-fn default_invoice_memo() -> String {
-    "YALR balance top-up".to_string()
 }
 
 // ============================================================================

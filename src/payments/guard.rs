@@ -87,24 +87,39 @@ impl BillingGuard {
     }
 }
 
+/// Structured error body for 402 Payment Required responses.
+#[derive(serde::Serialize)]
+struct PaymentRequiredError {
+    error: PaymentRequiredErrorDetail,
+}
+
+#[derive(serde::Serialize)]
+struct PaymentRequiredErrorDetail {
+    message: &'static str,
+    #[serde(rename = "type")]
+    error_type: &'static str,
+    required_msat: i64,
+    available_msat: i64,
+}
+
 /// Convert a BillingError::InsufficientFunds into a 402 Payment Required response.
 pub fn insufficient_funds_response(required: i64, available: i64) -> (StatusCode, axum::Json<serde_json::Value>) {
+    // Return as Json<Value> for API compatibility — this is a public function
+    // that callers may depend on the Value return type.
     tracing::info!(
         required_msat = required,
         available_msat = available,
         "Payment required"
     );
-    (
-        StatusCode::PAYMENT_REQUIRED,
-        axum::Json(serde_json::json!({
-            "error": {
-                "message": "Insufficient funds",
-                "type": "payment_required",
-                "required_msat": required,
-                "available_msat": available,
-            }
-        })),
-    )
+    let body = serde_json::to_value(PaymentRequiredError {
+        error: PaymentRequiredErrorDetail {
+            message: "Insufficient funds",
+            error_type: "payment_required",
+            required_msat: required,
+            available_msat: available,
+        },
+    }).unwrap();
+    (StatusCode::PAYMENT_REQUIRED, axum::Json(body))
 }
 
 #[cfg(test)]
