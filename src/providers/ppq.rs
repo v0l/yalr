@@ -251,39 +251,23 @@ impl Provider for PpqProvider {
             return Ok(None);
         }
 
-        let body: serde_json::Value =
+        let body: ModelListResponse =
             response.json().await.map_err(|e| ProviderError::Other(e.into()))?;
 
-        let empty = Vec::new();
-        let models = body
-            .get("data")
-            .and_then(|d| d.as_array())
-            .unwrap_or(&empty);
-
-        let model_entry = models
+        let model_entry = body
+            .data
             .iter()
-            .find(|m| m.get("id").and_then(|id| id.as_str()) == Some(model_id));
+            .find(|m| m.id == model_id);
 
         let mut additional_fields = std::collections::HashMap::new();
         if let Some(entry) = model_entry {
-            if let Some(obj) = entry.as_object() {
-                for (key, value) in obj {
-                    if key != "id" {
-                        additional_fields.insert(key.clone(), value.clone());
-                    }
-                }
-            }
+            additional_fields = entry.extra.clone();
+            additional_fields.remove("id");
         }
 
-        let context_length = model_entry
-            .and_then(|m| m.get("context_length"))
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
+        let context_length = model_entry.and_then(|m| m.context_length);
 
-        let max_concurrency = model_entry
-            .and_then(|m| m.get("max_concurrency"))
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
+        let max_concurrency = model_entry.and_then(|m| m.max_concurrency);
 
         let runtime_info = ModelRuntimeInfo {
             model_id: model_id.to_string(),

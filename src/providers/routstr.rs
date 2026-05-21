@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use super::*;
 use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
@@ -6,6 +8,34 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use url::Url;
 use crate::router::{Modality, ModelRuntimeInfo};
+
+/// Routstr balance info response
+#[derive(Debug, Deserialize)]
+struct RoutstrBalanceResponse {
+    /// Balance in millisatoshis
+    #[serde(alias = "balance")]
+    balance_msat: i64,
+}
+
+/// Routstr invoice creation request body
+#[derive(Debug, Serialize)]
+struct RoutstrInvoiceRequest<'a> {
+    amount_sats: i64,
+    purpose: &'a str,
+    api_key: &'a str,
+}
+
+/// Routstr invoice response
+#[derive(Debug, Deserialize)]
+struct RoutstrInvoiceResponse {
+    bolt11: String,
+    #[serde(default)]
+    payment_hash: Option<String>,
+    #[serde(default)]
+    amount_sats: Option<i64>,
+    #[serde(default)]
+    expires_at: Option<i64>,
+}
 
 /// RoutstrProvider — wraps an OpenAI-compatible API and adds Routstr protocol
 /// endpoints for balance tracking, making it cost-aware.
@@ -63,18 +93,10 @@ impl RoutstrProvider {
             });
         }
 
-        let body: serde_json::Value =
+        let body: RoutstrBalanceResponse =
             resp.json().await.map_err(|e| ProviderError::Other(e.into()))?;
 
-        // Try multiple response formats for flexibility
-        let balance = body
-            .get("balance_msat")
-            .and_then(|v| v.as_i64())
-            .or_else(|| body.get("balance").and_then(|b| b.as_i64()))
-            .or_else(|| body.get("data").and_then(|d| d.get("balance_msat")).and_then(|v| v.as_i64()))
-            .ok_or_else(|| ProviderError::Other("Missing balance_msat in response".into()))?;
-
-        Ok(balance)
+        Ok(body.balance_msat)
     }
 
     /// Refresh the cached balance from the upstream Routstr node.
@@ -143,38 +165,16 @@ impl Provider for RoutstrProvider {
             });
         }
 
-        let body: serde_json::Value =
+        let body: ModelListResponse =
             response.json().await.map_err(|e| ProviderError::Other(e.into()))?;
 
-        let empty = Vec::new();
-        let models = body
-            .get("data")
-            .and_then(|d| d.as_array())
-            .unwrap_or(&empty);
-
         // Parse models flexibly - extract just the fields we need
-        let mut result = Vec::new();
-        for model in models {
-            if let Some(id) = model.get("id").and_then(|v| v.as_str()) {
-                let owned_by = model
-                    .get("owned_by")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("routstr")
-                    .to_string();
-                
-                let created = model
-                    .get("created")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0) as u32;
-
-                result.push(Model {
-                    id: id.to_string(),
-                    object: "model".to_string(),
-                    created,
-                    owned_by,
-                });
-            }
-        }
+        let result: Vec<Model> = body.data.into_iter().map(|item| Model {
+            id: item.id,
+            object: item.object.unwrap_or_else(|| "model".to_string()),
+            created: item.created.unwrap_or(0),
+            owned_by: item.owned_by.unwrap_or_else(|| "routstr".to_string()),
+        }).collect();
 
         Ok(result)
     }
@@ -239,39 +239,23 @@ impl Provider for RoutstrProvider {
             return Ok(None);
         }
 
-        let body: serde_json::Value =
+        let body: ModelListResponse =
             response.json().await.map_err(|e| ProviderError::Other(e.into()))?;
 
-        let empty = Vec::new();
-        let models = body
-            .get("data")
-            .and_then(|d| d.as_array())
-            .unwrap_or(&empty);
-
-        let model_entry = models
+        let model_entry = body
+            .data
             .iter()
-            .find(|m| m.get("id").and_then(|id| id.as_str()) == Some(model_id));
+            .find(|m| m.id == model_id);
 
         let mut additional_fields = std::collections::HashMap::new();
         if let Some(entry) = model_entry {
-            if let Some(obj) = entry.as_object() {
-                for (key, value) in obj {
-                    if key != "id" {
-                        additional_fields.insert(key.clone(), value.clone());
-                    }
-                }
-            }
+            additional_fields = entry.extra.clone();
+            additional_fields.remove("id");
         }
 
-        let context_length = model_entry
-            .and_then(|m| m.get("context_length"))
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
+        let context_length = model_entry.and_then(|m| m.context_length);
 
-        let max_concurrency = model_entry
-            .and_then(|m| m.get("max_concurrency"))
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
+        let max_concurrency = model_entry.and_then(|m| m.max_concurrency);
 
         let runtime_info = ModelRuntimeInfo {
             model_id: model_id.to_string(),
@@ -333,11 +317,11 @@ impl Provider for RoutstrProvider {
         
         // Per RIP-08 spec, only amount_sats and purpose are required.
         // This specific Routstr implementation also requires api_key in the body.
-        let request_body = serde_json::json!({
-            "amount_sats": amount_sats,
-            "purpose": "topup",
-            "api_key": api_key
-        });
+        let request_body = RoutstrInvoiceRequest {
+            amount_sats,
+            purpose: "topup",
+            api_key,
+        };
         
         tracing::info!(
             provider = self.name(),
@@ -376,7 +360,7 @@ impl Provider for RoutstrProvider {
             return None;
         }
 
-        let result: serde_json::Value = match response.json().await {
+        let result: RoutstrInvoiceResponse = match response.json().await {
             Ok(json) => json,
             Err(e) => {
                 tracing::error!(
@@ -389,20 +373,10 @@ impl Provider for RoutstrProvider {
         };
         
         // Parse Routstr's response and convert to PaymentInstruction
-        let bolt11 = match result.get("bolt11").and_then(|v| v.as_str()) {
-            Some(bolt11) => bolt11,
-            None => {
-                tracing::error!(
-                    provider = self.name(),
-                    response = ?result,
-                    "Routstr did not return bolt11 in invoice response"
-                );
-                return None;
-            }
-        };
+        let bolt11 = result.bolt11.clone();
         
-        let payment_hash = match result.get("payment_hash").and_then(|v| v.as_str()) {
-            Some(hash) => hash.to_string(),
+        let payment_hash = match result.payment_hash {
+            Some(hash) => hash,
             None => {
                 tracing::error!(
                     provider = self.name(),
@@ -413,7 +387,7 @@ impl Provider for RoutstrProvider {
             }
         };
         
-        let expires_at = result.get("expires_at").and_then(|v| v.as_str());
+        let expires_at = result.expires_at;
         
         Some(PaymentInstruction::LightningBolt11 {
             bolt11: bolt11.to_string(),
@@ -421,11 +395,7 @@ impl Provider for RoutstrProvider {
             amount_sats,
             amount_msat: amount_sats * 1000,
             memo: Some(format!("Routstr top-up for {}", self.name())),
-            expires_at: expires_at.and_then(|s| {
-                chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
-                    .ok()
-                    .map(|dt| dt.and_utc().timestamp())
-            }),
+            expires_at,
             invoice_id: None,
         })
     }

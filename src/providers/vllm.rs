@@ -88,43 +88,23 @@ impl Provider for VllmProvider {
             return Ok(None);
         }
 
-        let body: serde_json::Value = response
+        let body: ModelListResponse = response
             .json()
             .await
             .map_err(|e| ProviderError::Other(e.into()))?;
 
         // Find the model in the list
-        let empty = Vec::new();
-        let models = body.get("data")
-            .and_then(|d| d.as_array())
-            .unwrap_or(&empty);
+        let model_entry = body.data.iter().find(|m| m.id == model_id);
 
-        let model_entry = models.iter().find(|m| {
-            m.get("id").and_then(|id| id.as_str()) == Some(model_id)
-        });
+        let context_length = model_entry.and_then(|m| m.context_length);
+        let max_concurrency = model_entry.and_then(|m| m.max_concurrency);
 
         let mut additional_fields = std::collections::HashMap::new();
-
         if let Some(entry) = model_entry {
-            if let Some(obj) = entry.as_object() {
-                for (key, value) in obj {
-                    if key != "id" {
-                        additional_fields.insert(key.clone(), value.clone());
-                    }
-                }
-            }
+            additional_fields = entry.extra.clone();
+            // id is already stored as model_id, drop it from extras
+            additional_fields.remove("id");
         }
-
-        // Extract max_concurrency from vLLM model metadata if present
-        let max_concurrency = model_entry
-            .and_then(|m| m.get("max_concurrency"))
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
-
-        let context_length = model_entry
-            .and_then(|m| m.get("context_length"))
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
 
         let runtime_info = ModelRuntimeInfo {
             model_id: model_id.to_string(),

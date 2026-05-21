@@ -154,28 +154,15 @@ impl Provider for OpenRouterProvider {
             });
         }
         
-        let body: serde_json::Value = response.json().await.map_err(|e| ProviderError::Other(e.into()))?;
-        
-        let data_array = body
-            .get("data")
-            .and_then(|d| d.as_array())
-            .ok_or_else(|| ProviderError::Other("Missing 'data' field in models response".into()))?;
+        let body: ModelListResponse = response.json().await.map_err(|e| ProviderError::Other(e.into()))?;
         
         // Parse OpenRouter models and convert to standard Model type
-        let mut models = Vec::new();
-        for item in data_array {
-            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-                let created = item.get("created").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
-                let owned_by = item.get("owned_by").and_then(|v| v.as_str()).unwrap_or("openrouter").to_string();
-                
-                models.push(Model {
-                    id: id.to_string(),
-                    object: "model".to_string(),
-                    created,
-                    owned_by,
-                });
-            }
-        }
+        let models: Vec<Model> = body.data.into_iter().map(|item| Model {
+            id: item.id,
+            object: item.object.unwrap_or_else(|| "model".to_string()),
+            created: item.created.unwrap_or(0),
+            owned_by: item.owned_by.unwrap_or_else(|| "openrouter".to_string()),
+        }).collect();
         
         Ok(models)
     }

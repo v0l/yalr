@@ -1,3 +1,29 @@
+/// Standard model entry in a /v1/models response (OpenAI-compatible).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ModelListEntry {
+    pub id: String,
+    #[serde(default)]
+    pub object: Option<String>,
+    #[serde(default)]
+    pub created: Option<u32>,
+    #[serde(default)]
+    pub owned_by: Option<String>,
+    #[serde(default)]
+    pub context_length: Option<u32>,
+    #[serde(default)]
+    pub max_concurrency: Option<u32>,
+    /// Catch-all for provider-specific extra fields on model entries
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// Standard /v1/models response wrapper (OpenAI-compatible).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ModelListResponse {
+    #[serde(default)]
+    pub data: Vec<ModelListEntry>,
+}
+
 pub mod llamacpp;
 pub mod ollama;
 pub mod openai;
