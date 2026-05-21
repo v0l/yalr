@@ -3,11 +3,18 @@ use async_openai::types::chat::{CreateChatCompletionRequest, CreateChatCompletio
 use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
 use reqwest::Client as HttpClient;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use url::Url;
 use crate::router::{Modality, ModelRuntimeInfo};
+
+/// PPQ top-up request body
+#[derive(Debug, Serialize)]
+struct PpqTopupRequest {
+    amount: f64,
+    currency: String,
+}
 
 /// PPQ top-up invoice response structure
 #[derive(Debug, Deserialize)]
@@ -34,6 +41,20 @@ struct PpqTopupResponse {
     /// Optional: creation timestamp
     #[serde(default)]
     created_at: Option<i64>,
+}
+
+/// PPQ credit balance response structure
+#[derive(Debug, Deserialize)]
+struct PpqBalanceResponse {
+    /// Balance in USD (e.g. 10.169783715)
+    balance: f64,
+}
+
+/// PPQ credit balance request body
+#[derive(Debug, Serialize)]
+struct PpqBalanceRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credit_id: Option<String>,
 }
 
 /// PpqProvider — wraps the PPQ.ai OpenAI-compatible API and adds balance tracking.
@@ -107,10 +128,10 @@ impl PpqProvider {
         }
         
         // Add credit_id in body if available (optional, for multi-account setups)
-        if let Some(ref credit_id) = self.credit_id {
-            let body = serde_json::json!({ "credit_id": credit_id });
-            req = req.json(&body);
-        }
+        let body = PpqBalanceRequest {
+            credit_id: self.credit_id.clone(),
+        };
+        req = req.json(&body);
 
         let resp = req.send().await.map_err(|e| ProviderError::Other(e.into()))?;
 
@@ -121,16 +142,11 @@ impl PpqProvider {
             });
         }
 
-        let body: serde_json::Value =
+        let balance_resp: PpqBalanceResponse =
             resp.json().await.map_err(|e| ProviderError::Other(e.into()))?;
 
-        // PPQ returns balance in various formats - try multiple
-        let balance_usd_micro = body
-            .get("balance_usd_micro")
-            .and_then(|v| v.as_i64())
-            .or_else(|| body.get("balance").and_then(|b| b.as_i64()))
-            .or_else(|| body.get("data").and_then(|d| d.get("balance_usd_micro")).and_then(|v| v.as_i64()))
-            .ok_or_else(|| ProviderError::Other("Missing balance in response".into()))?;
+        // PPQ returns balance in USD (e.g. 10.169783715), convert to micro-usd
+        let balance_usd_micro = (balance_resp.balance * 1_000_000.0) as i64;
 
         Ok(balance_usd_micro)
     }
@@ -331,10 +347,10 @@ impl Provider for PpqProvider {
         let response = match client
             .post("https://api.ppq.ai/topup/create/btc-lightning")
             .header("Authorization", format!("Bearer {}", api_key))
-            .json(&serde_json::json!({
-                "amount": amount_usd,
-                "currency": "USD"
-            }))
+            .json(&PpqTopupRequest {
+                amount: amount_usd,
+                currency: "USD".to_string(),
+            })
             .send()
             .await
         {
@@ -600,6 +616,49 @@ mod tests {
         let result = provider.create_topup(amount).await;
         
         assert!(result.is_none(), "create_topup should return None for non-USD currency");
+    }
+
+    #[tokio::test]
+    async fn test_ppq_balance_response_deserialization() {
+        // Test the actual PPQ balance response format
+        let json_response = r#"{"balance": 10.169783715}"#;
+        let response: PpqBalanceResponse = serde_json::from_str(json_response).unwrap();
+        assert_eq!(response.balance, 10.169783715);
+
+        // Convert to micro-usd (what the provider stores)
+        let balance_usd_micro = (response.balance * 1_000_000.0) as i64;
+        assert_eq!(balance_usd_micro, 10_169_783);
+    }
+
+    #[tokio::test]
+    async fn test_ppq_balance_response_zero_balance() {
+        let json_response = r#"{"balance": 0.0}"#;
+        let response: PpqBalanceResponse = serde_json::from_str(json_response).unwrap();
+        assert_eq!(response.balance, 0.0);
+        let balance_usd_micro = (response.balance * 1_000_000.0) as i64;
+        assert_eq!(balance_usd_micro, 0);
+    }
+
+    #[tokio::test]
+    async fn test_ppq_balance_response_large_balance() {
+        // Test a large balance ($999.99)
+        let json_response = r#"{"balance": 999.99}"#;
+        let response: PpqBalanceResponse = serde_json::from_str(json_response).unwrap();
+        let balance_usd_micro = (response.balance * 1_000_000.0) as i64;
+        assert_eq!(balance_usd_micro, 999_990_000);
+    }
+
+    #[tokio::test]
+    async fn test_ppq_balance_response_invalid_json() {
+        // Missing required field should fail
+        let json_response = r#"{}"#;
+        let result = serde_json::from_str::<PpqBalanceResponse>(json_response);
+        assert!(result.is_err());
+
+        // Wrong field type should fail
+        let json_response = r#"{"balance": "not-a-number"}"#;
+        let result = serde_json::from_str::<PpqBalanceResponse>(json_response);
+        assert!(result.is_err());
     }
 
     #[test]

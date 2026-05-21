@@ -57,6 +57,16 @@ docker build -t yalr .
 
 **Key methods**: `ModelRequestRouter::is_prefixed()`, `extract_prefix()`, `extract_model()`, `RoutingEngine::route_by_slug()`, `RoutingEngine::route()`
 
+## Serde &amp; API Parsing Conventions
+
+- **Always use proper serde structs** for API request/response bodies — never `serde_json::Value` for parsing external API responses
+- **Never use `serde_json::json!` macro** — define a `#[derive(Serialize)]` request struct instead
+- Request structs use `#[derive(Debug, Serialize)]`, response structs use `#[derive(Debug, Deserialize)]`
+- Place request/response structs near the method that uses them, marked private (`struct`) unless shared
+- Use `#[serde(alias = "...")]` for handling multiple possible field names from upstream APIs
+- Use `#[serde(skip_serializing_if = "Option::is_none")]` for optional request fields
+- Use `#[serde(default)]` for optional response fields that may be absent
+
 ## Testing Conventions
 
 - All tests inline in source files: `#[cfg(test)] mod tests { ... }` at bottom of file
