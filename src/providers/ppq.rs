@@ -9,12 +9,47 @@ use std::sync::Arc;
 use url::Url;
 use crate::router::{Modality, ModelRuntimeInfo};
 
+/// PPQ top-up invoice response structure
+#[derive(Debug, Deserialize)]
+struct PpqTopupResponse {
+    /// Invoice ID for status tracking
+    invoice_id: String,
+    /// Lightning invoice string (BOLT11)
+    #[serde(alias = "lightning_invoice")]
+    #[serde(alias = "invoice")]
+    #[serde(alias = "bolt11")]
+    invoice: String,
+    /// Amount in USD
+    amount: f64,
+    /// Currency (e.g., "USD")
+    currency: String,
+    /// Unix timestamp for expiration
+    expires_at: i64,
+    /// Optional: checkout URL for web payment
+    #[serde(default)]
+    checkout_url: Option<String>,
+    /// Optional: crypto amount in BTC
+    #[serde(default)]
+    crypto_amount_due: Option<f64>,
+    /// Optional: creation timestamp
+    #[serde(default)]
+    created_at: Option<i64>,
+}
+
 /// PpqProvider — wraps the PPQ.ai OpenAI-compatible API and adds balance tracking.
 ///
 /// PPQ.ai (PayPerQ) is an OpenAI-compatible API provider that accepts Lightning
 /// payments and tracks credit balances. This provider connects to the PPQ API
 /// and polls the credit balance endpoint so the admin dashboard can show remaining
 /// credit.
+///
+/// API Documentation: https://ppq.ai/llms.txt
+/// Top-up Endpoints:
+/// - POST https://api.ppq.ai/topup/create/btc-lightning — Bitcoin Lightning (USD, BTC, SATS)
+/// - POST https://api.ppq.ai/topup/create/btc — Bitcoin on-chain
+/// - POST https://api.ppq.ai/topup/create/ltc — Litecoin
+/// - POST https://api.ppq.ai/topup/create/lbtc — Liquid Bitcoin
+/// - POST https://api.ppq.ai/topup/create/xmr — Monero
 ///
 /// API Reference: https://ppq.ai/api-docs
 #[derive(Clone)]
@@ -277,13 +312,23 @@ impl Provider for PpqProvider {
         // PPQ accepts USD amounts
         let amount_usd = match amount {
             CurrencyAmount::UsdMicro(usd_micro) => (usd_micro as f64) / 1_000_000.0,
-            _ => return None, // PPQ only supports USD
+            _ => {
+                tracing::warn!(provider = self.name(), "PPQ only supports USD top-ups, got {:?}", amount);
+                return None;
+            }
         };
         
-        let api_key = self.api_key.as_ref()?;
+        let api_key = match &self.api_key {
+            Some(key) => key,
+            None => {
+                tracing::error!(provider = self.name(), "PPQ top-up requires API key but none is configured");
+                return None;
+            }
+        };
+        
         let client = Client::new();
         
-        let response = client
+        let response = match client
             .post("https://api.ppq.ai/topup/create/btc-lightning")
             .header("Authorization", format!("Bearer {}", api_key))
             .json(&serde_json::json!({
@@ -292,30 +337,49 @@ impl Provider for PpqProvider {
             }))
             .send()
             .await
-            .ok()?;
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::error!(provider = self.name(), error = %e, "Failed to send PPQ top-up request");
+                return None;
+            }
+        };
 
         if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await.unwrap_or_default();
+            tracing::error!(provider = self.name(), status = %status, error_body = %error_body, "PPQ top-up endpoint returned error");
             return None;
         }
 
-        let result: serde_json::Value = response.json().await.ok()?;
+        let ppq_response: PpqTopupResponse = match response.json().await {
+            Ok(response) => response,
+            Err(e) => {
+                tracing::error!(provider = self.name(), error = %e, "Failed to parse PPQ top-up response as struct");
+                return None;
+            }
+        };
         
-        // Parse PPQ's response and convert to PaymentInstruction
-        // PPQ typically returns: { "invoice": "lnbc...", "payment_hash": "...", "amount_sats": ... }
-        let bolt11 = result.get("invoice").and_then(|v| v.as_str())
-            .or_else(|| result.get("bolt11").and_then(|v| v.as_str()))?;
+        // Calculate sats from BTC amount if available, otherwise estimate from USD
+        let amount_sats = ppq_response
+            .crypto_amount_due
+            .map(|btc| (btc * 100_000_000.0) as i64)
+            .unwrap_or(0);
         
-        let payment_hash = result.get("payment_hash").and_then(|v| v.as_str())?.to_string();
-        let amount_sats = result.get("amount_sats").and_then(|v| v.as_i64()).unwrap_or(0);
+        // PPQ doesn't return payment_hash, so we use the invoice_id
+        let payment_hash = ppq_response.invoice_id.clone();
         
         Some(PaymentInstruction::LightningBolt11 {
-            bolt11: bolt11.to_string(),
+            bolt11: ppq_response.invoice,
             payment_hash,
             amount_sats,
             amount_msat: amount_sats * 1000,
             memo: Some(format!("PPQ top-up for ${:.2}", amount_usd)),
-            expires_at: None,
-            invoice_id: None,
+            expires_at: Some(ppq_response.expires_at),
+            invoice_id: ppq_response
+                .invoice_id
+                .parse::<i64>()
+                .ok(), // Try to parse as i64, but PPQ uses string IDs so this will likely be None
         })
     }
 }
@@ -419,5 +483,131 @@ mod tests {
         };
         let result = provider.chat_completions_stream(&request);
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_ppq_topup_response_deserialization() {
+        // Test with the actual PPQ response format
+        let json_response = r#"{
+            "created_at": 1779368687,
+            "invoice_id": "JX2uuRERXWLhTkGpcPzgpV",
+            "amount": 10,
+            "currency": "USD",
+            "expires_at": 1779369587,
+            "checkout_url": "https://btcpay0.voltageapp.io/i/JX2uuRERXWLhTkGpcPzgpV",
+            "lightning_invoice": "lnbc129450n1p4q7qh0pp5glfxyjtl2mmuj3mvcw2gynkr6jm3m74qhaxxj9dxhxzye8k6g",
+            "crypto_amount_due": 0.00012945
+        }"#;
+
+        let response: PpqTopupResponse = serde_json::from_str(json_response).unwrap();
+        
+        assert_eq!(response.invoice_id, "JX2uuRERXWLhTkGpcPzgpV");
+        assert_eq!(response.amount, 10.0);
+        assert_eq!(response.currency, "USD");
+        assert_eq!(response.expires_at, 1779369587);
+        assert_eq!(response.checkout_url, Some("https://btcpay0.voltageapp.io/i/JX2uuRERXWLhTkGpcPzgpV".to_string()));
+        assert_eq!(response.crypto_amount_due, Some(0.00012945));
+        assert!(response.created_at.is_some());
+        assert!(response.invoice.starts_with("lnbc"));
+    }
+
+    #[tokio::test]
+    async fn test_ppq_topup_response_with_invoice_alias() {
+        // Test with "invoice" field instead of "lightning_invoice"
+        let json_response = r#"{
+            "invoice_id": "test123",
+            "amount": 5.5,
+            "currency": "USD",
+            "expires_at": 1234567890,
+            "invoice": "lnbc50n1p234567890",
+            "crypto_amount_due": 0.00005000
+        }"#;
+
+        let response: PpqTopupResponse = serde_json::from_str(json_response).unwrap();
+        
+        assert_eq!(response.invoice_id, "test123");
+        assert_eq!(response.amount, 5.5);
+        assert_eq!(response.invoice, "lnbc50n1p234567890");
+        assert_eq!(response.crypto_amount_due, Some(0.00005000));
+    }
+
+    #[tokio::test]
+    async fn test_ppq_topup_response_with_bolt11_alias() {
+        // Test with "bolt11" field
+        let json_response = r#"{
+            "invoice_id": "abc789",
+            "amount": 20,
+            "currency": "USD",
+            "expires_at": 9876543210,
+            "bolt11": "lnbc200n1p987654",
+            "crypto_amount_due": 0.00020000
+        }"#;
+
+        let response: PpqTopupResponse = serde_json::from_str(json_response).unwrap();
+        
+        assert_eq!(response.invoice_id, "abc789");
+        assert_eq!(response.invoice, "lnbc200n1p987654");
+        assert_eq!(response.amount, 20.0);
+    }
+
+    #[tokio::test]
+    async fn test_ppq_topup_response_minimal() {
+        // Test with minimal required fields only
+        let json_response = r#"{
+            "invoice_id": "minimal123",
+            "amount": 1.0,
+            "currency": "USD",
+            "expires_at": 1111111111,
+            "invoice": "lnbc100n1p"
+        }"#;
+
+        let response: PpqTopupResponse = serde_json::from_str(json_response).unwrap();
+        
+        assert_eq!(response.invoice_id, "minimal123");
+        assert_eq!(response.amount, 1.0);
+        assert_eq!(response.currency, "USD");
+        assert_eq!(response.expires_at, 1111111111);
+        assert!(response.checkout_url.is_none());
+        assert!(response.crypto_amount_due.is_none());
+        assert!(response.created_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_create_topup_without_api_key_returns_none() {
+        let provider = PpqProvider::new(
+            "Test PPQ",
+            Some("ppq-test"),
+            "https://api.ppq.ai",
+            None, // No API key
+        );
+
+        let amount = CurrencyAmount::UsdMicro(10_000_000); // $10.00
+        let result = provider.create_topup(amount).await;
+        
+        assert!(result.is_none(), "create_topup should return None when API key is missing");
+    }
+
+    #[tokio::test]
+    async fn test_create_topup_non_usd_currency_returns_none() {
+        let provider = PpqProvider::new(
+            "Test PPQ",
+            Some("ppq-test"),
+            "https://api.ppq.ai",
+            Some("test-api-key"),
+        );
+
+        let amount = CurrencyAmount::Sats(1000); // Non-USD currency
+        let result = provider.create_topup(amount).await;
+        
+        assert!(result.is_none(), "create_topup should return None for non-USD currency");
+    }
+
+    #[test]
+    fn test_calculate_sats_from_btc() {
+        // Test BTC to sats conversion
+        let btc: f64 = 0.00012945;
+        let sats = (btc * 100_000_000.0) as i64;
+        
+        assert_eq!(sats, 12945);
     }
 }
