@@ -161,6 +161,7 @@ pub struct Router {
     routing_tables: RwLock<HashMap<String, RoutingTable>>,
     max_retries: u32,
     health_check_handles: RwLock<HashMap<String, tokio::task::JoinHandle<()>>>,
+    shutdown_tx: RwLock<Option<tokio::sync::broadcast::Sender<()>>>,
 }
 
 impl Router {
@@ -175,10 +176,19 @@ impl Router {
             routing_tables: RwLock::new(HashMap::new()),
             max_retries: 3,
             health_check_handles: RwLock::new(HashMap::new()),
+            shutdown_tx: RwLock::new(None),
         }
     }
 
     pub async fn reload_config(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Send shutdown signal to health check loop first
+        {
+            let shutdown_tx = self.shutdown_tx.read().await;
+            if let Some(tx) = shutdown_tx.as_ref() {
+                let _ = tx.send(());
+            }
+        }
+        
         let provider_records = self.db.list_providers().await?;
 
         let mut providers = HashMap::new();
@@ -329,6 +339,7 @@ impl Router {
         drop(provs);
 
         if all_providers.is_empty() {
+            tracing::warn!("No providers loaded - health checks will not start");
             return Ok(());
         }
 
@@ -343,63 +354,97 @@ impl Router {
             health_config.map_or(10, |rc| rc.health_check_timeout_seconds as u64),
         );
 
+        let has_health_config = health_config.is_some();
+        tracing::info!(
+            has_health_config = has_health_config,
+            interval_seconds = interval.as_secs(),
+            timeout_seconds = timeout.as_secs(),
+            "Health check configuration loaded"
+        );
+
         let count = all_providers.len();
         let router = HealthCheckRouter {
             metrics_store: self.metrics_store.clone(),
         };
 
+        // Create shutdown channel for graceful shutdown
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+        *self.shutdown_tx.write().await = Some(shutdown_tx.clone());
+
         let handle = tokio::spawn(async move {
             let mut interval_tick = tokio::time::interval(interval);
+            interval_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             loop {
-                interval_tick.tick().await;
+                tokio::select! {
+                    _ = interval_tick.tick() => {
+                        let health_check_tasks: Vec<_> = all_providers
+                            .iter()
+                            .map(|provider| {
+                                let provider_name = provider.name().to_string();
+                                let provider_clone = provider.clone();
+                                let router_clone = router.clone();
+                                let timeout_duration = timeout;
 
-                let health_check_tasks: Vec<_> = all_providers
-                    .iter()
-                    .map(|provider| {
-                        let provider_name = provider.name().to_string();
-                        let provider_clone = provider.clone();
-                        let router_clone = router.clone();
-                        let timeout_duration = timeout;
-
-                        tokio::spawn(async move {
-                            // Fetch and emit balance snapshot
-                            if let Some(amount) = provider_clone.fetch_balance().await {
-                                router_clone.metrics_store.emitter().emit_balance(&provider_name, amount, None);
-                            }
-
-                            let result = tokio::time::timeout(timeout_duration, provider_clone.health_check()).await;
-                            match result {
-                                Ok(Ok(true)) => {
-                                    let was_down = !router_clone.metrics_store.is_provider_available(&provider_name).await;
-                                    if was_down {
-                                        tracing::info!(provider = %provider_name, "Health check recovered");
-                                    }
-                                    router_clone.record_success(&provider_name).await;
-                                }
-                                Ok(Ok(false)) => {
-                                    tracing::warn!(provider = %provider_name, "Health check unhealthy");
-                                    router_clone.record_failure(
-                                        &provider_name,
-                                        crate::metrics::ErrorType::ServerError,
-                                        "Health check returned unhealthy",
+                                tokio::spawn(async move {
+                                    // Fetch and emit balance snapshot with timeout
+                                    let balance_result = tokio::time::timeout(
+                                        Duration::from_secs(5),
+                                        provider_clone.fetch_balance()
                                     ).await;
-                                }
-                                Ok(Err(e)) => {
-                                    tracing::warn!(provider = %provider_name, error = %e, "Health check error");
-                                    router_clone.record_failure(&provider_name, e.error_type(), &e.to_string()).await;
-                                }
-                                Err(_) => {
-                                    tracing::warn!(provider = %provider_name, "Health check timeout");
-                                    router_clone.record_failure(&provider_name, crate::metrics::ErrorType::Timeout, "Health check timed out").await;
-                                }
-                            }
-                        })
-                    })
-                    .collect();
+                                    
+                                    match balance_result {
+                                        Ok(Some(amount)) => {
+                                            router_clone.metrics_store.emitter().emit_balance(&provider_name, amount, None);
+                                        }
+                                        Ok(None) => {
+                                            // Provider doesn't support balance tracking
+                                        }
+                                        Err(_) => {
+                                            tracing::debug!(provider = %provider_name, "Balance fetch timeout");
+                                        }
+                                    }
 
-                for task in health_check_tasks {
-                    let _ = task.await;
+                                    // Health check with timeout
+                                    let result = tokio::time::timeout(timeout_duration, provider_clone.health_check()).await;
+                                    match result {
+                                        Ok(Ok(true)) => {
+                                            let was_down = !router_clone.metrics_store.is_provider_available(&provider_name).await;
+                                            if was_down {
+                                                tracing::info!(provider = %provider_name, "Health check recovered");
+                                            }
+                                            router_clone.record_success(&provider_name).await;
+                                        }
+                                        Ok(Ok(false)) => {
+                                            tracing::warn!(provider = %provider_name, "Health check unhealthy");
+                                            router_clone.record_failure(
+                                                &provider_name,
+                                                crate::metrics::ErrorType::ServerError,
+                                                "Health check returned unhealthy",
+                                            ).await;
+                                        }
+                                        Ok(Err(e)) => {
+                                            tracing::warn!(provider = %provider_name, error = %e, "Health check error");
+                                            router_clone.record_failure(&provider_name, e.error_type(), &e.to_string()).await;
+                                        }
+                                        Err(_) => {
+                                            tracing::warn!(provider = %provider_name, "Health check timeout");
+                                            router_clone.record_failure(&provider_name, crate::metrics::ErrorType::Timeout, "Health check timed out").await;
+                                        }
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        // Wait for all health checks to complete
+                        for task in health_check_tasks {
+                            let _ = tokio::time::timeout(Duration::from_secs(60), task).await;
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        tracing::info!("Health check loop received shutdown signal");
+                        break;
+                    }
                 }
             }
         });

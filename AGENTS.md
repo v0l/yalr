@@ -95,3 +95,7 @@ All Router instances share the same `MetricsStore` for:
 ## Implementation Plan
 
 See [PLAN.md](./PLAN.md) for implementation roadmap.
+
+## Authentication & Authorization
+
+See [AUTH.md](AUTH.md) for authentication methods, access control, and user management.
