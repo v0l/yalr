@@ -112,7 +112,7 @@ See [PLAN.md](./PLAN.md) for implementation roadmap.
 - **Framework**: React 19 + TypeScript 6 + Vite 8
 - **Styling**: Tailwind CSS v4 + shadcn/ui (radix-nova style, neutral base)
 - **Libraries**: React Router 7, Recharts, Zustand, assistant-ui (chat), lucide-react icons
-- **Font**: Geist Variable (via @fontsource-variable/geist)
+- **Fonts**: JetBrains Mono (body/code) + Bebas Neue (display), loaded from Google Fonts
 - **Package manager**: Bun
 - **Location**: `admin/` (separate package from Rust workspace)
 
@@ -183,17 +183,40 @@ admin/
 
 ## Admin UI Design Philosophy
 
-- **Refined minimalism** — Stripe-dashboard inspired. No wasted chrome, tight spacing.
-- **Sections are bordered panels**, not heavy cards. Use `rounded-lg border bg-card p-4` instead of `Card`/`CardHeader`/`CardContent` for internal pages. Cards are for primary dashboard tiles only.
-- **No `Separator` components** between sections — 16px spacing (`gap-4`) is enough.
-- **Typography**: Section headers are `text-sm font-semibold`. Labels are `text-[10px] uppercase tracking-wider`. Use `tabular-nums` on all numeric values.
-- **Badges are compact**: `text-[10px] px-1.5 py-0 h-5` consistently across the app.
-- **Tables favor lightness**: `border-b border-border/50` for rows, `hover:bg-muted/30` for hover, hide less-important columns on smaller breakpoints.
-- **Two-column grids on lg+** (`grid-cols-1 lg:grid-cols-2 gap-4`), single-column below. Balance + Permissions side-by-side on desktop.
-- **Info boxes are collapsible** behind a `?` toggle instead of always-visible blocks.
-- **Page wrapper**: `space-y-4 p-4 sm:p-5` — full width, no max-width clamp. Layout handles padding at the nav level.
-- **User identity banner**: Not a card — just a header row with badges inline. Username, type badge, admin badge, created date, external ID all on one compact line.
-- API keys table uses raw `<table>` instead of shadcn `Table` for finer control over column visibility at breakpoints.
+- **Brutalist Industrial Terminal** — Monospace-forward, acid-green (`#4ce04c` in dark, `#0f7c0f` in light) accents, near-black/slate-gray backgrounds. Raw infrastructure aesthetic: no decoration, only function.
+- **Typography**: JetBrains Mono for body/code, Bebas Neue for display headers. `tabular-nums` on all numeric values, `uppercase tracking-wider` on section labels at `text-[10px]`.
+- **Sections are bordered panels**: `className="panel p-4"` (uses `bg-card border border-border`). No heavy Card/Header/Content wrapping for internal pages.
+- **No `Separator` components** — 16px spacing (`gap-4`) provides sufficient visual separation between bordered panels.
+- **Badges are compact**: `text-[10px] px-1.5 py-0 h-5` consistently across the app. Brand badges use `bg-brand/15 text-brand border-brand/30`, destructive uses `bg-destructive/15 text-destructive border-destructive/30`.
+- **Tables**: raw `<table>` with `border-b border-border/50` for rows, `hover:bg-surface` for hover. No shadcn Table wrapper — gives finer control over column visibility at breakpoints.
+- **Grids**: `grid-cols-1 xl:grid-cols-3 gap-4` for metric charts, `grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-2` for provider cards. Two-column on lg+ for detail layouts.
+- **Page wrapper**: `space-y-4 p-4 sm:p-5` — full width, no max-width clamp.
+
+### Theme System
+
+- **Light/dark toggle** in sidebar footer, persisted to `localStorage('theme')` via `ThemeContext`.
+- **CSS variables** defined in `index.css` under `:root` (light) and `:root.dark` (dark). A duplicate `.dark` block exists for shadcn compatibility.
+- **Semantic tokens available as Tailwind colors**: `brand`, `brand-foreground`, `surface`, `warning`, plus standard `primary`, `secondary`, `muted`, `border`, `destructive`, `sidebar-*`.
+- **Never use hardcoded hex colors** in Tailwind `bg-[#...]` / `text-[#...]` / `border-[#...]`. Always use the semantic color classes (`bg-card`, `text-muted-foreground`, `border-border`, etc.) or CSS `var(--...)` references in inline styles.
+- **Charts (Recharts)**: Use `var(--brand)`, `var(--warning)`, `var(--border)`, `var(--card)` in JS-level style objects and SVG props so they respond to theme.
+- Sidebar is theme-aware (light concrete in light mode, near-black in dark mode) via `bg-sidebar` and sidebar CSS vars.
+
+### Metrics Page (WebSocket + Charts)
+
+- **WebSocket**: connects to `/api/metrics/ws?token=...` — protocol derived from `API_BASE_URL` (not `window.location`).
+- **History**: loaded once on mount from `/api/metrics/history`; **no polling** (WS provides real-time data). Health overview polls every 60s.
+- **Charts**: 3 Recharts line charts — P90 TTFT, P90 Output TPS, P90 Input TPS — each with independent Y-axis. Grid: `xl:grid-cols-3`.
+- **Selection model**: Click a provider card to filter charts to that provider (`selP` state). Click a model in the breakdown panel to filter across all providers (`selM` state, `selP` cleared). Both can be active simultaneously for provider+model drill-down.
+- **Model breakdown panel**: Always shows all cross-provider models (alphabetical sort, stable ordering). Per-provider model list appears below when a provider is selected.
+- **Event stream**: Sticky column headers (TIME / PROVIDER / MODEL / EVENT / VALUE / USER), click-to-copy error messages on FAIL events, combined user+key display.
+- **Provider cards in grid**: Health dot, backoff time, RL badge all inline in header row. FAILURES row always visible. Bottom health panel removed (health data merged into cards).
+
+### Topup Flow
+
+- **Two-step dialog**: Step 1 picks amount + payment method → Step 2 shows payment instructions.
+- **Currency-specific presets**: USD uses $5/$10/$25/$50, sats uses 1K/5K/10K/25K, msats uses 1M/5M/10M/25M. Switching methods resets amount to first preset of new currency.
+- **Balance display**: passed as `currentBalance` prop from provider health data, typed as `CurrencyAmount`.
+- Lightning invoices auto-copied to clipboard on generation.
 
 ## Authentication & Authorization
 

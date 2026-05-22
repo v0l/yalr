@@ -15,9 +15,10 @@ High-performance async LLM router with load balancing, provider management, inte
 - **Health Checks**: Automatic health tracking with exponential backoff and provider recovery
 - **Retry & Fallback**: Automatic retry with exponential backoff and fallback to next available provider on failure
 - **Admin UI**: React-based web interface for managing providers, API keys, and viewing metrics
-- **Authentication**: Session-based auth with NIP-98 (Nostr) and API key support
-- **Database-Backed Config**: SQLite database for persistent provider and routing configuration
+- **Authentication**: Session-based auth with NIP-98 (Nostr), API keys, and internal user/password accounts
+- **Database-Backed Config**: SQLite database for persistent provider, routing, user, and payment configuration
 - **CLI Tool**: Command-line interface for additional operations
+- **Top-up System**: Lightning Network payment integration (Routstr/PPQ) with auto-generated invoices
 
 ## Quick Start
 
@@ -98,38 +99,72 @@ auth:
 
 ### Admin UI
 
-The admin UI provides a web interface for:
-- **Dashboard**: Overview of system status and metrics
-- **Providers**: Create, list, and delete LLM providers
-- **Router Config**: View routing strategy and provider configurations
-- **Metrics**: Real-time provider performance metrics
-- **API Keys**: Manage API keys for authentication
+React 19 + TypeScript 6 + Vite 8 SPA served at `/admin`. Features:
+
+- **Dashboard**: Provider health grid, stat cards (TTFT, latency, TPS, throughput), live WebSocket updates, top-up dialog for payment-enabled providers
+- **Providers**: CRUD management, quick-add templates (OpenAI, Anthropic, Ollama, LlamaCpp, OpenRouter), API key generation per provider
+- **Config**: Routing configuration CRUD with nested provider-per-config assignment
+- **Metrics**: Real-time WebSocket-driven page with 3 independent Recharts (P90 TTFT, Output TPS, Input TPS), cross-provider model breakdown panel, live event stream with click-to-copy errors
+- **Users**: User CRUD, user-type management (internal/nostr), API key management, model permission overrides per user
+- **Payments**: 4-tab layout — Balances overview, Model Pricing CRUD, Transaction history, Invoice list. Admin credit/debit adjustments
+- **Chat**: assistant-ui based chat interface with SSE streaming, model selector, message copying
+
+See [AGENTS.md](AGENTS.md) for full design philosophy, theme system rules, and implementation conventions.
 
 ### REST API
 
-#### Authentication
-- `POST /api/auth/setup` - Setup first admin user
-- `POST /api/auth/login` - Login and get session token
-- `POST /api/auth/logout` - Logout current session
-- `GET /api/auth/status` - Check authentication status
+#### Auth & Setup
+- `POST /api/auth/login` — Login (username/password or NIP-98 nostr event)
+- `POST /api/auth/logout` — Logout current session
+- `GET /api/auth/status` — Check authentication status
+- `GET /api/setup/status` — Check if initial admin user exists
+- `POST /api/setup/create` — Create first admin user
 
 #### Providers
-- `GET /api/providers` - List all providers
-- `POST /api/providers` - Create new provider
-- `DELETE /api/providers/:slug` - Delete provider by slug
+- `GET /api/providers` — List all providers
+- `POST /api/providers` — Create new provider
+- `PUT /api/providers/:slug` — Update provider
+- `DELETE /api/providers/:slug` — Delete provider
 
-#### Configuration
-- `GET /api/config` - Get router configuration (strategy, providers, metrics)
+#### Routing Config
+- `GET /api/config` — List routing configs
+- `POST /api/config` — Create routing config
+- `PUT /api/config/:id` — Update routing config
+- `DELETE /api/config/:id` — Delete routing config
+- `GET /api/config/:id/providers` — List providers assigned to config
+- `POST /api/config/:id/providers` — Add provider to config
+- `DELETE /api/config/:id/providers/:slug` — Remove provider from config
 
-#### Metrics
-- `GET /api/metrics` - Get provider performance metrics
+#### Metrics & Health
+- `GET /api/metrics` — Current provider performance metrics snapshot
+- `GET /api/metrics/history` — Time-series P90 metrics history
+- `GET /api/metrics/health` — Per-provider health state overview
+- `WS /api/metrics/ws?token=...` — Real-time WebSocket event stream
 
-#### API Keys
-- `GET /api/api-keys` - List API keys
-- `POST /api/api-keys` - Create new API key
-- `POST /api/api-keys/:id/disable` - Disable API key
-- `POST /api/api-keys/:id/enable` - Enable API key
-- `DELETE /api/api-keys/:id` - Delete API key
+#### Users & API Keys
+- `GET /api/users` — List all users
+- `POST /api/users` — Create user
+- `DELETE /api/users/:id` — Delete user
+- `GET /api/users/:id` — Get user detail
+- `POST /api/users/:id/api-keys` — Create API key for user
+- `POST /api/api-keys/:id/disable` — Disable API key
+- `POST /api/api-keys/:id/enable` — Enable API key
+- `DELETE /api/api-keys/:id` — Delete API key
+
+#### Model Permissions
+- `GET /api/users/:id/model-permissions` — Get user's model permission overrides
+- `POST /api/users/:id/model-permissions` — Set model permission override
+- `DELETE /api/users/:id/model-permissions/:id` — Delete override
+
+#### Payments
+- `GET /api/payments/balances` — All user balances
+- `GET /api/payments/model-pricing` — Model pricing configuration
+- `POST /api/payments/model-pricing` — Create pricing rule
+- `PUT /api/payments/model-pricing/:id` — Update pricing rule
+- `GET /api/payments/transactions` — Transaction history
+- `GET /api/payments/invoices` — Invoice list
+- `POST /api/payments/topup` — Create top-up invoice
+- `POST /api/payments/adjust` — Admin credit/debit adjustment
 
 #### Router
 - `GET /health` - Health check
