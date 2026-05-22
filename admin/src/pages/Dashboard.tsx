@@ -12,15 +12,15 @@ import { cn, formatBalance } from '@/lib/utils'
 
 function HealthBadge({ state }: { state: string }) {
   switch (state) {
-    case 'healthy': return <Badge className="bg-[#4ce04c]/15 text-[#4ce04c] border-[#4ce04c]/30 font-mono text-[10px] tracking-wider uppercase">HEALTHY</Badge>
-    case 'degraded': return <Badge className="bg-[#ffb800]/15 text-[#ffb800] border-[#ffb800]/30 font-mono text-[10px] tracking-wider uppercase">DEGRADED</Badge>
-    case 'unhealthy': return <Badge className="bg-[#ff3333]/15 text-[#ff3333] border-[#ff3333]/30 font-mono text-[10px] tracking-wider uppercase">DOWN</Badge>
+    case 'healthy': return <Badge className="bg-brand/15 text-brand border-brand/30 font-mono text-[10px] tracking-wider uppercase">HEALTHY</Badge>
+    case 'degraded': return <Badge className="bg-warning/15 text-warning border-warning/30 font-mono text-[10px] tracking-wider uppercase">DEGRADED</Badge>
+    case 'unhealthy': return <Badge className="bg-destructive/15 text-destructive border-destructive/30 font-mono text-[10px] tracking-wider uppercase">DOWN</Badge>
     default: return <Badge variant="secondary" className="font-mono text-[10px]">{state.toUpperCase()}</Badge>
   }
 }
 
 function BalanceDisplay({ health }: { health?: ProviderHealthEntry }) {
-  if (!health?.balance) return <span className="text-[#716d66] font-mono">—</span>
+  if (!health?.balance) return <span className="text-muted-foreground font-mono">—</span>
   return <span className="font-mono text-[13px] tabular-nums">{formatBalance(health.balance.amount, health.balance.currency)}</span>
 }
 
@@ -36,16 +36,16 @@ function StatCard({
   subGood?: boolean
   color?: 'green' | 'amber' | 'red' | 'default'
 }) {
-  const borderColor = color === 'green' ? 'border-[#4ce04c]/20' : color === 'amber' ? 'border-[#ffb800]/20' : color === 'red' ? 'border-[#ff3333]/20' : 'border-[#1a1a1e]'
-  const glowColor = color === 'green' ? '#4ce04c' : color === 'amber' ? '#ffb800' : color === 'red' ? '#ff3333' : 'transparent'
+  const borderColor = color === 'green' ? 'border-brand/20' : color === 'amber' ? 'border-warning/20' : color === 'red' ? 'border-destructive/20' : 'border-border/50'
+  const glowColor = color === 'green' ? 'var(--brand)' : color === 'amber' ? 'var(--warning)' : color === 'red' ? 'var(--destructive)' : 'transparent'
   return (
     <div className={cn('panel px-4 py-3.5', borderColor)} style={glowColor !== 'transparent' ? { boxShadow: `inset 0 0 20px ${glowColor}08` } : undefined}>
-      <div className="text-[10px] uppercase tracking-[0.1em] text-[#716d66] font-mono mb-1">{label}</div>
+      <div className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground font-mono mb-1">{label}</div>
       <div className="font-mono text-[28px] font-bold tabular-nums leading-none tracking-tight">{value}</div>
       {sub && (
         <div className={cn(
           'mt-1 font-mono text-[11px]',
-          subError ? 'text-[#ff3333]' : subGood ? 'text-[#4ce04c]' : 'text-[#716d66]'
+          subError ? 'text-destructive' : subGood ? 'text-brand' : 'text-muted-foreground'
         )}>
           {sub}
         </div>
@@ -159,13 +159,13 @@ export default function Dashboard() {
     return (
       <div className="space-y-6 p-6">
         <div className="flex flex-col gap-1">
-          <Skeleton className="h-8 w-44 bg-[#1c1c1e]" />
-          <Skeleton className="h-4 w-64 bg-[#1c1c1e]" />
+          <Skeleton className="h-8 w-44 bg-secondary" />
+          <Skeleton className="h-4 w-64 bg-secondary" />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          {[1,2,3,4].map(i => <Skeleton key={i} className="h-28 bg-[#1c1c1e]" />)}
+          {[1,2,3,4].map(i => <Skeleton key={i} className="h-28 bg-secondary" />)}
         </div>
-        <Skeleton className="h-80 bg-[#1c1c1e]" />
+        <Skeleton className="h-80 bg-secondary" />
       </div>
     )
   }
@@ -173,7 +173,7 @@ export default function Dashboard() {
   if (error) {
     return (
       <div className="p-6">
-        <Alert className="border-[#ff3333]/30 bg-[#ff3333]/5 text-[#ff3333] font-mono">
+        <Alert className="border-destructive/30 bg-destructive/5 text-destructive font-mono">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       </div>
@@ -203,15 +203,15 @@ export default function Dashboard() {
             </h1>
             <div className={cn(
               'flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider px-2 py-0.5 border',
-              wsStatus === 'connected' ? 'text-[#4ce04c] border-[#4ce04c]/30 bg-[#4ce04c]/5' :
-              wsStatus === 'connecting' ? 'text-[#ffb800] border-[#ffb800]/30 bg-[#ffb800]/5' :
-              'text-[#ff3333] border-[#ff3333]/30 bg-[#ff3333]/5'
+              wsStatus === 'connected' ? 'text-brand border-brand/30 bg-brand/5' :
+              wsStatus === 'connecting' ? 'text-warning border-warning/30 bg-warning/5' :
+              'text-destructive border-destructive/30 bg-destructive/5'
             )}>
               <span className={cn(
                 'w-1.5 h-1.5 rounded-full',
-                wsStatus === 'connected' && 'bg-[#4ce04c] animate-pulse-status',
-                wsStatus === 'connecting' && 'bg-[#ffb800] animate-pulse-status',
-                wsStatus === 'disconnected' && 'bg-[#ff3333]'
+                wsStatus === 'connected' && 'bg-brand animate-pulse-status',
+                wsStatus === 'connecting' && 'bg-warning animate-pulse-status',
+                wsStatus === 'disconnected' && 'bg-destructive'
               )} />
               {wsStatus === 'connected' ? 'LIVE' : wsStatus === 'connecting' ? 'CONN' : 'OFF'}
             </div>
@@ -224,19 +224,19 @@ export default function Dashboard() {
         {/* Quick health summary */}
         <div className="hidden sm:flex items-center gap-4 font-mono text-[12px]">
           <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-[#4ce04c]" />
-            <span className="text-[#4ce04c] tabular-nums">{providers.filter(p => p.health?.health_state === 'healthy').length}</span>
-            <span className="text-[#716d66]">HEALTHY</span>
+            <span className="w-2 h-2 rounded-full bg-brand" />
+            <span className="text-brand tabular-nums">{providers.filter(p => p.health?.health_state === 'healthy').length}</span>
+            <span className="text-muted-foreground">HEALTHY</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-[#ffb800]" />
-            <span className="text-[#ffb800] tabular-nums">{providers.filter(p => p.health?.health_state === 'degraded').length}</span>
-            <span className="text-[#716d66]">DEGRADED</span>
+            <span className="w-2 h-2 rounded-full bg-warning" />
+            <span className="text-warning tabular-nums">{providers.filter(p => p.health?.health_state === 'degraded').length}</span>
+            <span className="text-muted-foreground">DEGRADED</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-[#ff3333]" />
-            <span className="text-[#ff3333] tabular-nums">{providers.filter(p => p.health?.health_state === 'unhealthy').length}</span>
-            <span className="text-[#716d66]">DOWN</span>
+            <span className="w-2 h-2 rounded-full bg-destructive" />
+            <span className="text-destructive tabular-nums">{providers.filter(p => p.health?.health_state === 'unhealthy').length}</span>
+            <span className="text-muted-foreground">DOWN</span>
           </div>
         </div>
       </div>
@@ -287,20 +287,20 @@ export default function Dashboard() {
           <div className="overflow-x-auto">
             <table className="w-full table-scan">
               <thead>
-                <tr className="border-b border-[#1a1a1e] text-left">
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Provider</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Status</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Balance</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium text-right">In-Flight</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium text-right">Failures</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium text-right">Backoff</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium text-right">Latency</th>
+                <tr className="border-b border-border/50 text-left">
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Provider</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Status</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Balance</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">In-Flight</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Failures</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Backoff</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Latency</th>
                 </tr>
               </thead>
               <tbody>
                 {providers.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-16 text-center font-mono text-[13px] text-[#716d66]">
+                    <td colSpan={7} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">
                       {'>'} NO PROVIDERS CONFIGURED
                     </td>
                   </tr>
@@ -309,10 +309,10 @@ export default function Dashboard() {
                     const h = provider.health
                     const m = metrics?.providers.find(p => p.provider === provider.name)
                     return (
-                      <tr key={provider.slug} className="border-b border-[#1a1a1e] hover:bg-[#0d0d0f] transition-colors">
+                      <tr key={provider.slug} className="border-b border-border/50 hover:bg-surface transition-colors">
                         <td className="px-4 py-3">
                           <div className="font-mono text-[13px] font-medium">{provider.name}</div>
-                          <div className="font-mono text-[11px] text-[#716d66]">{provider.slug}</div>
+                          <div className="font-mono text-[11px] text-muted-foreground">{provider.slug}</div>
                         </td>
                         <td className="px-4 py-3"><HealthBadge state={h?.health_state ?? 'unknown'} /></td>
                         <td className="px-4 py-3">
@@ -323,7 +323,7 @@ export default function Dashboard() {
                                 variant="outline"
                                 size="sm"
                                 onClick={() => handleTopup(provider)}
-                                className="h-7 font-mono text-[10px] uppercase tracking-wider border-[#2a2a2e] text-[#716d66] hover:text-[#4ce04c] hover:border-[#4ce04c]/30"
+                                className="h-7 font-mono text-[10px] uppercase tracking-wider border-border text-muted-foreground hover:text-brand hover:border-brand/30"
                               >
                                 TOP-UP
                               </Button>
@@ -331,16 +331,16 @@ export default function Dashboard() {
                           </div>
                         </td>
                         <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">
-                          {h?.in_flight ?? '—'}{h?.max_concurrency ? <span className="text-[#716d66]">/{h.max_concurrency}</span> : ''}
+                          {h?.in_flight ?? '—'}{h?.max_concurrency ? <span className="text-muted-foreground">/{h.max_concurrency}</span> : ''}
                         </td>
                         <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">
                           {h?.consecutive_failures ? (
-                            <span className={h.consecutive_failures > 0 ? 'text-[#ff3333]' : 'text-[#4ce04c]'}>
+                            <span className={h.consecutive_failures > 0 ? 'text-destructive' : 'text-brand'}>
                               {h.consecutive_failures}
                             </span>
                           ) : '—'}
                         </td>
-                        <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right text-[#716d66]">
+                        <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right text-muted-foreground">
                           {h?.backoff_ms ? `${h.backoff_ms.toLocaleString('en-US')}ms` : '—'}
                         </td>
                         <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">
@@ -363,7 +363,7 @@ export default function Dashboard() {
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
             {health.providers.map(h => {
               const state = h.health_state
-              const stateColor = state === 'healthy' ? '#4ce04c' : state === 'degraded' ? '#ffb800' : '#ff3333'
+              const stateColor = state === 'healthy' ? 'var(--brand)' : state === 'degraded' ? 'var(--warning)' : 'var(--destructive)'
               return (
                 <div
                   key={h.provider}
@@ -373,18 +373,18 @@ export default function Dashboard() {
                   <div className="flex items-center gap-1.5 mb-1">
                     <span className={cn(
                       'w-1.5 h-1.5 rounded-full',
-                      state === 'healthy' && 'bg-[#4ce04c]',
-                      state === 'degraded' && 'bg-[#ffb800]',
-                      state === 'unhealthy' && 'bg-[#ff3333]'
+                      state === 'healthy' && 'bg-brand',
+                      state === 'degraded' && 'bg-warning',
+                      state === 'unhealthy' && 'bg-destructive'
                     )} />
-                    <span className="font-mono text-[10px] text-[#716d66] uppercase tracking-wider">
+                    <span className="font-mono text-[10px] text-muted-foreground uppercase tracking-wider">
                       {state}
                     </span>
                   </div>
                   <div className="font-mono text-[13px] font-medium truncate">{h.provider}</div>
-                  <div className="flex items-center gap-3 mt-1.5 font-mono text-[11px] text-[#716d66] tabular-nums">
+                  <div className="flex items-center gap-3 mt-1.5 font-mono text-[11px] text-muted-foreground tabular-nums">
                     <span title="In-flight">IF:{h.in_flight}</span>
-                    <span title="Consecutive failures" className={h.consecutive_failures > 0 ? 'text-[#ff3333]' : 'text-[#4ce04c]'}>
+                    <span title="Consecutive failures" className={h.consecutive_failures > 0 ? 'text-destructive' : 'text-brand'}>
                       F:{h.consecutive_failures}
                     </span>
                     {h.backoff_ms > 0 && <span title="Backoff">BO:{h.backoff_ms}ms</span>}

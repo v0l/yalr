@@ -148,11 +148,11 @@ export default function Config() {
     return (
       <div className="space-y-6 p-6">
         <div className="flex items-center justify-between">
-          <div><Skeleton className="h-8 w-48 bg-[#1c1c1e]" /><Skeleton className="h-4 w-64 bg-[#1c1c1e] mt-1" /></div>
-          <Skeleton className="h-9 w-40 bg-[#1c1c1e]" />
+          <div><Skeleton className="h-8 w-48 bg-secondary" /><Skeleton className="h-4 w-64 bg-secondary mt-1" /></div>
+          <Skeleton className="h-9 w-40 bg-secondary" />
         </div>
-        <Skeleton className="h-32 bg-[#1c1c1e]" />
-        <Skeleton className="h-32 bg-[#1c1c1e]" />
+        <Skeleton className="h-32 bg-secondary" />
+        <Skeleton className="h-32 bg-secondary" />
       </div>
     )
   }
@@ -166,28 +166,28 @@ export default function Config() {
           <h1 className="font-display text-[28px] tracking-[0.04em] text-foreground leading-none mb-1">ROUTING CONFIG</h1>
           <p className="font-mono text-[13px] text-muted-foreground">Manage routing engines and their provider assignments</p>
         </div>
-        <Button onClick={openCreateConfig} className="font-mono text-[12px] tracking-wider uppercase border border-[#4ce04c]/40 bg-[#4ce04c]/10 text-[#4ce04c] hover:bg-[#4ce04c]/20">
+        <Button onClick={openCreateConfig} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">
           <PlusIcon className="size-3.5" /> Add Config
         </Button>
       </div>
 
       {/* Messages */}
       {successMessage && (
-        <Alert className="border-[#4ce04c]/30 bg-[#4ce04c]/5 text-[#4ce04c] font-mono text-[13px]">
-          <AlertDescription className="flex items-center justify-between">{successMessage}<Button variant="ghost" size="icon-xs" onClick={() => setSuccessMessage(null)} className="text-[#4ce04c]">×</Button></AlertDescription>
+        <Alert className="border-brand/30 bg-brand/5 text-brand font-mono text-[13px]">
+          <AlertDescription className="flex items-center justify-between">{successMessage}<Button variant="ghost" size="icon-xs" onClick={() => setSuccessMessage(null)} className="text-brand">×</Button></AlertDescription>
         </Alert>
       )}
       {error && (
-        <Alert className="border-[#ff3333]/30 bg-[#ff3333]/5 text-[#ff3333] font-mono text-[13px]">
-          <AlertDescription className="flex items-center justify-between">{error}<Button variant="ghost" size="icon-xs" onClick={() => setError(null)} className="text-[#ff3333]">×</Button></AlertDescription>
+        <Alert className="border-destructive/30 bg-destructive/5 text-destructive font-mono text-[13px]">
+          <AlertDescription className="flex items-center justify-between">{error}<Button variant="ghost" size="icon-xs" onClick={() => setError(null)} className="text-destructive">×</Button></AlertDescription>
         </Alert>
       )}
 
       {/* Empty state */}
       {configs.length === 0 ? (
         <div className="panel p-12 flex flex-col items-center gap-4">
-          <p className="font-mono text-[13px] text-[#716d66]">{'>'} NO ROUTING CONFIGURATIONS FOUND</p>
-          <Button onClick={openCreateConfig} className="font-mono text-[12px] tracking-wider uppercase border border-[#4ce04c]/40 bg-[#4ce04c]/10 text-[#4ce04c] hover:bg-[#4ce04c]/20">
+          <p className="font-mono text-[13px] text-muted-foreground">{'>'} NO ROUTING CONFIGURATIONS FOUND</p>
+          <Button onClick={openCreateConfig} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">
             <PlusIcon className="size-3.5" /> Create First Config
           </Button>
         </div>
@@ -199,8 +199,8 @@ export default function Config() {
               <div className="flex items-start justify-between">
                 <div>
                   <h2 className="font-mono text-[16px] font-semibold mb-1">{config.name}</h2>
-                  <div className="flex flex-wrap items-center gap-2 font-mono text-[12px] text-[#716d66]">
-                    <Badge variant="secondary" className="font-mono text-[10px] uppercase tracking-wider bg-[#1c1c1e] text-[#716d66] border-[#2a2a2e]">{config.strategy.replace(/_/g, ' ')}</Badge>
+                  <div className="flex flex-wrap items-center gap-2 font-mono text-[12px] text-muted-foreground">
+                    <Badge variant="secondary" className="font-mono text-[10px] uppercase tracking-wider bg-secondary text-muted-foreground border-border">{config.strategy.replace(/_/g, ' ')}</Badge>
                     <span className="text-[#3a3a3e]">|</span>
                     <span>{config.providers.length} provider{config.providers.length !== 1 ? 's' : ''}</span>
                     <span className="text-[#3a3a3e]">|</span>
@@ -208,10 +208,10 @@ export default function Config() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
-                  <Button variant="outline" size="sm" onClick={() => openEditConfig(config)} className="font-mono text-[11px] uppercase tracking-wider border-[#2a2a2e] text-[#716d66] hover:text-[#d4d0c8] h-8">
+                  <Button variant="outline" size="sm" onClick={() => openEditConfig(config)} className="font-mono text-[11px] uppercase tracking-wider border-border text-muted-foreground hover:text-foreground h-8">
                     <PencilIcon className="size-3" /> Edit
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setDeleteConfigTarget(config)} className="font-mono text-[11px] uppercase tracking-wider border-[#2a2a2e] text-[#716d66] hover:text-[#ff3333] h-8">
+                  <Button variant="outline" size="sm" onClick={() => setDeleteConfigTarget(config)} className="font-mono text-[11px] uppercase tracking-wider border-border text-muted-foreground hover:text-destructive h-8">
                     <TrashIcon className="size-3" /> Delete
                   </Button>
                 </div>
@@ -220,45 +220,45 @@ export default function Config() {
               {/* Assignments */}
               <div>
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#716d66]">Provider Assignments</h3>
-                  <Button variant="secondary" size="xs" onClick={() => openAddProvider(config.id)} className="font-mono text-[10px] uppercase tracking-wider bg-[#1c1c1e] text-[#716d66] hover:text-[#d4d0c8] border border-[#2a2a2e] h-7">
+                  <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Provider Assignments</h3>
+                  <Button variant="secondary" size="xs" onClick={() => openAddProvider(config.id)} className="font-mono text-[10px] uppercase tracking-wider bg-secondary text-muted-foreground hover:text-foreground border border-border h-7">
                     <PlusIcon className="size-3" /> Add
                   </Button>
                 </div>
                 {config.providers.length === 0 ? (
-                  <p className="py-8 text-center font-mono text-[13px] text-[#716d66]">No providers assigned.</p>
+                  <p className="py-8 text-center font-mono text-[13px] text-muted-foreground">No providers assigned.</p>
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full table-scan">
                       <thead>
-                        <tr className="border-b border-[#1a1a1e] text-left">
-                          <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-3 py-2 font-medium">Provider</th>
-                          <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-3 py-2 font-medium">Model</th>
-                          <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-3 py-2 font-medium text-right">Weight</th>
-                          <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-3 py-2 font-medium">Status</th>
-                          <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-3 py-2 font-medium text-right">Actions</th>
+                        <tr className="border-b border-border/50 text-left">
+                          <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium">Provider</th>
+                          <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium">Model</th>
+                          <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium text-right">Weight</th>
+                          <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium">Status</th>
+                          <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         {config.providers.map(a => (
-                          <tr key={a.id} className="border-b border-[#1a1a1e] hover:bg-[#0d0d0f]">
+                          <tr key={a.id} className="border-b border-border/50 hover:bg-surface">
                             <td className="px-3 py-2">
                               <span className="font-mono text-[13px] font-medium">{a.provider_name}</span>
-                              <span className="ml-1.5 font-mono text-[11px] text-[#716d66]">{a.provider_slug}</span>
+                              <span className="ml-1.5 font-mono text-[11px] text-muted-foreground">{a.provider_slug}</span>
                             </td>
                             <td className="px-3 py-2">
-                              {a.model ? <code className="font-mono text-[13px]">{a.model}</code> : <span className="font-mono text-[12px] text-[#716d66]">—</span>}
+                              {a.model ? <code className="font-mono text-[13px]">{a.model}</code> : <span className="font-mono text-[12px] text-muted-foreground">—</span>}
                             </td>
                             <td className="px-3 py-2 text-right font-mono text-[13px] tabular-nums">{a.weight}</td>
                             <td className="px-3 py-2">
                               {a.is_active
-                                ? <Badge className="bg-[#4ce04c]/15 text-[#4ce04c] border-[#4ce04c]/30 font-mono text-[10px] tracking-wider uppercase">ACTIVE</Badge>
-                                : <Badge className="bg-[#1c1c1e] text-[#716d66] border-[#2a2a2e] font-mono text-[10px] tracking-wider uppercase">INACTIVE</Badge>}
+                                ? <Badge className="bg-brand/15 text-brand border-brand/30 font-mono text-[10px] tracking-wider uppercase">ACTIVE</Badge>
+                                : <Badge className="bg-secondary text-muted-foreground border-border font-mono text-[10px] tracking-wider uppercase">INACTIVE</Badge>}
                             </td>
                             <td className="px-3 py-2">
                               <div className="flex items-center justify-end gap-1">
-                                <Button variant="ghost" size="icon-xs" onClick={() => openEditProvider(config.id, a)} className="text-[#716d66] hover:text-[#d4d0c8]"><PencilIcon className="size-3" /></Button>
-                                <Button variant="ghost" size="icon-xs" onClick={() => setDeleteAssignment({ id: a.id, routing_config_id: config.id, provider_name: a.provider_name })} className="text-[#716d66] hover:text-[#ff3333]"><TrashIcon className="size-3" /></Button>
+                                <Button variant="ghost" size="icon-xs" onClick={() => openEditProvider(config.id, a)} className="text-muted-foreground hover:text-foreground"><PencilIcon className="size-3" /></Button>
+                                <Button variant="ghost" size="icon-xs" onClick={() => setDeleteAssignment({ id: a.id, routing_config_id: config.id, provider_name: a.provider_name })} className="text-muted-foreground hover:text-destructive"><TrashIcon className="size-3" /></Button>
                               </div>
                             </td>
                           </tr>
@@ -275,23 +275,23 @@ export default function Config() {
 
       {/* ── Config Create/Edit Dialog ──────────────────────────────── */}
       <Dialog open={configDialog.open} onOpenChange={o => { if (!o) setConfigDialog({ open: false, editing: null }) }}>
-        <DialogContent className="sm:max-w-lg border-[#2a2a2e] bg-[#111113]">
+        <DialogContent className="sm:max-w-lg border-border bg-card">
           <DialogHeader>
             <DialogTitle className="font-display text-xl tracking-[0.04em]">{configDialog.editing ? 'EDIT CONFIG' : 'CREATE CONFIG'}</DialogTitle>
-            <DialogDescription className="font-mono text-[12px] text-[#716d66]">{configDialog.editing ? 'Update routing configuration.' : 'Create a new routing engine.'}</DialogDescription>
+            <DialogDescription className="font-mono text-[12px] text-muted-foreground">{configDialog.editing ? 'Update routing configuration.' : 'Create a new routing engine.'}</DialogDescription>
           </DialogHeader>
           <form onSubmit={handleConfigSave} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="c-name" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Name</Label>
-              <Input id="c-name" value={configForm.name} onChange={e => setConfigForm({ ...configForm, name: e.target.value })} placeholder="production" required className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]" />
+              <Label htmlFor="c-name" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Name</Label>
+              <Input id="c-name" value={configForm.name} onChange={e => setConfigForm({ ...configForm, name: e.target.value })} placeholder="production" required className="font-mono bg-surface border-border text-foreground" />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="c-strategy" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Strategy</Label>
+              <Label htmlFor="c-strategy" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Strategy</Label>
               <Select value={configForm.strategy} onValueChange={v => setConfigForm({ ...configForm, strategy: v })}>
-                <SelectTrigger id="c-strategy" className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]"><SelectValue /></SelectTrigger>
-                <SelectContent className="bg-[#111113] border-[#2a2a2e]">
+                <SelectTrigger id="c-strategy" className="font-mono bg-surface border-border text-foreground"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-card border-border">
                   <SelectGroup>
-                    {['round_robin','least_loaded','random'].map(s => <SelectItem key={s} value={s} className="font-mono text-[#d4d0c8]">{s.replace(/_/g, ' ')}</SelectItem>)}
+                    {['round_robin','least_loaded','random'].map(s => <SelectItem key={s} value={s} className="font-mono text-foreground">{s.replace(/_/g, ' ')}</SelectItem>)}
                   </SelectGroup>
                 </SelectContent>
               </Select>
@@ -303,18 +303,18 @@ export default function Config() {
             {configForm.health_check_enabled && (
               <div className="grid grid-cols-2 gap-4">
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="c-interval" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Interval (s)</Label>
-                  <Input id="c-interval" type="number" min={1} value={configForm.health_check_interval_seconds} onChange={e => setConfigForm({ ...configForm, health_check_interval_seconds: Number(e.target.value) })} className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]" />
+                  <Label htmlFor="c-interval" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Interval (s)</Label>
+                  <Input id="c-interval" type="number" min={1} value={configForm.health_check_interval_seconds} onChange={e => setConfigForm({ ...configForm, health_check_interval_seconds: Number(e.target.value) })} className="font-mono bg-surface border-border text-foreground" />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="c-timeout" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Timeout (s)</Label>
-                  <Input id="c-timeout" type="number" min={1} value={configForm.health_check_timeout_seconds} onChange={e => setConfigForm({ ...configForm, health_check_timeout_seconds: Number(e.target.value) })} className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]" />
+                  <Label htmlFor="c-timeout" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Timeout (s)</Label>
+                  <Input id="c-timeout" type="number" min={1} value={configForm.health_check_timeout_seconds} onChange={e => setConfigForm({ ...configForm, health_check_timeout_seconds: Number(e.target.value) })} className="font-mono bg-surface border-border text-foreground" />
                 </div>
               </div>
             )}
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setConfigDialog({ open: false, editing: null })} disabled={configSaving} className="font-mono text-[12px] border-[#2a2a2e] text-[#716d66]">CANCEL</Button>
-              <Button type="submit" disabled={configSaving} className="font-mono text-[12px] tracking-wider uppercase border border-[#4ce04c]/40 bg-[#4ce04c]/10 text-[#4ce04c] hover:bg-[#4ce04c]/20">{configSaving ? 'SAVING...' : configDialog.editing ? 'UPDATE' : 'CREATE'}</Button>
+              <Button type="button" variant="outline" onClick={() => setConfigDialog({ open: false, editing: null })} disabled={configSaving} className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</Button>
+              <Button type="submit" disabled={configSaving} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">{configSaving ? 'SAVING...' : configDialog.editing ? 'UPDATE' : 'CREATE'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -322,13 +322,13 @@ export default function Config() {
 
       {/* ── Config Delete ──────────────────────────────────────────── */}
       <AlertDialog open={!!deleteConfigTarget} onOpenChange={o => { if (!o) setDeleteConfigTarget(null) }}>
-        <AlertDialogContent className="border-[#2a2a2e] bg-[#111113]">
+        <AlertDialogContent className="border-border bg-card">
           <AlertDialogHeader>
-            <AlertDialogTitle className="font-display text-xl tracking-[0.04em] text-[#ff3333]">DELETE CONFIG</AlertDialogTitle>
-            <AlertDialogDescription className="font-mono text-[13px] text-[#716d66]">Delete <span className="text-[#d4d0c8]">{deleteConfigTarget?.name}</span>? All provider assignments will be removed.</AlertDialogDescription>
+            <AlertDialogTitle className="font-display text-xl tracking-[0.04em] text-destructive">DELETE CONFIG</AlertDialogTitle>
+            <AlertDialogDescription className="font-mono text-[13px] text-muted-foreground">Delete <span className="text-foreground">{deleteConfigTarget?.name}</span>? All provider assignments will be removed.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="font-mono text-[12px] border-[#2a2a2e] text-[#716d66]">CANCEL</AlertDialogCancel>
+            <AlertDialogCancel className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={handleDeleteConfig} className="font-mono text-[12px] tracking-wider uppercase">DELETE</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -336,47 +336,47 @@ export default function Config() {
 
       {/* ── Provider Assignment Dialog ─────────────────────────────── */}
       <Dialog open={providerDialog.open} onOpenChange={o => { if (!o) setProviderDialog({ open: false, configId: 0, editingId: null }) }}>
-        <DialogContent className="sm:max-w-lg border-[#2a2a2e] bg-[#111113]">
+        <DialogContent className="sm:max-w-lg border-border bg-card">
           <DialogHeader>
             <DialogTitle className="font-display text-xl tracking-[0.04em]">{providerDialog.editingId ? 'EDIT ASSIGNMENT' : 'ADD PROVIDER'}</DialogTitle>
-            <DialogDescription className="font-mono text-[12px] text-[#716d66]">{providerDialog.editingId ? 'Update this assignment.' : 'Add a provider to this routing config.'}</DialogDescription>
+            <DialogDescription className="font-mono text-[12px] text-muted-foreground">{providerDialog.editingId ? 'Update this assignment.' : 'Add a provider to this routing config.'}</DialogDescription>
           </DialogHeader>
           <form onSubmit={handleProviderSave} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="pa-provider" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Provider</Label>
+              <Label htmlFor="pa-provider" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Provider</Label>
               <Select value={providerForm.provider_id === 0 ? '' : String(providerForm.provider_id)} onValueChange={v => handleProviderChange(Number(v))} disabled={!!providerDialog.editingId}>
-                <SelectTrigger id="pa-provider" className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]"><SelectValue placeholder="Select a provider..." /></SelectTrigger>
-                <SelectContent className="bg-[#111113] border-[#2a2a2e]">
-                  <SelectGroup>{providers.map(p => <SelectItem key={p.id} value={String(p.id)} className="font-mono text-[#d4d0c8]">{p.name} ({p.slug})</SelectItem>)}</SelectGroup>
+                <SelectTrigger id="pa-provider" className="font-mono bg-surface border-border text-foreground"><SelectValue placeholder="Select a provider..." /></SelectTrigger>
+                <SelectContent className="bg-card border-border">
+                  <SelectGroup>{providers.map(p => <SelectItem key={p.id} value={String(p.id)} className="font-mono text-foreground">{p.name} ({p.slug})</SelectItem>)}</SelectGroup>
                 </SelectContent>
               </Select>
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="pa-model" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Model</Label>
+              <Label htmlFor="pa-model" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Model</Label>
               {providerForm.provider_id === 0 ? (
-                <p className="font-mono text-[12px] text-[#716d66]">Select a provider first</p>
+                <p className="font-mono text-[12px] text-muted-foreground">Select a provider first</p>
               ) : loadingModels ? (
-                <div className="flex items-center gap-2 font-mono text-[12px] text-[#716d66]"><Loader2Icon className="animate-spin size-3.5" /> Loading models...</div>
+                <div className="flex items-center gap-2 font-mono text-[12px] text-muted-foreground"><Loader2Icon className="animate-spin size-3.5" /> Loading models...</div>
               ) : (
                 <>
                   <Select value={providerForm.modelCustom ? '__custom__' : (providerForm.model || 'empty')} onValueChange={handleModelSelect}>
-                    <SelectTrigger id="pa-model" className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]"><SelectValue placeholder="No model override" /></SelectTrigger>
-                    <SelectContent className="bg-[#111113] border-[#2a2a2e]">
+                    <SelectTrigger id="pa-model" className="font-mono bg-surface border-border text-foreground"><SelectValue placeholder="No model override" /></SelectTrigger>
+                    <SelectContent className="bg-card border-border">
                       <SelectGroup>
-                        <SelectItem value="empty" className="font-mono text-[#716d66]">No model override</SelectItem>
-                        {providerModels.map(m => <SelectItem key={m.id} value={m.id} className="font-mono text-[#d4d0c8]">{m.id}</SelectItem>)}
-                        <SelectItem value="__custom__" className="font-mono text-[#4ce04c]">Custom model name...</SelectItem>
+                        <SelectItem value="empty" className="font-mono text-muted-foreground">No model override</SelectItem>
+                        {providerModels.map(m => <SelectItem key={m.id} value={m.id} className="font-mono text-foreground">{m.id}</SelectItem>)}
+                        <SelectItem value="__custom__" className="font-mono text-brand">Custom model name...</SelectItem>
                       </SelectGroup>
                     </SelectContent>
                   </Select>
-                  {providerForm.modelCustom && <Input value={providerForm.model} onChange={e => setProviderForm({ ...providerForm, model: e.target.value })} placeholder="Enter custom model name" className="mt-1 font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]" />}
+                  {providerForm.modelCustom && <Input value={providerForm.model} onChange={e => setProviderForm({ ...providerForm, model: e.target.value })} placeholder="Enter custom model name" className="mt-1 font-mono bg-surface border-border text-foreground" />}
                 </>
               )}
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="pa-weight" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Weight</Label>
-                <Input id="pa-weight" type="number" min={1} value={providerForm.weight} onChange={e => setProviderForm({ ...providerForm, weight: Number(e.target.value) })} className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]" />
+                <Label htmlFor="pa-weight" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Weight</Label>
+                <Input id="pa-weight" type="number" min={1} value={providerForm.weight} onChange={e => setProviderForm({ ...providerForm, weight: Number(e.target.value) })} className="font-mono bg-surface border-border text-foreground" />
               </div>
               <div className="flex items-end pb-1.5">
                 <div className="flex items-center gap-2">
@@ -386,8 +386,8 @@ export default function Config() {
               </div>
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setProviderDialog({ open: false, configId: 0, editingId: null })} disabled={providerSaving} className="font-mono text-[12px] border-[#2a2a2e] text-[#716d66]">CANCEL</Button>
-              <Button type="submit" disabled={providerSaving} className="font-mono text-[12px] tracking-wider uppercase border border-[#4ce04c]/40 bg-[#4ce04c]/10 text-[#4ce04c] hover:bg-[#4ce04c]/20">{providerSaving ? 'SAVING...' : providerDialog.editingId ? 'UPDATE' : 'ADD'}</Button>
+              <Button type="button" variant="outline" onClick={() => setProviderDialog({ open: false, configId: 0, editingId: null })} disabled={providerSaving} className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</Button>
+              <Button type="submit" disabled={providerSaving} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">{providerSaving ? 'SAVING...' : providerDialog.editingId ? 'UPDATE' : 'ADD'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -395,13 +395,13 @@ export default function Config() {
 
       {/* ── Remove Assignment Confirmation ──────────────────────────── */}
       <AlertDialog open={!!deleteAssignment} onOpenChange={o => { if (!o) setDeleteAssignment(null) }}>
-        <AlertDialogContent className="border-[#2a2a2e] bg-[#111113]">
+        <AlertDialogContent className="border-border bg-card">
           <AlertDialogHeader>
-            <AlertDialogTitle className="font-display text-xl tracking-[0.04em] text-[#ff3333]">REMOVE PROVIDER</AlertDialogTitle>
-            <AlertDialogDescription className="font-mono text-[13px] text-[#716d66]">Remove <span className="text-[#d4d0c8]">{deleteAssignment?.provider_name}</span> from this routing config?</AlertDialogDescription>
+            <AlertDialogTitle className="font-display text-xl tracking-[0.04em] text-destructive">REMOVE PROVIDER</AlertDialogTitle>
+            <AlertDialogDescription className="font-mono text-[13px] text-muted-foreground">Remove <span className="text-foreground">{deleteAssignment?.provider_name}</span> from this routing config?</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="font-mono text-[12px] border-[#2a2a2e] text-[#716d66]">CANCEL</AlertDialogCancel>
+            <AlertDialogCancel className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={handleDeleteAssignment} className="font-mono text-[12px] tracking-wider uppercase">REMOVE</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

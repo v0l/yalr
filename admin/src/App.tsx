@@ -16,14 +16,14 @@ import { API_BASE_URL } from './api/client'
 
 function LoadingScreen() {
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-[#0a0a0b] gap-4">
-      <div className="flex items-center justify-center w-12 h-12 bg-[#111113] border border-[#2a2a2e]">
+    <div className="min-h-screen flex flex-col items-center justify-center bg-background gap-4">
+      <div className="flex items-center justify-center w-12 h-12 bg-card border border-border">
         <svg viewBox="0 0 24 24" className="w-6 h-6" fill="none">
-          <path d="M6 7l4 5-4 5" stroke="#4ce04c" strokeWidth="2.5" strokeLinecap="square"/>
-          <path d="M12 17l4-10" stroke="#4ce04c" strokeWidth="2.5" strokeLinecap="square"/>
+          <path d="M6 7l4 5-4 5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square"/>
+          <path d="M12 17l4-10" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square"/>
         </svg>
       </div>
-      <span className="font-mono text-[13px] text-[#716d66] animate-blink">LOADING...</span>
+      <span className="font-mono text-[13px] text-muted-foreground animate-blink">LOADING...</span>
     </div>
   )
 }

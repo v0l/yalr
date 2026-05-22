@@ -255,7 +255,7 @@ export default function Metrics() {
   const lines = useMemo(() => {
     const ks = new Set<string>()
     for (const d of chartData) for (const k of Object.keys(d)) { if (k.startsWith('t_') || k.startsWith('o_') || k.startsWith('i_')) ks.add(k) }
-    const clr = ['#4ce04c', '#ffb800', '#a855f7', '#ec4899', '#84cc16', '#f97316']
+    const clr = ['var(--brand)', 'var(--warning)', '#a855f7', '#ec4899', '#84cc16', '#f97316']
     const all = Array.from(ks)
     if (all.length === 0 && !selP) return [
       { key: 'ttft', name: 'P90 TTFT', color: clr[0] },
@@ -292,7 +292,7 @@ export default function Metrics() {
     ? (selM ? `${selP} / ${selM}` : selP)
     : selM ? `${selM} (all providers)` : 'ALL PROVIDERS'
 
-  const ttStyle = { background: '#111113', border: '1px solid #2a2a2e', borderRadius: '4px', fontSize: '11px', fontFamily: '"JetBrains Mono", monospace' }
+  const ttStyle = { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '4px', fontSize: '11px', fontFamily: '"JetBrains Mono", monospace' }
 
   /* ── Render ──────────────────────────────────────────────────── */
   return (
@@ -304,17 +304,17 @@ export default function Metrics() {
           <p className="font-mono text-[13px] text-muted-foreground">Real-time provider performance monitoring</p>
         </div>
         <div className="flex items-center gap-3">
-          {skipped > 0 && <span className="font-mono text-[11px] text-[#ffb800]">{skipped} skipped</span>}
+          {skipped > 0 && <span className="font-mono text-[11px] text-warning">{skipped} skipped</span>}
           <div className={cn(
             'flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider px-2.5 py-1 border',
-            wsStatus === 'connected' ? 'text-[#4ce04c] border-[#4ce04c]/30 bg-[#4ce04c]/5' :
-            wsStatus === 'connecting' ? 'text-[#ffb800] border-[#ffb800]/30 bg-[#ffb800]/5' :
-            'text-[#ff3333] border-[#ff3333]/30 bg-[#ff3333]/5'
+            wsStatus === 'connected' ? 'text-brand border-brand/30 bg-brand/5' :
+            wsStatus === 'connecting' ? 'text-warning border-warning/30 bg-warning/5' :
+            'text-destructive border-destructive/30 bg-destructive/5'
           )}>
             <span className={cn('w-1.5 h-1.5 rounded-full',
-              wsStatus === 'connected' && 'bg-[#4ce04c] animate-pulse-status',
-              wsStatus === 'connecting' && 'bg-[#ffb800] animate-pulse-status',
-              wsStatus === 'disconnected' && 'bg-[#ff3333]'
+              wsStatus === 'connected' && 'bg-brand animate-pulse-status',
+              wsStatus === 'connecting' && 'bg-warning animate-pulse-status',
+              wsStatus === 'disconnected' && 'bg-destructive'
             )} />
             {wsStatus === 'connected' ? 'LIVE' : wsStatus === 'connecting' ? 'CONN' : 'OFF'}
           </div>
@@ -324,7 +324,7 @@ export default function Metrics() {
       {/* Empty state */}
       {plist.length === 0 ? (
         <div className="panel p-12 text-center">
-          <p className="font-mono text-[13px] text-[#716d66]">{'>'} WAITING FOR METRICS...</p>
+          <p className="font-mono text-[13px] text-muted-foreground">{'>'} WAITING FOR METRICS...</p>
         </div>
       ) : (
         /* Provider Grid */
@@ -341,37 +341,37 @@ export default function Metrics() {
                 onClick={() => { setSelP(is ? null : p.name); setSelM(null) }}
                 className={cn(
                   'text-left p-3 border transition-colors cursor-pointer font-mono',
-                  is ? 'border-[#4ce04c]/50 bg-[#4ce04c]/5' : 'panel hover:border-[#4ce04c]/20'
+                  is ? 'border-brand/50 bg-brand/5' : 'panel hover:border-brand/20'
                 )}
               >
                 <div className="flex items-center justify-between mb-2 gap-1.5">
                   <span className="text-[13px] font-semibold truncate min-w-0">{p.name}</span>
                   <div className="flex items-center gap-1.5 shrink-0">
-                    {h?.rate_limited && <span className="text-[9px] uppercase text-[#ffb800] font-medium tracking-wider">RL</span>}
-                    {h?.backoff_ms ? h.backoff_ms > 0 && <span className="text-[10px] text-[#716d66] tabular-nums">{h.backoff_ms >= 1000 ? `${(h.backoff_ms / 1000).toFixed(1)}s` : `${h.backoff_ms}ms`}</span> : null}
+                    {h?.rate_limited && <span className="text-[9px] uppercase text-warning font-medium tracking-wider">RL</span>}
+                    {h?.backoff_ms ? h.backoff_ms > 0 && <span className="text-[10px] text-muted-foreground tabular-nums">{h.backoff_ms >= 1000 ? `${(h.backoff_ms / 1000).toFixed(1)}s` : `${h.backoff_ms}ms`}</span> : null}
                     {h && (
                       <span className={cn(
                         'w-1.5 h-1.5 rounded-full shrink-0',
-                        h.health_state === 'healthy' && 'bg-[#4ce04c]',
-                        h.health_state === 'degraded' && 'bg-[#ffb800]',
-                        h.health_state === 'unhealthy' && 'bg-[#ff3333]'
+                        h.health_state === 'healthy' && 'bg-brand',
+                        h.health_state === 'degraded' && 'bg-warning',
+                        h.health_state === 'unhealthy' && 'bg-destructive'
                       )} title={h.health_state} />
                     )}
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px]">
-                  <span className="text-[#716d66]">LOAD</span>
-                  <span className="tabular-nums text-right">{p.inFlight}{p.maxConcurrency ? <span className="text-[#716d66]">/{p.maxConcurrency}</span> : ''}</span>
-                  <span className="text-[#716d66]">SUCCESS</span>
-                  <span className={cn('tabular-nums text-right', sr !== null ? (sr >= 95 ? 'text-[#4ce04c]' : sr >= 80 ? 'text-[#ffb800]' : 'text-[#ff3333]') : 'text-[#716d66]')}>
+                  <span className="text-muted-foreground">LOAD</span>
+                  <span className="tabular-nums text-right">{p.inFlight}{p.maxConcurrency ? <span className="text-muted-foreground">/{p.maxConcurrency}</span> : ''}</span>
+                  <span className="text-muted-foreground">SUCCESS</span>
+                  <span className={cn('tabular-nums text-right', sr !== null ? (sr >= 95 ? 'text-brand' : sr >= 80 ? 'text-warning' : 'text-destructive') : 'text-muted-foreground')}>
                     {sr !== null ? `${sr.toFixed(1)}%` : '—'}
                   </span>
-                  <span className="text-[#716d66]">P90 TTFT</span>
+                  <span className="text-muted-foreground">P90 TTFT</span>
                   <span className="tabular-nums text-right">{tt !== null ? `${fmtNum(tt)}ms` : '—'}</span>
-                  <span className="text-[#716d66]">P90 TPS</span>
+                  <span className="text-muted-foreground">P90 TPS</span>
                   <span className="tabular-nums text-right">{ot !== null ? ot.toFixed(1) : '—'}</span>
-                  <span className="text-[#716d66]">FAILURES</span>
-                  <span className={cn('tabular-nums text-right', (h?.consecutive_failures ?? 0) === 0 ? 'text-[#4ce04c]' : 'text-[#ff3333]')}>{h?.consecutive_failures ?? '—'}</span>
+                  <span className="text-muted-foreground">FAILURES</span>
+                  <span className={cn('tabular-nums text-right', (h?.consecutive_failures ?? 0) === 0 ? 'text-brand' : 'text-destructive')}>{h?.consecutive_failures ?? '—'}</span>
                 </div>
               </button>
             )
@@ -384,19 +384,19 @@ export default function Metrics() {
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
           {/* TTFT Chart */}
           <div className="panel p-4">
-            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-[#716d66] mb-3 flex items-center gap-2">
-              <ActivityIcon className="size-3.5 text-[#4ce04c]" />
+            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
+              <ActivityIcon className="size-3.5 text-brand" />
               P90 TTFT
-              <span className="ml-auto font-mono text-[11px] text-[#716d66] normal-case tracking-normal">{chartSubtitle}</span>
+              <span className="ml-auto font-mono text-[11px] text-muted-foreground normal-case tracking-normal">{chartSubtitle}</span>
             </h3>
             {loadingHist ? (
-              <div className="h-48 flex items-center justify-center font-mono text-[13px] text-[#716d66]">Loading...</div>
+              <div className="h-48 flex items-center justify-center font-mono text-[13px] text-muted-foreground">Loading...</div>
             ) : (
               <ResponsiveContainer width="100%" height={200}>
                 <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1e" />
-                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="#716d66" />
-                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="#716d66" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
+                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
                   <Tooltip contentStyle={ttStyle} />
                   <Legend wrapperStyle={{ fontSize: '10px', fontFamily: '"JetBrains Mono", monospace' }} />
                   {lines.filter(l => l.key.startsWith('t_') || l.key === 'ttft').map(l => (
@@ -409,19 +409,19 @@ export default function Metrics() {
 
           {/* Output TPS Chart */}
           <div className="panel p-4">
-            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-[#716d66] mb-3 flex items-center gap-2">
-              <GaugeIcon className="size-3.5 text-[#4ce04c]" />
+            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
+              <GaugeIcon className="size-3.5 text-brand" />
               P90 Output TPS
-              <span className="ml-auto font-mono text-[11px] text-[#716d66] normal-case tracking-normal">{chartSubtitle}</span>
+              <span className="ml-auto font-mono text-[11px] text-muted-foreground normal-case tracking-normal">{chartSubtitle}</span>
             </h3>
             {loadingHist ? (
-              <div className="h-48 flex items-center justify-center font-mono text-[13px] text-[#716d66]">Loading...</div>
+              <div className="h-48 flex items-center justify-center font-mono text-[13px] text-muted-foreground">Loading...</div>
             ) : (
               <ResponsiveContainer width="100%" height={200}>
                 <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1e" />
-                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="#716d66" />
-                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="#716d66" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
+                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
                   <Tooltip contentStyle={ttStyle} />
                   <Legend wrapperStyle={{ fontSize: '10px', fontFamily: '"JetBrains Mono", monospace' }} />
                   {lines.filter(l => l.key.startsWith('o_') || l.key === 'out').map(l => (
@@ -434,19 +434,19 @@ export default function Metrics() {
 
           {/* Input TPS Chart */}
           <div className="panel p-4">
-            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-[#716d66] mb-3 flex items-center gap-2">
-              <GaugeIcon className="size-3.5 text-[#ffb800]" />
+            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
+              <GaugeIcon className="size-3.5 text-warning" />
               P90 Input TPS
-              <span className="ml-auto font-mono text-[11px] text-[#716d66] normal-case tracking-normal">{chartSubtitle}</span>
+              <span className="ml-auto font-mono text-[11px] text-muted-foreground normal-case tracking-normal">{chartSubtitle}</span>
             </h3>
             {loadingHist ? (
-              <div className="h-48 flex items-center justify-center font-mono text-[13px] text-[#716d66]">Loading...</div>
+              <div className="h-48 flex items-center justify-center font-mono text-[13px] text-muted-foreground">Loading...</div>
             ) : (
               <ResponsiveContainer width="100%" height={200}>
                 <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1e" />
-                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="#716d66" />
-                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="#716d66" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
+                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
                   <Tooltip contentStyle={ttStyle} />
                   <Legend wrapperStyle={{ fontSize: '10px', fontFamily: '"JetBrains Mono", monospace' }} />
                   {lines.filter(l => l.key.startsWith('i_') || l.key === 'inp').map(l => (
@@ -465,12 +465,12 @@ export default function Metrics() {
         <div className="lg:col-span-1 space-y-4">
           {/* Model Breakdown */}
           <div className="panel p-4">
-            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-[#716d66] mb-3 flex items-center gap-2">
-              <BarChart3Icon className="size-3.5 text-[#4ce04c]" /> Models
-              <span className="ml-auto font-mono text-[10px] text-[#716d66] tabular-nums">{allModels.length}</span>
+            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
+              <BarChart3Icon className="size-3.5 text-brand" /> Models
+              <span className="ml-auto font-mono text-[10px] text-muted-foreground tabular-nums">{allModels.length}</span>
             </h3>
             {allModels.length === 0 ? (
-              <p className="font-mono text-[12px] text-[#716d66] py-4 text-center">No model data yet</p>
+              <p className="font-mono text-[12px] text-muted-foreground py-4 text-center">No model data yet</p>
             ) : (
               <div className="space-y-1">
                 {allModels.map(m => {
@@ -481,18 +481,18 @@ export default function Metrics() {
                       onClick={() => { setSelM(selM === m.name ? null : m.name); setSelP(null) }}
                       className={cn(
                         'w-full text-left p-2 border transition-colors',
-                        selM === m.name ? 'border-[#4ce04c]/40 bg-[#4ce04c]/5' : 'border-[#1a1a1e] hover:border-[#2a2a2e] bg-[#0d0d0f]'
+                        selM === m.name ? 'border-brand/40 bg-brand/5' : 'border-border/50 hover:border-border bg-surface'
                       )}
                     >
                       <div className="flex items-center justify-between">
-                        <span className="font-mono text-[12px] font-medium text-[#d4d0c8] truncate">{m.name}</span>
+                        <span className="font-mono text-[12px] font-medium text-foreground truncate">{m.name}</span>
                         {sr !== null && (
-                          <span className={cn('font-mono text-[11px] tabular-nums ml-2 shrink-0', sr >= 95 ? 'text-[#4ce04c]' : sr >= 80 ? 'text-[#ffb800]' : 'text-[#ff3333]')}>
+                          <span className={cn('font-mono text-[11px] tabular-nums ml-2 shrink-0', sr >= 95 ? 'text-brand' : sr >= 80 ? 'text-warning' : 'text-destructive')}>
                             {sr.toFixed(1)}%
                           </span>
                         )}
                       </div>
-                      <div className="text-[#716d66] text-[10px] font-mono mt-0.5">{m.requests} reqs</div>
+                      <div className="text-muted-foreground text-[10px] font-mono mt-0.5">{m.requests} reqs</div>
                     </button>
                   )
                 })}
@@ -511,16 +511,16 @@ export default function Metrics() {
                       onClick={() => { setSelP(sdata.name); setSelM(is ? null : m.name) }}
                       className={cn(
                         'w-full text-left p-2 border transition-colors',
-                        is ? 'border-[#4ce04c]/40 bg-[#4ce04c]/5' : 'border-[#1a1a1e] hover:border-[#2a2a2e] bg-[#0d0d0f]'
+                        is ? 'border-brand/40 bg-brand/5' : 'border-border/50 hover:border-border bg-surface'
                       )}
                     >
-                      <div className="font-mono text-[12px] font-medium mb-1 text-[#d4d0c8]">{m.name}</div>
+                      <div className="font-mono text-[12px] font-medium mb-1 text-foreground">{m.name}</div>
                       <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[11px] font-mono">
-                        <span className="text-[#716d66]">P90 TTFT</span>
+                        <span className="text-muted-foreground">P90 TTFT</span>
                         <span className="tabular-nums text-right">{pt !== null ? `${fmtNum(pt)}ms` : '—'}</span>
-                        <span className="text-[#716d66]">P90 TPS</span>
+                        <span className="text-muted-foreground">P90 TPS</span>
                         <span className="tabular-nums text-right">{po !== null ? po.toFixed(1) : '—'}</span>
-                        <span className="text-[#716d66]">REQS</span>
+                        <span className="text-muted-foreground">REQS</span>
                         <span className="tabular-nums text-right">{m.requests}</span>
                       </div>
                     </button>
@@ -534,12 +534,12 @@ export default function Metrics() {
         {/* Right: Event Stream */}
         <div className="lg:col-span-2">
           <div className="panel p-4">
-            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-[#716d66] mb-3 flex items-center gap-2">
-              <ActivityIcon className="size-3.5 text-[#4ce04c]" /> Live Event Stream
-              <span className="ml-auto font-mono text-[11px] text-[#716d66] normal-case tracking-normal">({liveEvents.length})</span>
+            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
+              <ActivityIcon className="size-3.5 text-brand" /> Live Event Stream
+              <span className="ml-auto font-mono text-[11px] text-muted-foreground normal-case tracking-normal">({liveEvents.length})</span>
             </h3>
             <div className="space-y-0 max-h-[450px] overflow-y-auto font-mono text-[11px]">
-              <div className="flex items-center gap-2 px-1.5 py-1 border-b border-[#3a3a3e] text-[10px] uppercase tracking-wider text-[#716d66] sticky top-0 bg-[#0d0d0f]">
+              <div className="flex items-center gap-2 px-1.5 py-1 border-b border-[#3a3a3e] text-[10px] uppercase tracking-wider text-muted-foreground sticky top-0 bg-surface">
                 <span className="shrink-0 w-[82px] text-right pr-2">TIME</span>
                 <span className="shrink-0 w-36">PROVIDER</span>
                 <span className="shrink-0 w-28">MODEL</span>
@@ -548,7 +548,7 @@ export default function Metrics() {
                 <span className="shrink-0 w-28">USER</span>
               </div>
               {liveEvents.length === 0 ? (
-                <p className="text-[#716d66] py-12 text-center">{wsStatus === 'connected' ? 'WAITING FOR EVENTS...' : 'NOT CONNECTED'}</p>
+                <p className="text-muted-foreground py-12 text-center">{wsStatus === 'connected' ? 'WAITING FOR EVENTS...' : 'NOT CONNECTED'}</p>
               ) : (
                 liveEvents.map((ev, i) => {
                   const { label, value, kind } = fmt(ev.event)
@@ -556,24 +556,24 @@ export default function Metrics() {
                   const t = d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
                   const ms = String(d.getMilliseconds()).padStart(3, '0')
                   const kc = kind === 'ok'
-                    ? 'text-[#4ce04c]'
+                    ? 'text-brand'
                     : kind === 'err'
-                      ? 'text-[#ff3333]'
+                      ? 'text-destructive'
                       : kind === 'warn'
-                        ? 'text-[#ffb800]'
-                        : 'text-[#716d66]'
+                        ? 'text-warning'
+                        : 'text-muted-foreground'
                   const userText = fmtUser(ev.user)
                   return (
                     <div
                       key={`${ev.timestamp_ms}-${i}`}
                       className={cn(
-                        'flex items-center gap-2 px-1.5 py-0.5 border-b border-[#1a1a1e]',
-                        i === 0 && 'bg-[#4ce04c]/5'
+                        'flex items-center gap-2 px-1.5 py-0.5 border-b border-border/50',
+                        i === 0 && 'bg-brand/5'
                       )}
                     >
-                      <span className="text-[#716d66] shrink-0 w-[82px] tabular-nums text-right pr-2">{t}.{ms}</span>
+                      <span className="text-muted-foreground shrink-0 w-[82px] tabular-nums text-right pr-2">{t}.{ms}</span>
                       <span className="font-medium shrink-0 w-36 truncate" title={ev.provider}>{ev.provider}</span>
-                      <span className="text-[#716d66] shrink-0 w-28 truncate" title={ev.model ?? ''}>{ev.model ?? ''}</span>
+                      <span className="text-muted-foreground shrink-0 w-28 truncate" title={ev.model ?? ''}>{ev.model ?? ''}</span>
                       <span className={cn('shrink-0 w-12 text-[10px] px-1 py-0 border font-mono uppercase tracking-wider text-center', kc)} style={{ borderColor: 'currentColor' }}>
                         {label}
                       </span>
@@ -582,7 +582,7 @@ export default function Metrics() {
                         title={kind === 'err' ? `Click to copy: ${value}` : value}
                         onClick={() => { if (kind === 'err') navigator.clipboard.writeText(value) }}
                       >{value}</span>
-                      <span className="shrink-0 w-32 text-[10px] text-[#716d66] truncate flex items-center gap-1" title={userText}>
+                      <span className="shrink-0 w-32 text-[10px] text-muted-foreground truncate flex items-center gap-1" title={userText}>
                         {userText && userText.includes('🔑') ? <KeyIcon className="size-2.5 shrink-0" /> : userText ? <UserIcon className="size-2.5 shrink-0" /> : null}
                         {userText}
                       </span>

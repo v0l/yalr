@@ -32,10 +32,10 @@ const DEFAULT_BASE_URLS: Record<string, string> = {
 
 function HealthBadge({ state }: { state?: string }) {
   switch (state) {
-    case 'healthy': return <Badge className="bg-[#4ce04c]/15 text-[#4ce04c] border-[#4ce04c]/30 font-mono text-[10px] tracking-wider uppercase">HEALTHY</Badge>
-    case 'degraded': return <Badge className="bg-[#ffb800]/15 text-[#ffb800] border-[#ffb800]/30 font-mono text-[10px] tracking-wider uppercase">DEGRADED</Badge>
-    case 'unhealthy': return <Badge className="bg-[#ff3333]/15 text-[#ff3333] border-[#ff3333]/30 font-mono text-[10px] tracking-wider uppercase">DOWN</Badge>
-    default: return <Badge variant="outline" className="font-mono text-[10px] text-[#716d66] border-[#2a2a2e]">UNKNOWN</Badge>
+    case 'healthy': return <Badge className="bg-brand/15 text-brand border-brand/30 font-mono text-[10px] tracking-wider uppercase">HEALTHY</Badge>
+    case 'degraded': return <Badge className="bg-warning/15 text-warning border-warning/30 font-mono text-[10px] tracking-wider uppercase">DEGRADED</Badge>
+    case 'unhealthy': return <Badge className="bg-destructive/15 text-destructive border-destructive/30 font-mono text-[10px] tracking-wider uppercase">DOWN</Badge>
+    default: return <Badge variant="outline" className="font-mono text-[10px] text-muted-foreground border-border">UNKNOWN</Badge>
   }
 }
 
@@ -124,10 +124,10 @@ export default function Providers() {
     return (
       <div className="space-y-6 p-6">
         <div className="flex items-center justify-between">
-          <div><Skeleton className="h-8 w-44 bg-[#1c1c1e]" /><Skeleton className="h-4 w-52 bg-[#1c1c1e] mt-1" /></div>
-          <Skeleton className="h-9 w-32 bg-[#1c1c1e]" />
+          <div><Skeleton className="h-8 w-44 bg-secondary" /><Skeleton className="h-4 w-52 bg-secondary mt-1" /></div>
+          <Skeleton className="h-9 w-32 bg-secondary" />
         </div>
-        <Skeleton className="h-64 bg-[#1c1c1e]" />
+        <Skeleton className="h-64 bg-secondary" />
       </div>
     )
   }
@@ -141,20 +141,20 @@ export default function Providers() {
           <h1 className="font-display text-[28px] tracking-[0.04em] text-foreground leading-none mb-1">PROVIDERS</h1>
           <p className="font-mono text-[13px] text-muted-foreground">Manage LLM provider connections</p>
         </div>
-        <Button onClick={() => openCreate()} className="font-mono text-[12px] tracking-wider uppercase border border-[#4ce04c]/40 bg-[#4ce04c]/10 text-[#4ce04c] hover:bg-[#4ce04c]/20">
+        <Button onClick={() => openCreate()} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">
           <PlusIcon className="size-3.5" /> Add Provider
         </Button>
       </div>
 
       {/* Messages */}
       {successMessage && (
-        <Alert className="border-[#4ce04c]/30 bg-[#4ce04c]/5 text-[#4ce04c] font-mono text-[13px]">
-          <AlertDescription className="flex items-center justify-between">{successMessage}<Button variant="ghost" size="icon-xs" onClick={() => setSuccessMessage(null)} className="text-[#4ce04c] hover:text-[#4ce04c]">×</Button></AlertDescription>
+        <Alert className="border-brand/30 bg-brand/5 text-brand font-mono text-[13px]">
+          <AlertDescription className="flex items-center justify-between">{successMessage}<Button variant="ghost" size="icon-xs" onClick={() => setSuccessMessage(null)} className="text-brand hover:text-brand">×</Button></AlertDescription>
         </Alert>
       )}
       {error && (
-        <Alert className="border-[#ff3333]/30 bg-[#ff3333]/5 text-[#ff3333] font-mono text-[13px]">
-          <AlertDescription className="flex items-center justify-between">{error}<Button variant="ghost" size="icon-xs" onClick={() => setError(null)} className="text-[#ff3333] hover:text-[#ff3333]">×</Button></AlertDescription>
+        <Alert className="border-destructive/30 bg-destructive/5 text-destructive font-mono text-[13px]">
+          <AlertDescription className="flex items-center justify-between">{error}<Button variant="ghost" size="icon-xs" onClick={() => setError(null)} className="text-destructive hover:text-destructive">×</Button></AlertDescription>
         </Alert>
       )}
 
@@ -166,11 +166,11 @@ export default function Providers() {
             <button
               key={cp.slug}
               onClick={() => openCreate({ name: cp.name, slug: cp.slug, provider_type: cp.type, base_url: cp.url })}
-              className="panel p-3 hover:border-[#4ce04c]/30 transition-colors cursor-pointer text-left group"
+              className="panel p-3 hover:border-brand/30 transition-colors cursor-pointer text-left group"
             >
-              <div className="text-2xl mb-2 text-[#716d66] group-hover:text-[#4ce04c] transition-colors">{cp.logo}</div>
+              <div className="text-2xl mb-2 text-muted-foreground group-hover:text-brand transition-colors">{cp.logo}</div>
               <div className="font-mono text-[13px] font-medium">{cp.name}</div>
-              <div className="font-mono text-[10px] text-[#716d66] uppercase mt-0.5">{cp.type}</div>
+              <div className="font-mono text-[10px] text-muted-foreground uppercase mt-0.5">{cp.type}</div>
             </button>
           ))}
         </div>
@@ -183,38 +183,38 @@ export default function Providers() {
           <div className="overflow-x-auto">
             <table className="w-full table-scan">
               <thead>
-                <tr className="border-b border-[#1a1a1e] text-left">
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Name</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Slug</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Type</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Status</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Base URL</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium text-right">Actions</th>
+                <tr className="border-b border-border/50 text-left">
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Name</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Slug</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Type</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Status</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Base URL</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {providers.length === 0 ? (
-                  <tr><td colSpan={6} className="px-4 py-16 text-center font-mono text-[13px] text-[#716d66]">{'>'} NO PROVIDERS CONFIGURED</td></tr>
+                  <tr><td colSpan={6} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO PROVIDERS CONFIGURED</td></tr>
                 ) : (
                   providers.map(p => (
-                    <tr key={p.slug} className="border-b border-[#1a1a1e] hover:bg-[#0d0d0f] transition-colors">
+                    <tr key={p.slug} className="border-b border-border/50 hover:bg-surface transition-colors">
                       <td className="px-4 py-3 font-mono text-[13px] font-medium">{p.name}</td>
-                      <td className="px-4 py-3 font-mono text-[12px] text-[#716d66]">{p.slug}</td>
-                      <td className="px-4 py-3"><Badge variant="secondary" className="font-mono text-[10px] uppercase tracking-wider bg-[#1c1c1e] text-[#716d66] border-[#2a2a2e]">{p.provider_type}</Badge></td>
+                      <td className="px-4 py-3 font-mono text-[12px] text-muted-foreground">{p.slug}</td>
+                      <td className="px-4 py-3"><Badge variant="secondary" className="font-mono text-[10px] uppercase tracking-wider bg-secondary text-muted-foreground border-border">{p.provider_type}</Badge></td>
                       <td className="px-4 py-3"><HealthBadge state={p.health?.health_state} /></td>
-                      <td className="px-4 py-3 font-mono text-[12px] text-[#716d66] truncate max-w-48" title={p.base_url}>{p.base_url}</td>
+                      <td className="px-4 py-3 font-mono text-[12px] text-muted-foreground truncate max-w-48" title={p.base_url}>{p.base_url}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
                           {(p.provider_type === 'routstr' || p.provider_type === 'ppq') && (
                             <>
-                              <Button variant="ghost" size="icon-xs" onClick={() => setTopupProvider(p)} title="Top-up" className="text-[#716d66] hover:text-[#4ce04c]"><WalletIcon className="size-3.5" /></Button>
+                              <Button variant="ghost" size="icon-xs" onClick={() => setTopupProvider(p)} title="Top-up" className="text-muted-foreground hover:text-brand"><WalletIcon className="size-3.5" /></Button>
                               {p.provider_type === 'ppq' && (
-                                <Button variant="ghost" size="icon-xs" onClick={() => handleGenerateKey(p)} disabled={!!generatingKey} title="Generate API key" className="text-[#716d66] hover:text-[#4ce04c]"><KeyIcon className="size-3.5" /></Button>
+                                <Button variant="ghost" size="icon-xs" onClick={() => handleGenerateKey(p)} disabled={!!generatingKey} title="Generate API key" className="text-muted-foreground hover:text-brand"><KeyIcon className="size-3.5" /></Button>
                               )}
                             </>
                           )}
-                          <Button variant="ghost" size="icon-xs" onClick={() => openEdit(p)} className="text-[#716d66] hover:text-[#d4d0c8]"><PencilIcon className="size-3.5" /></Button>
-                          <Button variant="ghost" size="icon-xs" onClick={() => setDeleteTarget(p)} className="text-[#716d66] hover:text-[#ff3333]"><TrashIcon className="size-3.5" /></Button>
+                          <Button variant="ghost" size="icon-xs" onClick={() => openEdit(p)} className="text-muted-foreground hover:text-foreground"><PencilIcon className="size-3.5" /></Button>
+                          <Button variant="ghost" size="icon-xs" onClick={() => setDeleteTarget(p)} className="text-muted-foreground hover:text-destructive"><TrashIcon className="size-3.5" /></Button>
                         </div>
                       </td>
                     </tr>
@@ -228,48 +228,48 @@ export default function Providers() {
 
       {/* Create/Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={(o) => { if (!o) setDialogOpen(false) }}>
-        <DialogContent className="sm:max-w-lg border-[#2a2a2e] bg-[#111113]">
+        <DialogContent className="sm:max-w-lg border-border bg-card">
           <DialogHeader>
             <DialogTitle className="font-display text-xl tracking-[0.04em]">{editingProvider ? 'EDIT PROVIDER' : 'ADD PROVIDER'}</DialogTitle>
-            <DialogDescription className="font-mono text-[12px] text-[#716d66]">
+            <DialogDescription className="font-mono text-[12px] text-muted-foreground">
               {editingProvider ? 'Update the provider configuration.' : 'Connect a new LLM provider.'}
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSave} className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="p-name" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Name</Label>
-                <Input id="p-name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="My OpenAI" required className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]" />
+                <Label htmlFor="p-name" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Name</Label>
+                <Input id="p-name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="My OpenAI" required className="font-mono bg-surface border-border text-foreground" />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="p-slug" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Slug</Label>
-                <Input id="p-slug" value={form.slug} onChange={e => setForm({ ...form, slug: e.target.value })} placeholder="my-openai" className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]" required />
+                <Label htmlFor="p-slug" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Slug</Label>
+                <Input id="p-slug" value={form.slug} onChange={e => setForm({ ...form, slug: e.target.value })} placeholder="my-openai" className="font-mono bg-surface border-border text-foreground" required />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="p-type" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Type</Label>
+                <Label htmlFor="p-type" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Type</Label>
                 <Select value={form.provider_type} onValueChange={v => setForm({ ...form, provider_type: v, base_url: DEFAULT_BASE_URLS[v] ?? form.base_url })}>
-                  <SelectTrigger id="p-type" className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]"><SelectValue /></SelectTrigger>
-                  <SelectContent className="bg-[#111113] border-[#2a2a2e]">
+                  <SelectTrigger id="p-type" className="font-mono bg-surface border-border text-foreground"><SelectValue /></SelectTrigger>
+                  <SelectContent className="bg-card border-border">
                     <SelectGroup>
-                      {['openai','anthropic','llamacpp','vllm','ollama','routstr','openrouter','ppq'].map(t => <SelectItem key={t} value={t} className="font-mono text-[#d4d0c8]">{t}</SelectItem>)}
+                      {['openai','anthropic','llamacpp','vllm','ollama','routstr','openrouter','ppq'].map(t => <SelectItem key={t} value={t} className="font-mono text-foreground">{t}</SelectItem>)}
                     </SelectGroup>
                   </SelectContent>
                 </Select>
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="p-url" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Base URL</Label>
-                <Input id="p-url" type="url" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.openai.com" className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]" required />
+                <Label htmlFor="p-url" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Base URL</Label>
+                <Input id="p-url" type="url" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.openai.com" className="font-mono bg-surface border-border text-foreground" required />
               </div>
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="p-key" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">
-                API Key{editingProvider && <span className="font-normal text-[#716d66] tracking-normal"> (leave blank to keep current)</span>}
+              <Label htmlFor="p-key" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+                API Key{editingProvider && <span className="font-normal text-muted-foreground tracking-normal"> (leave blank to keep current)</span>}
               </Label>
-              <Input id="p-key" type="password" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder={editingProvider ? '••••••••' : 'sk-...'} className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]" required={!editingProvider} />
+              <Input id="p-key" type="password" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder={editingProvider ? '••••••••' : 'sk-...'} className="font-mono bg-surface border-border text-foreground" required={!editingProvider} />
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)} disabled={saving} className="font-mono text-[12px] border-[#2a2a2e] text-[#716d66]">CANCEL</Button>
-              <Button type="submit" disabled={saving} className="font-mono text-[12px] tracking-wider uppercase border border-[#4ce04c]/40 bg-[#4ce04c]/10 text-[#4ce04c] hover:bg-[#4ce04c]/20">
+              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)} disabled={saving} className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</Button>
+              <Button type="submit" disabled={saving} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">
                 {saving ? 'SAVING...' : editingProvider ? 'UPDATE' : 'CREATE'}
               </Button>
             </DialogFooter>
@@ -279,19 +279,19 @@ export default function Providers() {
 
       {/* Generated Key Dialog */}
       <Dialog open={!!generatedApiKey} onOpenChange={(o) => { if (!o) { setGeneratedApiKey(null); setSuccessMessage(null) } }}>
-        <DialogContent className="sm:max-w-lg border-[#2a2a2e] bg-[#111113]">
+        <DialogContent className="sm:max-w-lg border-border bg-card">
           <DialogHeader>
-            <DialogTitle className="font-display text-xl tracking-[0.04em] text-[#4ce04c]">API KEY GENERATED</DialogTitle>
-            <DialogDescription className="font-mono text-[12px] text-[#716d66]">Save this key securely. You won&apos;t see it again.</DialogDescription>
+            <DialogTitle className="font-display text-xl tracking-[0.04em] text-brand">API KEY GENERATED</DialogTitle>
+            <DialogDescription className="font-mono text-[12px] text-muted-foreground">Save this key securely. You won&apos;t see it again.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="p-3 bg-[#0d0d0f] border border-[#2a2a2e] font-mono text-[13px] text-[#4ce04c] break-all">{generatedApiKey}</div>
-            <Alert className="border-[#4ce04c]/20 bg-[#4ce04c]/5 text-[#716d66] font-mono text-[12px]">
+            <div className="p-3 bg-surface border border-border font-mono text-[13px] text-brand break-all">{generatedApiKey}</div>
+            <Alert className="border-brand/20 bg-brand/5 text-muted-foreground font-mono text-[12px]">
               <AlertDescription>This key is automatically saved to your provider configuration.</AlertDescription>
             </Alert>
           </div>
           <DialogFooter>
-            <Button onClick={() => { setGeneratedApiKey(null); setSuccessMessage(null) }} className="font-mono text-[12px] border border-[#2a2a2e] bg-transparent text-[#d4d0c8]">CLOSE</Button>
+            <Button onClick={() => { setGeneratedApiKey(null); setSuccessMessage(null) }} className="font-mono text-[12px] border border-border bg-transparent text-foreground">CLOSE</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -303,15 +303,15 @@ export default function Providers() {
 
       {/* Delete Confirmation */}
       <AlertDialog open={!!deleteTarget} onOpenChange={o => { if (!o) setDeleteTarget(null) }}>
-        <AlertDialogContent className="border-[#2a2a2e] bg-[#111113]">
+        <AlertDialogContent className="border-border bg-card">
           <AlertDialogHeader>
-            <AlertDialogTitle className="font-display text-xl tracking-[0.04em] text-[#ff3333]">DELETE PROVIDER</AlertDialogTitle>
-            <AlertDialogDescription className="font-mono text-[13px] text-[#716d66]">
-              Delete <span className="text-[#d4d0c8]">{deleteTarget?.name}</span>? This cannot be undone.
+            <AlertDialogTitle className="font-display text-xl tracking-[0.04em] text-destructive">DELETE PROVIDER</AlertDialogTitle>
+            <AlertDialogDescription className="font-mono text-[13px] text-muted-foreground">
+              Delete <span className="text-foreground">{deleteTarget?.name}</span>? This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="font-mono text-[12px] border-[#2a2a2e] text-[#716d66]">CANCEL</AlertDialogCancel>
+            <AlertDialogCancel className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={handleDelete} disabled={deleting} className="font-mono text-[12px] tracking-wider uppercase">{deleting ? 'DELETING...' : 'DELETE'}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

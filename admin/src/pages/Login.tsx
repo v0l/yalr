@@ -34,36 +34,36 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex bg-[#0a0a0b]">
+    <div className="min-h-screen flex bg-background">
       {/* Left panel — decorative */}
-      <div className="hidden lg:flex flex-1 flex-col justify-between p-12 relative overflow-hidden border-r border-[#1a1a1e]">
+      <div className="hidden lg:flex flex-1 flex-col justify-between p-12 relative overflow-hidden border-r border-border/50">
         {/* ASCII art / logo */}
         <div>
           <div className="flex items-center gap-3 mb-16">
-            <div className="flex items-center justify-center w-10 h-10 bg-[#111113] border border-[#2a2a2e]">
+            <div className="flex items-center justify-center w-10 h-10 bg-card border border-border">
               <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none">
-                <path d="M6 7l4 5-4 5" stroke="#4ce04c" strokeWidth="2.5" strokeLinecap="square"/>
-                <path d="M12 17l4-10" stroke="#4ce04c" strokeWidth="2.5" strokeLinecap="square"/>
+                <path d="M6 7l4 5-4 5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square"/>
+                <path d="M12 17l4-10" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square"/>
               </svg>
             </div>
-            <span className="font-display text-2xl tracking-[0.08em] text-[#d4d0c8]">YALR</span>
+            <span className="font-display text-2xl tracking-[0.08em] text-foreground">YALR</span>
           </div>
 
           <div className="space-y-2 font-mono text-[11px] text-[#454545] tracking-wider">
             <div className="flex items-center gap-2">
-              <span className="text-[#4ce04c] animate-pulse-status">▸</span>
+              <span className="text-brand animate-pulse-status">▸</span>
               <span>LLM ROUTING ENGINE</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-[#716d66]">▸</span>
+              <span className="text-muted-foreground">▸</span>
               <span>MULTI-PROVIDER LOAD BALANCING</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-[#716d66]">▸</span>
+              <span className="text-muted-foreground">▸</span>
               <span>REAL-TIME METRICS &amp; HEALTH CHECKS</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-[#716d66]">▸</span>
+              <span className="text-muted-foreground">▸</span>
               <span>BITCOIN LIGHTNING PAYMENTS</span>
             </div>
           </div>
@@ -71,7 +71,7 @@ export default function Login() {
 
         {/* Bottom quote */}
         <div className="space-y-1">
-          <div className="font-mono text-[10px] text-[#716d66] tracking-[0.12em] uppercase">
+          <div className="font-mono text-[10px] text-muted-foreground tracking-[0.12em] uppercase">
             Infrastructure for the sovereign web
           </div>
           <div className="font-mono text-[10px] text-[#454545]">
@@ -81,7 +81,7 @@ export default function Login() {
 
         {/* Grid overlay */}
         <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{
-          backgroundImage: 'linear-gradient(#4ce04c 1px, transparent 1px), linear-gradient(90deg, #4ce04c 1px, transparent 1px)',
+          backgroundImage: 'linear-gradient(var(--brand) 1px, transparent 1px), linear-gradient(90deg, var(--brand) 1px, transparent 1px)',
           backgroundSize: '48px 48px',
         }} />
       </div>
@@ -91,26 +91,26 @@ export default function Login() {
         <div className="w-full max-w-sm">
           {/* Mobile logo */}
           <div className="lg:hidden flex items-center gap-3 mb-12">
-            <div className="flex items-center justify-center w-10 h-10 bg-[#111113] border border-[#2a2a2e]">
+            <div className="flex items-center justify-center w-10 h-10 bg-card border border-border">
               <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none">
-                <path d="M6 7l4 5-4 5" stroke="#4ce04c" strokeWidth="2.5" strokeLinecap="square"/>
-                <path d="M12 17l4-10" stroke="#4ce04c" strokeWidth="2.5" strokeLinecap="square"/>
+                <path d="M6 7l4 5-4 5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square"/>
+                <path d="M12 17l4-10" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square"/>
               </svg>
             </div>
-            <span className="font-display text-2xl tracking-[0.08em] text-[#d4d0c8]">YALR</span>
+            <span className="font-display text-2xl tracking-[0.08em] text-foreground">YALR</span>
           </div>
 
           <div className="mb-8">
-            <h1 className="font-display text-3xl tracking-[0.06em] text-[#d4d0c8] mb-1">AUTHENTICATE</h1>
-            <p className="font-mono text-[13px] text-[#716d66]">
+            <h1 className="font-display text-3xl tracking-[0.06em] text-foreground mb-1">AUTHENTICATE</h1>
+            <p className="font-mono text-[13px] text-muted-foreground">
               Enter credentials to access the routing control panel.
             </p>
           </div>
 
           {error && (
-            <Alert className="mb-6 border-[#ff3333]/30 bg-[#ff3333]/5 text-[#ff3333] font-mono text-[13px]">
+            <Alert className="mb-6 border-destructive/30 bg-destructive/5 text-destructive font-mono text-[13px]">
               <AlertDescription>
-                <span className="text-[#ff3333]">!</span> {error}
+                <span className="text-destructive">!</span> {error}
               </AlertDescription>
             </Alert>
           )}
@@ -119,13 +119,13 @@ export default function Login() {
             <div className="space-y-2">
               <Label
                 htmlFor="l-username"
-                className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#716d66]"
+                className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted-foreground"
               >
                 Username
               </Label>
               <div className={cn(
-                'border transition-colors bg-[#0d0d0f]',
-                focused === 'username' ? 'border-[#4ce04c]' : 'border-[#2a2a2e]'
+                'border transition-colors bg-surface',
+                focused === 'username' ? 'border-brand' : 'border-border'
               )}>
                 <Input
                   id="l-username"
@@ -134,7 +134,7 @@ export default function Login() {
                   onChange={e => setFormData({ ...formData, username: e.target.value })}
                   onFocus={() => setFocused('username')}
                   onBlur={() => setFocused(null)}
-                  className="border-0 bg-transparent font-mono text-[14px] text-[#d4d0c8] placeholder:text-[#454545] h-11 px-3 focus-visible:ring-0"
+                  className="border-0 bg-transparent font-mono text-[14px] text-foreground placeholder:text-[#454545] h-11 px-3 focus-visible:ring-0"
                   placeholder="admin"
                   required
                   autoFocus
@@ -145,13 +145,13 @@ export default function Login() {
             <div className="space-y-2">
               <Label
                 htmlFor="l-password"
-                className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#716d66]"
+                className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted-foreground"
               >
                 Password
               </Label>
               <div className={cn(
-                'border transition-colors bg-[#0d0d0f]',
-                focused === 'password' ? 'border-[#4ce04c]' : 'border-[#2a2a2e]'
+                'border transition-colors bg-surface',
+                focused === 'password' ? 'border-brand' : 'border-border'
               )}>
                 <Input
                   id="l-password"
@@ -160,7 +160,7 @@ export default function Login() {
                   onChange={e => setFormData({ ...formData, password: e.target.value })}
                   onFocus={() => setFocused('password')}
                   onBlur={() => setFocused(null)}
-                  className="border-0 bg-transparent font-mono text-[14px] text-[#d4d0c8] placeholder:text-[#454545] h-11 px-3 focus-visible:ring-0"
+                  className="border-0 bg-transparent font-mono text-[14px] text-foreground placeholder:text-[#454545] h-11 px-3 focus-visible:ring-0"
                   placeholder="••••••••"
                   required
                 />
@@ -172,8 +172,8 @@ export default function Login() {
               disabled={loading}
               className={cn(
                 'w-full h-11 font-mono text-[14px] font-semibold tracking-[0.05em] uppercase transition-all',
-                'border border-[#4ce04c]/40 bg-[#4ce04c]/10 text-[#4ce04c]',
-                'hover:bg-[#4ce04c]/20 hover:border-[#4ce04c]/60',
+                'border border-brand/40 bg-brand/10 text-brand',
+                'hover:bg-brand/20 hover:border-brand/60',
                 'disabled:opacity-40 disabled:cursor-not-allowed'
               )}
             >
@@ -191,7 +191,7 @@ export default function Login() {
             </Button>
           </form>
 
-          <div className="mt-8 pt-6 border-t border-[#1a1a1e]">
+          <div className="mt-8 pt-6 border-t border-border/50">
             <p className="font-mono text-[10px] text-[#454545] text-center tracking-[0.08em] uppercase">
               Yet Another LLM Router
             </p>
