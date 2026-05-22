@@ -1,0 +1,171 @@
+# ── E2E Test Infrastructure ───────────────────────────────────────────────
+# Real bitcoind (regtest) + two LND nodes + YALR with payments enabled.
+#
+# Usage:
+#   docker compose -f docker-compose.e2e.yaml up -d
+#   # Wait for all services to become healthy
+#   docker compose -f docker-compose.e2e.yaml logs -f
+#   # Run the setup script to fund wallets and open channels:
+#   bash scripts/e2e-setup.sh
+#   # Run the tests:
+#   cargo test --test e2e_tests -- --nocapture
+#   # Teardown:
+#   docker compose -f docker-compose.e2e.yaml down -v
+
+version: '3.8'
+
+volumes:
+  e2e-bitcoind:
+  e2e-lnd-alice:
+  e2e-lnd-bob:
+  e2e-yalr-data:
+
+services:
+  # ── Bitcoin Core (regtest) ──────────────────────────────────────────────
+  bitcoind:
+    image: btcpayserver/bitcoin:26.0
+    environment:
+      BITCOIN_NETWORK: regtest
+      BITCOIN_EXTRA_ARGS: |
+        rpcuser=polaruser
+        rpcpassword=polarpass
+        rpcallowip=0.0.0.0/0
+        rpcbind=0.0.0.0
+        server=1
+        listen=1
+        txindex=1
+        fallbackfee=0.00001
+        zmqpubrawblock=tcp://0.0.0.0:28332
+        zmqpubrawtx=tcp://0.0.0.0:28333
+    ports:
+      - "18453:18443"
+      - "28332:28332"
+      - "28333:28333"
+    volumes:
+      - "e2e-bitcoind:/home/bitcoin/.bitcoin"
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=polaruser", "-rpcpassword=polarpass", "getblockchaininfo"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  # ── LND Alice (YALR's payment node) ─────────────────────────────────────
+  lnd-alice:
+    image: lightninglabs/lnd:v0.18.5-beta
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    command:
+      - lnd
+      - --noseedbackup
+      - --norest
+      - --debuglevel=info
+      - --bitcoin.active
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=bitcoind:18443
+      - --bitcoind.rpcuser=polaruser
+      - --bitcoind.rpcpass=polarpass
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      - --rpclisten=0.0.0.0:10009
+      - --restlisten=0.0.0.0:8080
+      - --tlsextradomain=lnd-alice
+      - --tlsextraip=0.0.0.0
+      - --accept-keysend
+      - --allow-circular-route
+      - --protocol.option-scid-alias
+      - --protocol.simple-taproot-chans
+    ports:
+      - "10019:10009"
+      - "8089:8080"
+    volumes:
+      - "e2e-lnd-alice:/root/.lnd"
+    healthcheck:
+      test: ["CMD", "lncli", "--network=regtest", "getinfo"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  # ── LND Bob (payer node for testing) ────────────────────────────────────
+  lnd-bob:
+    image: lightninglabs/lnd:v0.18.5-beta
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    command:
+      - lnd
+      - --noseedbackup
+      - --norest
+      - --debuglevel=info
+      - --bitcoin.active
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=bitcoind:18443
+      - --bitcoind.rpcuser=polaruser
+      - --bitcoind.rpcpass=polarpass
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      - --rpclisten=0.0.0.0:10009
+      - --restlisten=0.0.0.0:8080
+      - --tlsextradomain=lnd-bob
+      - --tlsextraip=0.0.0.0
+      - --accept-keysend
+      - --protocol.option-scid-alias
+      - --protocol.simple-taproot-chans
+    ports:
+      - "10029:10009"
+      - "8090:8080"
+    volumes:
+      - "e2e-lnd-bob:/root/.lnd"
+    healthcheck:
+      test: ["CMD", "lncli", "--network=regtest", "getinfo"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  # ── YALR (LLM Router with payments enabled) ─────────────────────────────
+  yalr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: yalr-e2e
+    depends_on:
+      lnd-alice:
+        condition: service_healthy
+      mock-llm:
+        condition: service_healthy
+    volumes:
+      # Mount LND Alice's data directory so YALR can read TLS cert + macaroon
+      - "e2e-lnd-alice:/lnd-data:ro"
+      # Mount e2e config
+      - ./config.e2e.yaml:/app/config.yaml:ro
+      # Named volume for YALR data (SQLite DB)
+      - "e2e-yalr-data:/app/data"
+    environment:
+      - RUST_LOG=info
+    ports:
+      - "3099:3000"
+    stop_grace_period: 5s
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # ── Mock LLM (OpenAI-compatible, returns fixed responses with usage) ────
+  mock-llm:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e-mock-llm
+    ports:
+      - "4004:4000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/v1/models"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+      start_period: 2s

@@ -1,0 +1,30 @@
+# ── E2E Test Configuration ────────────────────────────────────────────────
+# Used by docker-compose.e2e.yaml
+
+server:
+  host: "0.0.0.0"
+  port: 3000
+  admin_ui_path: "/app/admin/dist"
+
+database:
+  url: "sqlite:/app/data/yalr.db?mode=rwc"
+
+auth:
+  enabled: false
+  # Auth disabled for e2e tests — we create session tokens programmatically
+
+payments:
+  enabled: true
+
+  default_pricing:
+    price_per_1m_input_sats: 5
+    price_per_1m_output_sats: 15
+    price_per_request_sats: 1
+    context_window: 8192
+    max_output_tokens: 4096
+
+  lnd:
+    # Inside docker, LND Alice data is at /lnd-data
+    url: "https://lnd-alice:10009"
+    tls_cert_path: "/lnd-data/tls.cert"
+    macaroon_path: "/lnd-data/data/chain/bitcoin/regtest/admin.macaroon"

@@ -188,16 +188,23 @@ async fn handle_settlement(
     balance_service: &crate::payments::balance::BalanceService,
     payment_hash: &str,
 ) -> Result<(), String> {
+    // Try to mark as paid; skip if already paid (idempotency check BEFORE the UPDATE)
+    let already_paid = db
+        .get_lightning_invoice_by_hash(payment_hash)
+        .await
+        .map_err(|e| format!("DB error: {}", e))?
+        .map(|inv| inv.status == "paid")
+        .unwrap_or(false);
+
+    if already_paid {
+        return Ok(());
+    }
+
     let updated = match db.update_lightning_invoice_status(payment_hash, "paid").await {
         Ok(Some(inv)) => inv,
         Ok(None) => return Err("Invoice not found in DB after settlement".to_string()),
         Err(e) => return Err(format!("Failed to update invoice status: {}", e)),
     };
-
-    // Skip if already marked paid (idempotency)
-    if updated.paid_at.is_some() {
-        return Ok(());
-    }
 
     balance_service
         .credit(updated.user_id, updated.amount_msat, "deposit", payment_hash)

@@ -136,10 +136,16 @@ pub async fn create_user(
         None
     };
 
+    // Empty string external_id should be treated as None to avoid UNIQUE constraint
+    // violations on (external_id, user_type) - SQLite treats NULLs as distinct.
+    let external_id = request.external_id
+        .as_deref()
+        .filter(|s| !s.is_empty());
+
     let new_user = crate::db::NewUser {
         username: request.username.as_deref(),
         password_hash: password_hash.as_deref(),
-        external_id: request.external_id.as_deref(),
+        external_id,
         user_type,
         is_admin: request.is_admin,
     };
