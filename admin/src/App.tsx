@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import Layout from './layout/Layout'
 import Dashboard from './pages/Dashboard'
-import Providers from './pages/Providers'
 import Config from './pages/Config'
 import Metrics from './pages/Metrics'
 import Login from './pages/Login'
@@ -74,7 +73,6 @@ export default function App() {
           </SetupCheckRoute>
         }>
           <Route index element={<Dashboard />} />
-          <Route path="providers" element={<Providers />} />
           <Route path="config" element={<Config />} />
           <Route path="metrics" element={<Metrics />} />
           <Route path="users" element={<Users />} />

@@ -3,14 +3,13 @@ import { useTheme } from '../context/ThemeContext'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import {
-  LayoutDashboardIcon, ServerIcon, SlidersIcon, ActivityIcon,
+  LayoutDashboardIcon, SlidersIcon, ActivityIcon,
   UsersIcon, CreditCardIcon, MessageSquareIcon, SunIcon, MoonIcon,
   LogOutIcon, ChevronRightIcon
 } from 'lucide-react'
 
 const navigation = [
   { name: 'Dashboard', path: '/', icon: LayoutDashboardIcon },
-  { name: 'Providers', path: '/providers', icon: ServerIcon },
   { name: 'Config', path: '/config', icon: SlidersIcon },
   { name: 'Metrics', path: '/metrics', icon: ActivityIcon },
   { name: 'Users', path: '/users', icon: UsersIcon },

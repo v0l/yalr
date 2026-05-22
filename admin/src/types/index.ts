@@ -10,6 +10,14 @@ export interface Provider {
   payment_options: PaymentOption[]
 }
 
+export interface ProviderFormData {
+  name: string
+  slug: string
+  base_url: string
+  api_key: string
+  provider_type: string
+}
+
 export interface PaymentOption {
   currency: 'msats' | 'sats' | 'usd_micro'
   payment_method: 'lightning' | 'redirect' | 'manual' | 'payment_link'

@@ -25,6 +25,10 @@ cargo check
 docker build -t yalr .
 ```
 
+## Code Quality
+
+- **Maximum file length**: 500 lines. Files exceeding this MUST be split into smaller modules/components.
+
 ## Architecture
 
 **Entry points**: `src/bin/server.rs`, `src/bin/cli.rs`
@@ -121,13 +125,19 @@ See [PLAN.md](./PLAN.md) for implementation roadmap.
 admin/
 ├── src/
 │   ├── main.tsx                     # Entry point, wraps App with ThemeProvider
-│   ├── App.tsx                      # Routes: /, /setup, /login, /providers, /config, /metrics, /users, /users/:id, /payments, /chat
+│   ├── App.tsx                      # Routes: /, /setup, /login, /config, /metrics, /users, /users/:id, /payments, /chat
 │   ├── App.css                      # Empty (all styles in index.css)
 │   ├── index.css                    # Tailwind v4 + shadcn + dark mode vars + custom layers
 │   ├── api/
 │   │   └── client.ts               # All API calls (fetch-based, Bearer token auth)
 │   ├── components/
 │   │   ├── TopupDialog.tsx          # Top-up dialog for routstr/ppq providers
+│   │   ├── ProviderCard.tsx         # Provider card with config, balance, actions
+│   │   ├── ProviderQuickAdd.tsx     # Quick-add common provider templates
+│   │   ├── ProviderFormDialog.tsx   # Create/edit provider form dialog
+│   │   ├── ProviderDeleteDialog.tsx # Delete confirmation dialog
+│   │   ├── HealthBadge.tsx          # Health status badge
+│   │   ├── BalanceDisplay.tsx       # Formatted balance display
 │   │   └── ui/                      # shadcn/ui components (alert-dialog, alert, badge, button, card, checkbox, dialog, input, label, select, separator, skeleton, table)
 │   ├── context/
 │   │   └── ThemeContext.tsx          # Light/dark theme toggle, persisted to localStorage
@@ -138,11 +148,8 @@ admin/
 │   ├── pages/
 │   │   ├── Chat.tsx                 # assistant-ui chat interface, model selector, SSE streaming
 │   │   ├── Config.tsx               # Routing configs CRUD + provider assignments per config
-│   │   ├── Dashboard.tsx            # Stats cards, provider health table, WebSocket live updates
+│   │   ├── Dashboard.tsx            # Stats cards + provider management (CRUD, quick-add, top-up, API keys)
 │   │   ├── Login.tsx                # Username/password login form
-│   │   ├── Metrics.tsx              # Real-time WebSocket metrics, charts (recharts), event stream, health panel
-│   │   ├── Payments.tsx             # Tabbed: Balances, Model Pricing, Transactions, Invoices
-│   │   ├── Providers.tsx            # Provider CRUD, quick-add common providers, API key gen
 │   │   ├── Setup.tsx                # Initial setup wizard (first admin user)
 │   │   ├── UserDetail.tsx           # Single user view: detail, API keys, model permissions
 │   │   └── Users.tsx                # User list table, create/delete
@@ -159,8 +166,7 @@ admin/
 |------|------|------|-------|
 | `/setup` | Setup | Public | Initial admin setup |
 | `/login` | Login | Public | Username/password |
-| `/` | Dashboard | Private + SetupCheck | Stats overview, provider health |
-| `/providers` | Providers | Private + SetupCheck | CRUD, quick-add templates |
+| `/` | Dashboard | Private + SetupCheck | Stats, provider management (CRUD, quick-add, top-up, API keys) |
 | `/config` | Config | Private + SetupCheck | Routing configs with nested provider assignments |
 | `/metrics` | Metrics | Private + SetupCheck | WebSocket live events, charts, model breakdown |
 | `/users` | Users | Private + SetupCheck | User CRUD |
