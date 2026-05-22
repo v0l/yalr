@@ -1,16 +1,21 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useTheme } from '../context/ThemeContext'
 import { Button } from '@/components/ui/button'
-import { MoonIcon, SunIcon, LogOutIcon } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import {
+  LayoutDashboardIcon, ServerIcon, SlidersIcon, ActivityIcon,
+  UsersIcon, CreditCardIcon, MessageSquareIcon, SunIcon, MoonIcon,
+  LogOutIcon, ChevronRightIcon
+} from 'lucide-react'
 
 const navigation = [
-  { name: 'Dashboard', path: '/' },
-  { name: 'Providers', path: '/providers' },
-  { name: 'Config', path: '/config' },
-  { name: 'Metrics', path: '/metrics' },
-  { name: 'Users', path: '/users' },
-  { name: 'Payments', path: '/payments' },
-  { name: 'Chat', path: '/chat' },
+  { name: 'Dashboard', path: '/', icon: LayoutDashboardIcon },
+  { name: 'Providers', path: '/providers', icon: ServerIcon },
+  { name: 'Config', path: '/config', icon: SlidersIcon },
+  { name: 'Metrics', path: '/metrics', icon: ActivityIcon },
+  { name: 'Users', path: '/users', icon: UsersIcon },
+  { name: 'Payments', path: '/payments', icon: CreditCardIcon },
+  { name: 'Chat', path: '/chat', icon: MessageSquareIcon },
 ]
 
 export default function Layout() {
@@ -26,49 +31,99 @@ export default function Layout() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <nav className="border-b bg-card">
-        <div className="w-full px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-14">
-            <div className="flex">
-              <div className="flex-shrink-0 flex items-center">
-                <span className="text-lg font-bold">YALR Admin</span>
-              </div>
-              <div className="hidden sm:ml-6 sm:flex sm:gap-0">
-                {navigation.map((item) => (
-                  <Link
-                    key={item.path}
-                    to={item.path}
-                    className={`inline-flex items-center px-3 py-1.5 text-sm font-medium border-b-2 transition-colors ${
-                      location.pathname === item.path
-                        ? 'border-primary text-foreground'
-                        : 'border-transparent text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    {item.name}
-                  </Link>
-                ))}
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-muted-foreground">{user.username || 'User'}</span>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={toggleTheme}
-                title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-              >
-                {theme === 'light' ? <MoonIcon /> : <SunIcon />}
-              </Button>
-              <Button variant="outline" size="sm" onClick={handleLogout}>
-                <LogOutIcon />
-                Logout
-              </Button>
-            </div>
+    <div className="min-h-screen flex bg-background">
+      {/* ── SIDEBAR ─────────────────────────────────────────── */}
+      <aside className="fixed inset-y-0 left-0 z-40 flex w-56 flex-col bg-[#060607] border-r border-[#1a1a1e]">
+        {/* Logo */}
+        <div className="flex items-center gap-2.5 px-5 py-4 border-b border-[#1a1a1e]">
+          <div className="flex items-center justify-center w-8 h-8 bg-[#0d0d0f] border border-[#2a2a2e]">
+            <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none">
+              <path d="M6 7l4 5-4 5" stroke="#4ce04c" strokeWidth="2.5" strokeLinecap="square"/>
+              <path d="M12 17l4-10" stroke="#4ce04c" strokeWidth="2.5" strokeLinecap="square"/>
+            </svg>
+          </div>
+          <div>
+            <div className="font-display text-lg leading-none tracking-wider text-[#d4d0c8]">YALR</div>
+            <div className="text-[9px] uppercase tracking-[0.15em] text-[#4ce04c]/60 font-mono">LLM Router</div>
           </div>
         </div>
-      </nav>
-      <main className="flex-1 w-full">
+
+        {/* Navigation */}
+        <nav className="flex-1 flex flex-col gap-1 px-3 py-4 overflow-y-auto">
+          {navigation.map((item) => {
+            const isActive = location.pathname === item.path
+              || (item.path !== '/' && location.pathname.startsWith(item.path))
+            const Icon = item.icon
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                className={cn(
+                  'group relative flex items-center gap-3 px-3 py-2 text-[13px] font-mono font-medium transition-colors',
+                  'border border-transparent',
+                  isActive
+                    ? 'bg-[#4ce04c]/10 border-[#4ce04c]/30 text-[#4ce04c]'
+                    : 'text-[#716d66] hover:text-[#a09b90] hover:bg-[#0d0d0f] hover:border-[#1a1a1e]'
+                )}
+              >
+                {/* Active indicator bar */}
+                {isActive && (
+                  <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-[#4ce04c]" />
+                )}
+                <Icon className={cn('size-4 shrink-0', isActive ? 'text-[#4ce04c]' : 'text-[#454545] group-hover:text-[#716d66]')} />
+                <span className="tracking-wide">{item.name}</span>
+
+                {/* Active pointer */}
+                {isActive && (
+                  <ChevronRightIcon className="ml-auto size-3 text-[#4ce04c]/60" />
+                )}
+              </Link>
+            )
+          })}
+        </nav>
+
+        {/* Bottom section */}
+        <div className="border-t border-[#1a1a1e] p-3 space-y-2">
+          {/* Theme toggle */}
+          <button
+            onClick={toggleTheme}
+            className="flex items-center gap-3 w-full px-3 py-2 text-[13px] font-mono text-[#716d66] hover:text-[#a09b90] hover:bg-[#0d0d0f] border border-transparent hover:border-[#1a1a1e] transition-colors"
+          >
+            {theme === 'light' ? <MoonIcon className="size-4 text-[#454545]" /> : <SunIcon className="size-4 text-[#454545]" />}
+            <span className="tracking-wide">{theme === 'light' ? 'Dark Mode' : 'Light Mode'}</span>
+            <span className="ml-auto text-[10px] text-[#4ce04c]/70 font-mono tabular-nums">
+              {theme === 'dark' ? 'ON' : 'OFF'}
+            </span>
+          </button>
+
+          {/* User info */}
+          <div className="flex items-center gap-3 px-3 py-2">
+            <div className="flex items-center justify-center w-7 h-7 bg-[#0d0d0f] border border-[#2a2a2e] text-[11px] font-mono font-bold text-[#4ce04c]">
+              {(user.username || 'U')[0].toUpperCase()}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[12px] font-mono font-medium text-[#d4d0c8] truncate">
+                {user.username || 'User'}
+              </div>
+              <div className="text-[10px] text-[#716d66] font-mono uppercase tracking-wider">
+                {user.isAdmin ? 'ADMIN' : 'USER'}
+              </div>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={handleLogout}
+              className="text-[#716d66] hover:text-[#ff3333] hover:bg-transparent"
+              title="Logout"
+            >
+              <LogOutIcon className="size-3.5" />
+            </Button>
+          </div>
+        </div>
+      </aside>
+
+      {/* ── MAIN CONTENT ────────────────────────────────────── */}
+      <main className="flex-1 ml-56 min-h-screen bg-background">
         <Outlet />
       </main>
     </div>

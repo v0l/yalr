@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { PlusIcon, PencilIcon, TrashIcon, WalletIcon, KeyIcon, RefreshCw } from 'lucide-react'
+import { PlusIcon, PencilIcon, TrashIcon, WalletIcon, KeyIcon } from 'lucide-react'
 import { api } from '../api/client'
 import type { Provider } from '../types'
 import { Button } from '@/components/ui/button'
@@ -9,40 +9,17 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Card, CardContent } from '@/components/ui/card'
+/* ── Constants ────────────────────────────────────────────────── */
 
-// Common providers with logos and defaults
 const COMMON_PROVIDERS = [
-  { name: 'ChatGPT', slug: 'chatgpt', type: 'openai', url: 'https://api.openai.com/v1', logo: '🤖' },
-  { name: 'Anthropic', slug: 'anthropic', type: 'anthropic', url: 'https://api.anthropic.com', logo: '🎭' },
-  { name: 'OpenRouter', slug: 'openrouter', type: 'openrouter', url: 'https://openrouter.ai/api/v1', logo: '🔀' },
+  { name: 'ChatGPT', slug: 'chatgpt', type: 'openai', url: 'https://api.openai.com/v1', logo: '◈' },
+  { name: 'Anthropic', slug: 'anthropic', type: 'anthropic', url: 'https://api.anthropic.com', logo: '◆' },
+  { name: 'OpenRouter', slug: 'openrouter', type: 'openrouter', url: 'https://openrouter.ai/api/v1', logo: '◎' },
   { name: 'PPQ.ai', slug: 'ppq', type: 'ppq', url: 'https://api.ppq.ai', logo: '⚡' },
 ]
-
-function HealthBadge({ state }: { state?: string }) {
-  switch (state) {
-    case 'healthy':
-      return <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400">Healthy</Badge>
-    case 'degraded':
-      return <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">Degraded</Badge>
-    case 'unhealthy':
-      return <Badge className="bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400">Down</Badge>
-    default:
-      return <Badge variant="outline">Unknown</Badge>
-  }
-}
-
-type ProviderFormData = {
-  name: string
-  slug: string
-  base_url: string
-  api_key: string
-  provider_type: string
-}
 
 const DEFAULT_BASE_URLS: Record<string, string> = {
   openai: 'https://api.openai.com/v1',
@@ -51,13 +28,26 @@ const DEFAULT_BASE_URLS: Record<string, string> = {
   ppq: 'https://api.ppq.ai',
 }
 
-const emptyForm: ProviderFormData = {
-  name: '',
-  slug: '',
-  base_url: '',
-  api_key: '',
-  provider_type: 'openai',
+/* ── Sub-components ───────────────────────────────────────────── */
+
+function HealthBadge({ state }: { state?: string }) {
+  switch (state) {
+    case 'healthy': return <Badge className="bg-[#4ce04c]/15 text-[#4ce04c] border-[#4ce04c]/30 font-mono text-[10px] tracking-wider uppercase">HEALTHY</Badge>
+    case 'degraded': return <Badge className="bg-[#ffb800]/15 text-[#ffb800] border-[#ffb800]/30 font-mono text-[10px] tracking-wider uppercase">DEGRADED</Badge>
+    case 'unhealthy': return <Badge className="bg-[#ff3333]/15 text-[#ff3333] border-[#ff3333]/30 font-mono text-[10px] tracking-wider uppercase">DOWN</Badge>
+    default: return <Badge variant="outline" className="font-mono text-[10px] text-[#716d66] border-[#2a2a2e]">UNKNOWN</Badge>
+  }
 }
+
+type ProviderFormData = {
+  name: string; slug: string; base_url: string; api_key: string; provider_type: string
+}
+
+const emptyForm: ProviderFormData = { name: '', slug: '', base_url: '', api_key: '', provider_type: 'openai' }
+
+/* ═══════════════════════════════════════════════════════════════ */
+/*  Providers Page                                                */
+/* ═══════════════════════════════════════════════════════════════ */
 
 export default function Providers() {
   const [providers, setProviders] = useState<Provider[]>([])
@@ -79,379 +69,250 @@ export default function Providers() {
   useEffect(() => { loadProviders() }, [])
 
   async function loadProviders() {
-    try {
-      setLoading(true)
-      setError(null)
-      const data = await api.getProviders()
-      setProviders(data.providers)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to fetch providers')
-    } finally {
-      setLoading(false)
-    }
+    try { setLoading(true); setError(null); const data = await api.getProviders(); setProviders(data.providers) }
+    catch (e) { setError(e instanceof Error ? e.message : 'Failed to fetch providers') }
+    finally { setLoading(false) }
   }
 
   function openCreate(prefill?: Partial<ProviderFormData>) {
-    setEditingProvider(null)
-    setForm({ ...emptyForm, ...prefill })
-    setDialogOpen(true)
+    setEditingProvider(null); setForm({ ...emptyForm, ...prefill }); setDialogOpen(true)
   }
 
   function openEdit(provider: Provider) {
     setEditingProvider(provider)
-    setForm({
-      name: provider.name,
-      slug: provider.slug,
-      base_url: provider.base_url,
-      api_key: '',
-      provider_type: provider.provider_type,
-    })
+    setForm({ name: provider.name, slug: provider.slug, base_url: provider.base_url, api_key: '', provider_type: provider.provider_type })
     setDialogOpen(true)
   }
 
   async function handleSave(e: React.FormEvent) {
-    e.preventDefault()
-    setSaving(true)
-    setError(null)
+    e.preventDefault(); setSaving(true); setError(null)
     try {
       if (editingProvider) {
-        const updateData: Record<string, string> = {}
-        if (form.name !== editingProvider.name) updateData.name = form.name
-        if (form.slug !== editingProvider.slug) updateData.slug = form.slug
-        if (form.base_url !== editingProvider.base_url) updateData.base_url = form.base_url
-        if (form.api_key) updateData.api_key = form.api_key
-        if (form.provider_type !== editingProvider.provider_type) updateData.provider_type = form.provider_type
-        await api.updateProvider(editingProvider.slug, updateData)
-        setSuccessMessage('Provider updated successfully')
+        const d: Record<string, string> = {}
+        if (form.name !== editingProvider.name) d.name = form.name
+        if (form.slug !== editingProvider.slug) d.slug = form.slug
+        if (form.base_url !== editingProvider.base_url) d.base_url = form.base_url
+        if (form.api_key) d.api_key = form.api_key
+        if (form.provider_type !== editingProvider.provider_type) d.provider_type = form.provider_type
+        await api.updateProvider(editingProvider.slug, d)
+        setSuccessMessage('PROVIDER UPDATED')
       } else {
         await api.createProvider(form)
-        setSuccessMessage('Provider created successfully')
+        setSuccessMessage('PROVIDER CREATED')
       }
-      setDialogOpen(false)
-      loadProviders()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to save provider')
-    } finally {
-      setSaving(false)
-    }
+      setDialogOpen(false); loadProviders()
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to save provider') }
+    finally { setSaving(false) }
   }
 
   async function handleDelete() {
-    if (!deleteTarget) return
-    setDeleting(true)
-    try {
-      await api.deleteProvider(deleteTarget.slug)
-      setDeleteTarget(null)
-      setSuccessMessage('Provider deleted successfully')
-      loadProviders()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete provider')
-    } finally {
-      setDeleting(false)
-    }
-  }
-
-  function handleTopup(provider: Provider) {
-    setTopupProvider(provider)
+    if (!deleteTarget) return; setDeleting(true)
+    try { await api.deleteProvider(deleteTarget.slug); setDeleteTarget(null); setSuccessMessage('PROVIDER DELETED'); loadProviders() }
+    catch (e) { setError(e instanceof Error ? e.message : 'Failed to delete provider') }
+    finally { setDeleting(false) }
   }
 
   async function handleGenerateKey(provider: Provider) {
     setGeneratingKey(provider)
-    try {
-      const response = await api.generateProviderApiKey(provider.slug)
-      setGeneratedApiKey(response.api_key)
-      setSuccessMessage('API key generated successfully!')
-      await loadProviders()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to generate API key')
-    } finally {
-      setGeneratingKey(null)
-    }
+    try { const r = await api.generateProviderApiKey(provider.slug); setGeneratedApiKey(r.api_key); setSuccessMessage('API KEY GENERATED'); await loadProviders() }
+    catch (e) { setError(e instanceof Error ? e.message : 'Failed to generate API key') }
+    finally { setGeneratingKey(null) }
   }
 
+  /* ── Loading ─────────────────────────────────────────────── */
   if (loading) {
     return (
-      <div className="flex flex-col gap-6 p-6">
+      <div className="space-y-6 p-6">
         <div className="flex items-center justify-between">
-          <div className="flex flex-col gap-1">
-            <Skeleton className="h-7 w-28" />
-            <Skeleton className="h-4 w-48" />
-          </div>
-          <Skeleton className="h-8 w-32" />
+          <div><Skeleton className="h-8 w-44 bg-[#1c1c1e]" /><Skeleton className="h-4 w-52 bg-[#1c1c1e] mt-1" /></div>
+          <Skeleton className="h-9 w-32 bg-[#1c1c1e]" />
         </div>
-        <Skeleton className="h-64 w-full" />
+        <Skeleton className="h-64 bg-[#1c1c1e]" />
       </div>
     )
   }
 
+  /* ── Render ──────────────────────────────────────────────── */
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="space-y-6 p-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Providers</h1>
-          <p className="text-sm text-muted-foreground">Manage LLM provider connections</p>
+          <h1 className="font-display text-[28px] tracking-[0.04em] text-foreground leading-none mb-1">PROVIDERS</h1>
+          <p className="font-mono text-[13px] text-muted-foreground">Manage LLM provider connections</p>
         </div>
-        <Button onClick={() => openCreate()}>
-          <PlusIcon />
-          Add Provider
+        <Button onClick={() => openCreate()} className="font-mono text-[12px] tracking-wider uppercase border border-[#4ce04c]/40 bg-[#4ce04c]/10 text-[#4ce04c] hover:bg-[#4ce04c]/20">
+          <PlusIcon className="size-3.5" /> Add Provider
         </Button>
       </div>
 
       {/* Messages */}
       {successMessage && (
-        <Alert>
-          <AlertDescription className="flex items-center justify-between">
-            {successMessage}
-            <Button variant="ghost" size="icon-xs" onClick={() => setSuccessMessage(null)}>×</Button>
-          </AlertDescription>
+        <Alert className="border-[#4ce04c]/30 bg-[#4ce04c]/5 text-[#4ce04c] font-mono text-[13px]">
+          <AlertDescription className="flex items-center justify-between">{successMessage}<Button variant="ghost" size="icon-xs" onClick={() => setSuccessMessage(null)} className="text-[#4ce04c] hover:text-[#4ce04c]">×</Button></AlertDescription>
         </Alert>
       )}
       {error && (
-        <Alert variant="destructive">
-          <AlertDescription className="flex items-center justify-between">
-            {error}
-            <Button variant="ghost" size="icon-xs" onClick={() => setError(null)}>×</Button>
-          </AlertDescription>
+        <Alert className="border-[#ff3333]/30 bg-[#ff3333]/5 text-[#ff3333] font-mono text-[13px]">
+          <AlertDescription className="flex items-center justify-between">{error}<Button variant="ghost" size="icon-xs" onClick={() => setError(null)} className="text-[#ff3333] hover:text-[#ff3333]">×</Button></AlertDescription>
         </Alert>
       )}
 
-      {/* Quick Add - Common Providers */}
-      <Card>
-        <CardContent className="p-4">
-          <h3 className="text-sm font-medium mb-3">Quick Add Common Providers</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {COMMON_PROVIDERS.map((cp) => (
-              <Button
-                key={cp.slug}
-                variant="outline"
-                className="h-auto p-3 flex flex-col gap-2"
-                onClick={() => openCreate({
-                  name: cp.name,
-                  slug: cp.slug,
-                  provider_type: cp.type,
-                  base_url: cp.url,
-                })}
-              >
-                <span className="text-2xl">{cp.logo}</span>
-                <span className="text-sm font-medium">{cp.name}</span>
-              </Button>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      {/* Quick Add */}
+      <div className="panel p-4">
+        <div className="section-header mb-3">Quick Add</div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {COMMON_PROVIDERS.map(cp => (
+            <button
+              key={cp.slug}
+              onClick={() => openCreate({ name: cp.name, slug: cp.slug, provider_type: cp.type, base_url: cp.url })}
+              className="panel p-3 hover:border-[#4ce04c]/30 transition-colors cursor-pointer text-left group"
+            >
+              <div className="text-2xl mb-2 text-[#716d66] group-hover:text-[#4ce04c] transition-colors">{cp.logo}</div>
+              <div className="font-mono text-[13px] font-medium">{cp.name}</div>
+              <div className="font-mono text-[10px] text-[#716d66] uppercase mt-0.5">{cp.type}</div>
+            </button>
+          ))}
+        </div>
+      </div>
 
-      {/* Table */}
-      <Card>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Slug</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Base URL</TableHead>
-                <TableHead className="w-32 text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {providers.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-center text-muted-foreground py-12">
-                    No providers configured. Add one to get started.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                providers.map((provider) => (
-                  <TableRow key={provider.slug}>
-                    <TableCell className="font-medium">{provider.name}</TableCell>
-                    <TableCell className="font-mono text-muted-foreground">{provider.slug}</TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">{provider.provider_type}</Badge>
-                    </TableCell>
-                    <TableCell><HealthBadge state={provider.health?.health_state} /></TableCell>
-                    <TableCell className="font-mono text-muted-foreground">{provider.base_url}</TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        {(provider.provider_type === 'routstr' || provider.provider_type === 'ppq') && (
-                          <>
-                            <Button variant="ghost" size="icon-xs" onClick={() => handleTopup(provider)} title="Top-up provider balance">
-                              <WalletIcon />
-                            </Button>
-                            {provider.provider_type === 'ppq' && (
-                              <Button variant="ghost" size="icon-xs" onClick={() => handleGenerateKey(provider)} disabled={!!generatingKey} title="Generate API key">
-                                {generatingKey?.slug === provider.slug ? <RefreshCw className="animate-spin" /> : <KeyIcon />}
-                              </Button>
-                            )}
-                          </>
-                        )}
-                        <Button variant="ghost" size="icon-xs" onClick={() => openEdit(provider)}>
-                          <PencilIcon />
-                        </Button>
-                        <Button variant="ghost" size="icon-xs" onClick={() => setDeleteTarget(provider)}>
-                          <TrashIcon />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      {/* Provider Table */}
+      <div>
+        <h2 className="section-header">Configured Providers</h2>
+        <div className="panel">
+          <div className="overflow-x-auto">
+            <table className="w-full table-scan">
+              <thead>
+                <tr className="border-b border-[#1a1a1e] text-left">
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Name</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Slug</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Type</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Status</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Base URL</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {providers.length === 0 ? (
+                  <tr><td colSpan={6} className="px-4 py-16 text-center font-mono text-[13px] text-[#716d66]">{'>'} NO PROVIDERS CONFIGURED</td></tr>
+                ) : (
+                  providers.map(p => (
+                    <tr key={p.slug} className="border-b border-[#1a1a1e] hover:bg-[#0d0d0f] transition-colors">
+                      <td className="px-4 py-3 font-mono text-[13px] font-medium">{p.name}</td>
+                      <td className="px-4 py-3 font-mono text-[12px] text-[#716d66]">{p.slug}</td>
+                      <td className="px-4 py-3"><Badge variant="secondary" className="font-mono text-[10px] uppercase tracking-wider bg-[#1c1c1e] text-[#716d66] border-[#2a2a2e]">{p.provider_type}</Badge></td>
+                      <td className="px-4 py-3"><HealthBadge state={p.health?.health_state} /></td>
+                      <td className="px-4 py-3 font-mono text-[12px] text-[#716d66] truncate max-w-48" title={p.base_url}>{p.base_url}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1">
+                          {(p.provider_type === 'routstr' || p.provider_type === 'ppq') && (
+                            <>
+                              <Button variant="ghost" size="icon-xs" onClick={() => setTopupProvider(p)} title="Top-up" className="text-[#716d66] hover:text-[#4ce04c]"><WalletIcon className="size-3.5" /></Button>
+                              {p.provider_type === 'ppq' && (
+                                <Button variant="ghost" size="icon-xs" onClick={() => handleGenerateKey(p)} disabled={!!generatingKey} title="Generate API key" className="text-[#716d66] hover:text-[#4ce04c]"><KeyIcon className="size-3.5" /></Button>
+                              )}
+                            </>
+                          )}
+                          <Button variant="ghost" size="icon-xs" onClick={() => openEdit(p)} className="text-[#716d66] hover:text-[#d4d0c8]"><PencilIcon className="size-3.5" /></Button>
+                          <Button variant="ghost" size="icon-xs" onClick={() => setDeleteTarget(p)} className="text-[#716d66] hover:text-[#ff3333]"><TrashIcon className="size-3.5" /></Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
 
       {/* Create/Edit Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={(open) => { if (!open) setDialogOpen(false) }}>
-        <DialogContent className="sm:max-w-lg">
+      <Dialog open={dialogOpen} onOpenChange={(o) => { if (!o) setDialogOpen(false) }}>
+        <DialogContent className="sm:max-w-lg border-[#2a2a2e] bg-[#111113]">
           <DialogHeader>
-            <DialogTitle>{editingProvider ? 'Edit Provider' : 'Add Provider'}</DialogTitle>
-            <DialogDescription>
+            <DialogTitle className="font-display text-xl tracking-[0.04em]">{editingProvider ? 'EDIT PROVIDER' : 'ADD PROVIDER'}</DialogTitle>
+            <DialogDescription className="font-mono text-[12px] text-[#716d66]">
               {editingProvider ? 'Update the provider configuration.' : 'Connect a new LLM provider.'}
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSave} className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="p-name">Name</Label>
-                <Input
-                  id="p-name"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="My OpenAI"
-                  required
-                />
+                <Label htmlFor="p-name" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Name</Label>
+                <Input id="p-name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="My OpenAI" required className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]" />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="p-slug">Slug</Label>
-                <Input
-                  id="p-slug"
-                  value={form.slug}
-                  onChange={(e) => setForm({ ...form, slug: e.target.value })}
-                  placeholder="my-openai"
-                  className="font-mono"
-                  required
-                />
+                <Label htmlFor="p-slug" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Slug</Label>
+                <Input id="p-slug" value={form.slug} onChange={e => setForm({ ...form, slug: e.target.value })} placeholder="my-openai" className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]" required />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="p-type">Provider Type</Label>
-                <Select value={form.provider_type} onValueChange={(v) => {
-                  setForm({
-                    ...form,
-                    provider_type: v,
-                    base_url: DEFAULT_BASE_URLS[v] ?? form.base_url,
-                  });
-                }}>
-                  <SelectTrigger id="p-type" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
+                <Label htmlFor="p-type" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Type</Label>
+                <Select value={form.provider_type} onValueChange={v => setForm({ ...form, provider_type: v, base_url: DEFAULT_BASE_URLS[v] ?? form.base_url })}>
+                  <SelectTrigger id="p-type" className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]"><SelectValue /></SelectTrigger>
+                  <SelectContent className="bg-[#111113] border-[#2a2a2e]">
                     <SelectGroup>
-                      <SelectItem value="openai">OpenAI</SelectItem>
-                      <SelectItem value="anthropic">Anthropic</SelectItem>
-                      <SelectItem value="llamacpp">LlamaCpp</SelectItem>
-                      <SelectItem value="vllm">vLLM</SelectItem>
-                      <SelectItem value="ollama">Ollama</SelectItem>
-                      <SelectItem value="routstr">Routstr</SelectItem>
-                      <SelectItem value="openrouter">OpenRouter</SelectItem>
-                      <SelectItem value="ppq">PPQ.ai</SelectItem>
+                      {['openai','anthropic','llamacpp','vllm','ollama','routstr','openrouter','ppq'].map(t => <SelectItem key={t} value={t} className="font-mono text-[#d4d0c8]">{t}</SelectItem>)}
                     </SelectGroup>
                   </SelectContent>
                 </Select>
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="p-url">Base URL</Label>
-                <Input
-                  id="p-url"
-                  type="url"
-                  value={form.base_url}
-                  onChange={(e) => setForm({ ...form, base_url: e.target.value })}
-                  placeholder="https://api.openai.com"
-                  required
-                />
+                <Label htmlFor="p-url" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">Base URL</Label>
+                <Input id="p-url" type="url" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.openai.com" className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]" required />
               </div>
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="p-key">
-                API Key{editingProvider && <span className="font-normal text-muted-foreground"> (leave blank to keep current)</span>}
+              <Label htmlFor="p-key" className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66]">
+                API Key{editingProvider && <span className="font-normal text-[#716d66] tracking-normal"> (leave blank to keep current)</span>}
               </Label>
-              <Input
-                id="p-key"
-                type="password"
-                value={form.api_key}
-                onChange={(e) => setForm({ ...form, api_key: e.target.value })}
-                placeholder={editingProvider ? 'Leave blank to keep current API key' : 'sk-...'}
-                required={!editingProvider}
-              />
+              <Input id="p-key" type="password" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder={editingProvider ? '••••••••' : 'sk-...'} className="font-mono bg-[#0d0d0f] border-[#2a2a2e] text-[#d4d0c8]" required={!editingProvider} />
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)} disabled={saving}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={saving}>
-                {saving ? 'Saving...' : editingProvider ? 'Update Provider' : 'Create Provider'}
+              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)} disabled={saving} className="font-mono text-[12px] border-[#2a2a2e] text-[#716d66]">CANCEL</Button>
+              <Button type="submit" disabled={saving} className="font-mono text-[12px] tracking-wider uppercase border border-[#4ce04c]/40 bg-[#4ce04c]/10 text-[#4ce04c] hover:bg-[#4ce04c]/20">
+                {saving ? 'SAVING...' : editingProvider ? 'UPDATE' : 'CREATE'}
               </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* Generated API Key Dialog */}
-      <Dialog open={!!generatedApiKey} onOpenChange={(open) => { if (!open) { setGeneratedApiKey(null); setSuccessMessage(null); } }}>
-        <DialogContent className="sm:max-w-lg">
+      {/* Generated Key Dialog */}
+      <Dialog open={!!generatedApiKey} onOpenChange={(o) => { if (!o) { setGeneratedApiKey(null); setSuccessMessage(null) } }}>
+        <DialogContent className="sm:max-w-lg border-[#2a2a2e] bg-[#111113]">
           <DialogHeader>
-            <DialogTitle>API Key Generated!</DialogTitle>
-            <DialogDescription>
-              Save this API key securely. You won't be able to see it again.
-            </DialogDescription>
+            <DialogTitle className="font-display text-xl tracking-[0.04em] text-[#4ce04c]">API KEY GENERATED</DialogTitle>
+            <DialogDescription className="font-mono text-[12px] text-[#716d66]">Save this key securely. You won&apos;t see it again.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="p-3 bg-muted rounded-md">
-              <code className="text-sm break-all">{generatedApiKey}</code>
-            </div>
-            <Alert>
-              <AlertDescription>
-                This key is automatically saved to your provider configuration. You can use it to authenticate API requests.
-              </AlertDescription>
+            <div className="p-3 bg-[#0d0d0f] border border-[#2a2a2e] font-mono text-[13px] text-[#4ce04c] break-all">{generatedApiKey}</div>
+            <Alert className="border-[#4ce04c]/20 bg-[#4ce04c]/5 text-[#716d66] font-mono text-[12px]">
+              <AlertDescription>This key is automatically saved to your provider configuration.</AlertDescription>
             </Alert>
           </div>
           <DialogFooter>
-            <Button onClick={() => { setGeneratedApiKey(null); setSuccessMessage(null); }}>
-              Close
-            </Button>
+            <Button onClick={() => { setGeneratedApiKey(null); setSuccessMessage(null) }} className="font-mono text-[12px] border border-[#2a2a2e] bg-transparent text-[#d4d0c8]">CLOSE</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Topup Dialog */}
+      {/* Top-up */}
       {topupProvider && (
-        <TopupDialog
-          open={!!topupProvider}
-          onOpenChange={(open) => {
-            if (!open) setTopupProvider(null)
-          }}
-          providerSlug={topupProvider.slug}
-          providerName={topupProvider.name}
-          supportedPaymentMethods={topupProvider.payment_options}
-        />
+        <TopupDialog open={!!topupProvider} onOpenChange={o => { if (!o) setTopupProvider(null) }} providerSlug={topupProvider.slug} providerName={topupProvider.name} supportedPaymentMethods={topupProvider.payment_options} currentBalance={topupProvider.health?.balance} />
       )}
 
       {/* Delete Confirmation */}
-      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}>
-        <AlertDialogContent>
+      <AlertDialog open={!!deleteTarget} onOpenChange={o => { if (!o) setDeleteTarget(null) }}>
+        <AlertDialogContent className="border-[#2a2a2e] bg-[#111113]">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Provider</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete <span className="font-medium text-foreground">{deleteTarget?.name}</span>?
-              This action cannot be undone.
+            <AlertDialogTitle className="font-display text-xl tracking-[0.04em] text-[#ff3333]">DELETE PROVIDER</AlertDialogTitle>
+            <AlertDialogDescription className="font-mono text-[13px] text-[#716d66]">
+              Delete <span className="text-[#d4d0c8]">{deleteTarget?.name}</span>? This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={handleDelete} disabled={deleting}>
-              {deleting ? 'Deleting...' : 'Delete'}
-            </AlertDialogAction>
+            <AlertDialogCancel className="font-mono text-[12px] border-[#2a2a2e] text-[#716d66]">CANCEL</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={handleDelete} disabled={deleting} className="font-mono text-[12px] tracking-wider uppercase">{deleting ? 'DELETING...' : 'DELETE'}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

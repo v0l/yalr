@@ -198,13 +198,17 @@ pub async fn run_with_shutdown<F>(
         .route("/providers/:slug/lightning/invoice", post(crate::payments::routstr::create_provider_invoice))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let models_route = Router::new()
+        .route("/", get(model_handlers::list_models))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
     let app = Router::new()
         .nest("/api", public_auth_routes.merge(all_protected))
         .route("/api/metrics/ws", get(ws::ws_metrics_handler))
         .merge(chat_completions_routes)
         .merge(responses_routes)
         .merge(routstr_protected_routes)
-        .route("/v1/models", get(model_handlers::list_models))
+        .nest("/v1/models", models_route)
         .route("/v1/info", get(crate::payments::routstr::routstr_info))
         .route("/api/health", get(health::health_check))
         .fallback(axum::routing::get({
@@ -315,11 +319,15 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/lightning/invoice/:payment_hash/status", get(crate::payments::routstr::check_lightning_invoice))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let models_route = Router::new()
+        .route("/", get(model_handlers::list_models))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
     Router::new()
         .merge(chat_completions_routes)
         .merge(responses_routes)
         .merge(routstr_protected_routes)
-        .route("/v1/models", get(model_handlers::list_models))
+        .nest("/v1/models", models_route)
         .route("/v1/info", get(crate::payments::routstr::routstr_info))
         .route("/api/health", get(health::health_check))
         .route("/api/metrics/ws", get(ws::ws_metrics_handler))

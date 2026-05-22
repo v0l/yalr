@@ -1,37 +1,62 @@
 import { useEffect, useState, useRef } from 'react'
 import { api, API_BASE_URL } from '../api/client'
 import type { MetricsResponse, Provider, ProviderHealthEntry, HealthOverviewResponse } from '../types'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { TopupDialog } from '@/components/TopupDialog'
 import { cn, formatBalance } from '@/lib/utils'
 
+/* ── Sub-components ────────────────────────────────────────────── */
+
 function HealthBadge({ state }: { state: string }) {
   switch (state) {
-    case 'healthy':
-      return <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400">Healthy</Badge>
-    case 'degraded':
-      return <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">Degraded</Badge>
-    case 'unhealthy':
-      return <Badge className="bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400">Down</Badge>
-    default:
-      return <Badge variant="secondary">{state}</Badge>
+    case 'healthy': return <Badge className="bg-[#4ce04c]/15 text-[#4ce04c] border-[#4ce04c]/30 font-mono text-[10px] tracking-wider uppercase">HEALTHY</Badge>
+    case 'degraded': return <Badge className="bg-[#ffb800]/15 text-[#ffb800] border-[#ffb800]/30 font-mono text-[10px] tracking-wider uppercase">DEGRADED</Badge>
+    case 'unhealthy': return <Badge className="bg-[#ff3333]/15 text-[#ff3333] border-[#ff3333]/30 font-mono text-[10px] tracking-wider uppercase">DOWN</Badge>
+    default: return <Badge variant="secondary" className="font-mono text-[10px]">{state.toUpperCase()}</Badge>
   }
 }
 
 function BalanceDisplay({ health }: { health?: ProviderHealthEntry }) {
-  if (!health?.balance) return <span className="text-muted-foreground">—</span>
-  const { currency, amount } = health.balance
+  if (!health?.balance) return <span className="text-[#716d66] font-mono">—</span>
+  return <span className="font-mono text-[13px] tabular-nums">{formatBalance(health.balance.amount, health.balance.currency)}</span>
+}
+
+/* ── Stat Card ─────────────────────────────────────────────────── */
+
+function StatCard({
+  label, value, sub, subError, subGood, color = 'default'
+}: {
+  label: string
+  value: string
+  sub?: string
+  subError?: boolean
+  subGood?: boolean
+  color?: 'green' | 'amber' | 'red' | 'default'
+}) {
+  const borderColor = color === 'green' ? 'border-[#4ce04c]/20' : color === 'amber' ? 'border-[#ffb800]/20' : color === 'red' ? 'border-[#ff3333]/20' : 'border-[#1a1a1e]'
+  const glowColor = color === 'green' ? '#4ce04c' : color === 'amber' ? '#ffb800' : color === 'red' ? '#ff3333' : 'transparent'
   return (
-    <span className="font-mono text-sm">
-      {formatBalance(amount, currency)}
-    </span>
+    <div className={cn('panel px-4 py-3.5', borderColor)} style={glowColor !== 'transparent' ? { boxShadow: `inset 0 0 20px ${glowColor}08` } : undefined}>
+      <div className="text-[10px] uppercase tracking-[0.1em] text-[#716d66] font-mono mb-1">{label}</div>
+      <div className="font-mono text-[28px] font-bold tabular-nums leading-none tracking-tight">{value}</div>
+      {sub && (
+        <div className={cn(
+          'mt-1 font-mono text-[11px]',
+          subError ? 'text-[#ff3333]' : subGood ? 'text-[#4ce04c]' : 'text-[#716d66]'
+        )}>
+          {sub}
+        </div>
+      )}
+    </div>
   )
 }
+
+/* ═══════════════════════════════════════════════════════════════ */
+/*  Dashboard Page                                                */
+/* ═══════════════════════════════════════════════════════════════ */
 
 export default function Dashboard() {
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null)
@@ -70,17 +95,16 @@ export default function Dashboard() {
     fetchData()
   }, [])
 
-  // WebSocket connection for real-time metrics
+  /* WebSocket */
   useEffect(() => {
     let c = false
     function connect() {
       if (c) return
       const tok = localStorage.getItem('token')
       if (!tok) { setWsStatus('disconnected'); return }
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       let base: string
-      try { const u = new URL(API_BASE_URL); u.protocol = proto; base = u.toString().replace(/\/$/, '') }
-      catch { base = `${proto}//${window.location.host}` }
+      try { const u = new URL(API_BASE_URL); u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'; base = u.toString().replace(/\/$/, '') }
+      catch { const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; base = `${proto}//${window.location.host}` }
       setWsStatus('connecting')
       const ws = new WebSocket(`${base}/api/metrics/ws?token=${encodeURIComponent(tok)}`)
       wsRef.current = ws
@@ -89,7 +113,6 @@ export default function Dashboard() {
         if (c) return
         try {
           const d = JSON.parse(ev.data as string)
-          // Update providers list when we get ProviderLoad events
           if (d.provider) {
             setProviders(prev => {
               const updated = [...prev]
@@ -99,11 +122,7 @@ export default function Dashboard() {
                 if (load && updated[idx].health) {
                   updated[idx] = {
                     ...updated[idx],
-                    health: {
-                      ...updated[idx].health!,
-                      in_flight: load.in_flight,
-                      max_concurrency: load.max_concurrency,
-                    }
+                    health: { ...updated[idx].health!, in_flight: load.in_flight, max_concurrency: load.max_concurrency }
                   }
                 }
               }
@@ -120,7 +139,7 @@ export default function Dashboard() {
     return () => { c = true; if (reconnectT.current) clearTimeout(reconnectT.current); wsRef.current?.close() }
   }, [])
 
-  // Periodic refresh of health data
+  /* Periodic refresh */
   useEffect(() => {
     const iv = setInterval(async () => {
       try {
@@ -135,18 +154,18 @@ export default function Dashboard() {
     return () => clearInterval(iv)
   }, [])
 
+  /* ── Loading ─────────────────────────────────────────────── */
   if (loading) {
     return (
-      <div className="flex flex-col gap-6 p-6">
+      <div className="space-y-6 p-6">
         <div className="flex flex-col gap-1">
-          <Skeleton className="h-7 w-32" />
-          <Skeleton className="h-4 w-48" />
+          <Skeleton className="h-8 w-44 bg-[#1c1c1e]" />
+          <Skeleton className="h-4 w-64 bg-[#1c1c1e]" />
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Skeleton className="h-32" />
-          <Skeleton className="h-32" />
-          <Skeleton className="h-32" />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {[1,2,3,4].map(i => <Skeleton key={i} className="h-28 bg-[#1c1c1e]" />)}
         </div>
+        <Skeleton className="h-80 bg-[#1c1c1e]" />
       </div>
     )
   }
@@ -154,13 +173,14 @@ export default function Dashboard() {
   if (error) {
     return (
       <div className="p-6">
-        <Alert variant="destructive">
+        <Alert className="border-[#ff3333]/30 bg-[#ff3333]/5 text-[#ff3333] font-mono">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       </div>
     )
   }
 
+  /* ── Derived ─────────────────────────────────────────────── */
   const totalRequests = metrics?.total_requests ?? 0
   const totalSuccesses = metrics?.total_successes ?? 0
   const totalFailures = metrics?.total_failures ?? 0
@@ -168,126 +188,215 @@ export default function Dashboard() {
   const avgLatency = metrics?.providers.length
     ? (metrics.providers.reduce((sum, p) => sum + (p.avg_latency_ms || 0), 0) || 0) / metrics.providers.length
     : 0
+  const successRate = totalRequests > 0 ? ((totalSuccesses / totalRequests) * 100).toFixed(1) : null
+  const srNum = successRate ? parseFloat(successRate) : 0
 
+  /* ── Render ──────────────────────────────────────────────── */
   return (
-    <div className="flex flex-col gap-6 p-6">
-      <div className="flex items-center gap-2 mb-2">
-        <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
-        <span className={cn('size-2 rounded-full',
-          wsStatus==='connected'?'bg-emerald-500':wsStatus==='connecting'?'bg-amber-500':'bg-destructive')}/>
-      </div>
-      <p className="text-sm text-muted-foreground">Overview of your YALR instance</p>
+    <div className="space-y-6 p-6">
+      {/* Header */}
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="flex items-center gap-3 mb-1">
+            <h1 className="font-display text-[28px] tracking-[0.04em] text-foreground leading-none">
+              DASHBOARD
+            </h1>
+            <div className={cn(
+              'flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider px-2 py-0.5 border',
+              wsStatus === 'connected' ? 'text-[#4ce04c] border-[#4ce04c]/30 bg-[#4ce04c]/5' :
+              wsStatus === 'connecting' ? 'text-[#ffb800] border-[#ffb800]/30 bg-[#ffb800]/5' :
+              'text-[#ff3333] border-[#ff3333]/30 bg-[#ff3333]/5'
+            )}>
+              <span className={cn(
+                'w-1.5 h-1.5 rounded-full',
+                wsStatus === 'connected' && 'bg-[#4ce04c] animate-pulse-status',
+                wsStatus === 'connecting' && 'bg-[#ffb800] animate-pulse-status',
+                wsStatus === 'disconnected' && 'bg-[#ff3333]'
+              )} />
+              {wsStatus === 'connected' ? 'LIVE' : wsStatus === 'connecting' ? 'CONN' : 'OFF'}
+            </div>
+          </div>
+          <p className="font-mono text-[13px] text-muted-foreground">
+            System overview &amp; provider health monitoring
+          </p>
+        </div>
 
+        {/* Quick health summary */}
+        <div className="hidden sm:flex items-center gap-4 font-mono text-[12px]">
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-[#4ce04c]" />
+            <span className="text-[#4ce04c] tabular-nums">{providers.filter(p => p.health?.health_state === 'healthy').length}</span>
+            <span className="text-[#716d66]">HEALTHY</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-[#ffb800]" />
+            <span className="text-[#ffb800] tabular-nums">{providers.filter(p => p.health?.health_state === 'degraded').length}</span>
+            <span className="text-[#716d66]">DEGRADED</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-[#ff3333]" />
+            <span className="text-[#ff3333] tabular-nums">{providers.filter(p => p.health?.health_state === 'unhealthy').length}</span>
+            <span className="text-[#716d66]">DOWN</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        <Card className="border-2">
-          <CardHeader className="pb-2 pt-3 px-3">
-            <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Total Requests</CardTitle>
-          </CardHeader>
-          <CardContent className="px-3 pb-3">
-            <p className="text-2xl font-bold">{totalRequests.toLocaleString()}</p>
-            <div className="flex gap-2 mt-1 text-xs">
-              <span className="text-emerald-600 dark:text-emerald-400">{totalSuccesses.toLocaleString()} ok</span>
-              {totalFailures > 0 && <span className="text-destructive">{totalFailures.toLocaleString()} fail</span>}
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-2">
-          <CardHeader className="pb-2 pt-3 px-3">
-            <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Providers</CardTitle>
-          </CardHeader>
-          <CardContent className="px-3 pb-3">
-            <p className="text-2xl font-bold">{activeProviders}<span className="text-base text-muted-foreground">/{providers.length}</span></p>
-            <div className="mt-1">
-              {health?.unhealthy_count && health.unhealthy_count > 0 && (
-                <p className="text-xs text-destructive">{health.unhealthy_count} down</p>
-              )}
-              {health?.degraded_count && health.degraded_count > 0 && (
-                <p className="text-xs text-amber-500">{health.degraded_count} degraded</p>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-2">
-          <CardHeader className="pb-2 pt-3 px-3">
-            <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Avg Latency</CardTitle>
-          </CardHeader>
-          <CardContent className="px-3 pb-3">
-            <p className="text-2xl font-bold">{avgLatency.toFixed(0)}ms</p>
-          </CardContent>
-        </Card>
-        <Card className="border-2">
-          <CardHeader className="pb-2 pt-3 px-3">
-            <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Success Rate</CardTitle>
-          </CardHeader>
-          <CardContent className="px-3 pb-3">
-            <p className="text-2xl font-bold">
-              {totalRequests > 0 ? ((totalSuccesses / totalRequests) * 100).toFixed(1) : '—'}%
-            </p>
-          </CardContent>
-        </Card>
+        <StatCard
+          label="Total Requests"
+          value={totalRequests.toLocaleString()}
+          sub={totalRequests > 0 ? `${totalSuccesses.toLocaleString()} ok · ${totalFailures > 0 ? totalFailures.toLocaleString() + ' fail' : '0 fail'}` : undefined}
+          subGood={totalFailures === 0 && totalRequests > 0}
+          subError={totalFailures > 0}
+        />
+        <StatCard
+          label="Providers"
+          value={`${activeProviders}/${providers.length}`}
+          sub={health?.unhealthy_count && health.unhealthy_count > 0
+            ? `${health.unhealthy_count} DOWN`
+            : health?.degraded_count && health.degraded_count > 0
+              ? `${health.degraded_count} DEGRADED`
+              : 'ALL HEALTHY'}
+          subError={!!health?.unhealthy_count && health.unhealthy_count > 0}
+          subGood={!health?.unhealthy_count || health.unhealthy_count === 0}
+          color={health?.unhealthy_count ? 'red' : 'green'}
+        />
+        <StatCard
+          label="Avg Latency"
+          value={`${avgLatency.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}ms`}
+          sub={avgLatency > 2000 ? 'ELEVATED' : avgLatency > 1000 ? 'MODERATE' : 'NOMINAL'}
+          subError={avgLatency > 2000}
+          subGood={avgLatency <= 1000}
+          color={avgLatency > 2000 ? 'red' : avgLatency > 1000 ? 'amber' : 'green'}
+        />
+        <StatCard
+          label="Success Rate"
+          value={successRate ? `${successRate}%` : '—'}
+          sub={srNum >= 99 ? 'EXCELLENT' : srNum >= 95 ? 'GOOD' : srNum > 0 ? 'DEGRADED' : undefined}
+          subGood={srNum >= 99}
+          subError={srNum > 0 && srNum < 95}
+          color={srNum >= 99 ? 'green' : srNum >= 95 ? 'amber' : srNum > 0 ? 'red' : 'default'}
+        />
       </div>
 
       {/* Provider Health Table */}
       <div>
-        <h2 className="text-lg font-semibold text-foreground mb-3">Provider Health</h2>
-        <Card>
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Provider</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Balance</TableHead>
-                  <TableHead>In-flight</TableHead>
-                  <TableHead>Failures</TableHead>
-                  <TableHead>Backoff</TableHead>
-                  <TableHead>Latency</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+        <h2 className="section-header">Provider Health</h2>
+        <div className="panel">
+          <div className="overflow-x-auto">
+            <table className="w-full table-scan">
+              <thead>
+                <tr className="border-b border-[#1a1a1e] text-left">
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Provider</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Status</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium">Balance</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium text-right">In-Flight</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium text-right">Failures</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium text-right">Backoff</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#716d66] px-4 py-2.5 font-medium text-right">Latency</th>
+                </tr>
+              </thead>
+              <tbody>
                 {providers.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={7} className="text-center text-muted-foreground py-12">
-                      No providers configured.
-                    </TableCell>
-                  </TableRow>
+                  <tr>
+                    <td colSpan={7} className="px-4 py-16 text-center font-mono text-[13px] text-[#716d66]">
+                      {'>'} NO PROVIDERS CONFIGURED
+                    </td>
+                  </tr>
                 ) : (
-                  providers.map((provider) => {
+                  providers.map(provider => {
                     const h = provider.health
                     const m = metrics?.providers.find(p => p.provider === provider.name)
                     return (
-                      <TableRow key={provider.slug}>
-                        <TableCell>
-                          <div className="font-medium">{provider.name}</div>
-                          <div className="font-mono text-xs text-muted-foreground">{provider.slug}</div>
-                        </TableCell>
-                        <TableCell><HealthBadge state={h?.health_state ?? 'unknown'} /></TableCell>
-                        <TableCell>
+                      <tr key={provider.slug} className="border-b border-[#1a1a1e] hover:bg-[#0d0d0f] transition-colors">
+                        <td className="px-4 py-3">
+                          <div className="font-mono text-[13px] font-medium">{provider.name}</div>
+                          <div className="font-mono text-[11px] text-[#716d66]">{provider.slug}</div>
+                        </td>
+                        <td className="px-4 py-3"><HealthBadge state={h?.health_state ?? 'unknown'} /></td>
+                        <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
                             <BalanceDisplay health={h} />
                             {(provider.provider_type === 'routstr' || provider.provider_type === 'ppq') && (
-                              <Button variant="outline" size="sm" onClick={() => handleTopup(provider)}>
-                                Top-up
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleTopup(provider)}
+                                className="h-7 font-mono text-[10px] uppercase tracking-wider border-[#2a2a2e] text-[#716d66] hover:text-[#4ce04c] hover:border-[#4ce04c]/30"
+                              >
+                                TOP-UP
                               </Button>
                             )}
                           </div>
-                        </TableCell>
-                        <TableCell className="font-mono">
-                          {h?.in_flight ?? '—'}{h?.max_concurrency ? ` / ${h.max_concurrency}` : ''}
-                        </TableCell>
-                        <TableCell className="font-mono">{h?.consecutive_failures ?? '—'}</TableCell>
-                        <TableCell className="font-mono text-sm">{h?.backoff_ms ? `${h.backoff_ms}ms` : '—'}</TableCell>
-                        <TableCell className="font-mono text-sm">{m?.avg_latency_ms ? `${m.avg_latency_ms.toFixed(0)}ms` : '—'}</TableCell>
-                      </TableRow>
+                        </td>
+                        <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">
+                          {h?.in_flight ?? '—'}{h?.max_concurrency ? <span className="text-[#716d66]">/{h.max_concurrency}</span> : ''}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">
+                          {h?.consecutive_failures ? (
+                            <span className={h.consecutive_failures > 0 ? 'text-[#ff3333]' : 'text-[#4ce04c]'}>
+                              {h.consecutive_failures}
+                            </span>
+                          ) : '—'}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right text-[#716d66]">
+                          {h?.backoff_ms ? `${h.backoff_ms.toLocaleString('en-US')}ms` : '—'}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">
+                          {m?.avg_latency_ms ? `${m.avg_latency_ms.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}ms` : '—'}
+                        </td>
+                      </tr>
                     )
                   })
                 )}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
+      {/* Health Grid — at a glance status */}
+      {health && health.providers.length > 0 && (
+        <div>
+          <h2 className="section-header">Health Grid</h2>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
+            {health.providers.map(h => {
+              const state = h.health_state
+              const stateColor = state === 'healthy' ? '#4ce04c' : state === 'degraded' ? '#ffb800' : '#ff3333'
+              return (
+                <div
+                  key={h.provider}
+                  className="panel px-3 py-2.5"
+                  style={{ borderLeft: `2px solid ${stateColor}` }}
+                >
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span className={cn(
+                      'w-1.5 h-1.5 rounded-full',
+                      state === 'healthy' && 'bg-[#4ce04c]',
+                      state === 'degraded' && 'bg-[#ffb800]',
+                      state === 'unhealthy' && 'bg-[#ff3333]'
+                    )} />
+                    <span className="font-mono text-[10px] text-[#716d66] uppercase tracking-wider">
+                      {state}
+                    </span>
+                  </div>
+                  <div className="font-mono text-[13px] font-medium truncate">{h.provider}</div>
+                  <div className="flex items-center gap-3 mt-1.5 font-mono text-[11px] text-[#716d66] tabular-nums">
+                    <span title="In-flight">IF:{h.in_flight}</span>
+                    <span title="Consecutive failures" className={h.consecutive_failures > 0 ? 'text-[#ff3333]' : 'text-[#4ce04c]'}>
+                      F:{h.consecutive_failures}
+                    </span>
+                    {h.backoff_ms > 0 && <span title="Backoff">BO:{h.backoff_ms}ms</span>}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Top-up Dialog */}
       {selectedProvider && (
         <TopupDialog
           open={topupDialogOpen}
@@ -295,6 +404,7 @@ export default function Dashboard() {
           providerSlug={selectedProvider.slug}
           providerName={selectedProvider.name}
           supportedPaymentMethods={selectedProvider.payment_options}
+          currentBalance={selectedProvider.health?.balance}
         />
       )}
     </div>

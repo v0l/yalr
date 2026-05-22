@@ -9,11 +9,24 @@ import Login from './pages/Login'
 import Setup from './pages/Setup'
 import Users from './pages/Users'
 import UserDetail from './pages/UserDetail'
-import ModelPermissions from './pages/ModelPermissions'
 import Chat from './pages/Chat'
 import Payments from './pages/Payments'
 import { api } from './api/client'
 import { API_BASE_URL } from './api/client'
+
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center bg-[#0a0a0b] gap-4">
+      <div className="flex items-center justify-center w-12 h-12 bg-[#111113] border border-[#2a2a2e]">
+        <svg viewBox="0 0 24 24" className="w-6 h-6" fill="none">
+          <path d="M6 7l4 5-4 5" stroke="#4ce04c" strokeWidth="2.5" strokeLinecap="square"/>
+          <path d="M12 17l4-10" stroke="#4ce04c" strokeWidth="2.5" strokeLinecap="square"/>
+        </svg>
+      </div>
+      <span className="font-mono text-[13px] text-[#716d66] animate-blink">LOADING...</span>
+    </div>
+  )
+}
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const location = useLocation()
@@ -22,54 +35,32 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     async function checkAuth() {
       const token = localStorage.getItem('token')
-      if (!token) {
-        setAuthenticated(false)
-        return
-      }
-      
+      if (!token) { setAuthenticated(false); return }
       try {
-        const response = await fetch(`${API_BASE_URL}/api/auth/status`, {
-          headers: { Authorization: `Bearer ${token}` }
-        })
+        const response = await fetch(`${API_BASE_URL}/api/auth/status`, { headers: { Authorization: `Bearer ${token}` } })
         const data = await response.json()
         setAuthenticated(data.authenticated)
-      } catch {
-        setAuthenticated(false)
-      }
+      } catch { setAuthenticated(false) }
     }
     checkAuth()
   }, [])
 
-  if (authenticated === null) {
-    return <div className="min-h-screen flex items-center justify-center">Loading...</div>
-  }
-
-  return authenticated ? (
-    <>{children}</>
-  ) : (
-    <Navigate to="/login" state={{ from: location }} replace />
-  )
+  if (authenticated === null) return <LoadingScreen />
+  return authenticated ? <>{children}</> : <Navigate to="/login" state={{ from: location }} replace />
 }
 
 function SetupCheckRoute({ children }: { children: React.ReactNode }) {
   const [setupComplete, setSetupComplete] = useState<boolean | null>(null)
 
   useEffect(() => {
-    api.checkSetupComplete().then(data => {
-      setSetupComplete(data.setup_complete)
-    }).catch(() => {
-      setSetupComplete(false)
-    })
+    api.checkSetupComplete().then(data => setSetupComplete(data.setup_complete)).catch(() => setSetupComplete(false))
   }, [])
 
-  if (setupComplete === null) {
-    return <div className="min-h-screen flex items-center justify-center">Loading...</div>
-  }
-
+  if (setupComplete === null) return <LoadingScreen />
   return setupComplete ? children : <Navigate to="/setup" replace />
 }
 
-function App() {
+export default function App() {
   return (
     <BrowserRouter>
       <Routes>
@@ -82,13 +73,12 @@ function App() {
             </PrivateRoute>
           </SetupCheckRoute>
         }>
-  <Route index element={<Dashboard />} />
+          <Route index element={<Dashboard />} />
           <Route path="providers" element={<Providers />} />
           <Route path="config" element={<Config />} />
           <Route path="metrics" element={<Metrics />} />
           <Route path="users" element={<Users />} />
           <Route path="users/:id" element={<UserDetail />} />
-          <Route path="users/:userId/models" element={<ModelPermissions />} />
           <Route path="payments" element={<Payments />} />
           <Route path="chat" element={<Chat />} />
         </Route>
@@ -96,5 +86,3 @@ function App() {
     </BrowserRouter>
   )
 }
-
-export default App

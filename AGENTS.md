@@ -106,6 +106,95 @@ All Router instances share the same `MetricsStore` for:
 
 See [PLAN.md](./PLAN.md) for implementation roadmap.
 
+## Admin UI
+
+### Tech Stack
+- **Framework**: React 19 + TypeScript 6 + Vite 8
+- **Styling**: Tailwind CSS v4 + shadcn/ui (radix-nova style, neutral base)
+- **Libraries**: React Router 7, Recharts, Zustand, assistant-ui (chat), lucide-react icons
+- **Font**: Geist Variable (via @fontsource-variable/geist)
+- **Package manager**: Bun
+- **Location**: `admin/` (separate package from Rust workspace)
+
+### Directory Structure
+```
+admin/
+├── src/
+│   ├── main.tsx                     # Entry point, wraps App with ThemeProvider
+│   ├── App.tsx                      # Routes: /, /setup, /login, /providers, /config, /metrics, /users, /users/:id, /payments, /chat
+│   ├── App.css                      # Empty (all styles in index.css)
+│   ├── index.css                    # Tailwind v4 + shadcn + dark mode vars + custom layers
+│   ├── api/
+│   │   └── client.ts               # All API calls (fetch-based, Bearer token auth)
+│   ├── components/
+│   │   ├── TopupDialog.tsx          # Top-up dialog for routstr/ppq providers
+│   │   └── ui/                      # shadcn/ui components (alert-dialog, alert, badge, button, card, checkbox, dialog, input, label, select, separator, skeleton, table)
+│   ├── context/
+│   │   └── ThemeContext.tsx          # Light/dark theme toggle, persisted to localStorage
+│   ├── layout/
+│   │   └── Layout.tsx               # Top navbar + <Outlet/> for authenticated pages
+│   ├── lib/
+│   │   └── utils.ts                 # cn() helper, formatBalance()
+│   ├── pages/
+│   │   ├── Chat.tsx                 # assistant-ui chat interface, model selector, SSE streaming
+│   │   ├── Config.tsx               # Routing configs CRUD + provider assignments per config
+│   │   ├── Dashboard.tsx            # Stats cards, provider health table, WebSocket live updates
+│   │   ├── Login.tsx                # Username/password login form
+│   │   ├── Metrics.tsx              # Real-time WebSocket metrics, charts (recharts), event stream, health panel
+│   │   ├── Payments.tsx             # Tabbed: Balances, Model Pricing, Transactions, Invoices
+│   │   ├── Providers.tsx            # Provider CRUD, quick-add common providers, API key gen
+│   │   ├── Setup.tsx                # Initial setup wizard (first admin user)
+│   │   ├── UserDetail.tsx           # Single user view: detail, API keys, model permissions
+│   │   └── Users.tsx                # User list table, create/delete
+│   └── types/
+│       └── index.ts                 # All TypeScript interfaces (Provider, User, Metrics*, Payments*, etc.)
+├── components.json                  # shadcn config (radix-nova, neutral base, lucide icons)
+├── vite.config.ts
+├── package.json
+└── index.html
+```
+
+### Route Map
+| Path | Page | Auth | Notes |
+|------|------|------|-------|
+| `/setup` | Setup | Public | Initial admin setup |
+| `/login` | Login | Public | Username/password |
+| `/` | Dashboard | Private + SetupCheck | Stats overview, provider health |
+| `/providers` | Providers | Private + SetupCheck | CRUD, quick-add templates |
+| `/config` | Config | Private + SetupCheck | Routing configs with nested provider assignments |
+| `/metrics` | Metrics | Private + SetupCheck | WebSocket live events, charts, model breakdown |
+| `/users` | Users | Private + SetupCheck | User CRUD |
+| `/users/:id` | UserDetail | Private + SetupCheck | User detail, API keys, model permissions |
+| `/payments` | Payments | Private + SetupCheck | 4 tabs: balances, pricing, transactions, invoices |
+| `/chat` | Chat | Private + SetupCheck | assistant-ui chat with streaming |
+
+### Auth Flow
+1. `App.tsx` wraps authenticated routes in `<SetupCheckRoute>` → `<PrivateRoute>` → `<Layout />`
+2. `PrivateRoute` checks `localStorage.getItem('token')` then calls `GET /api/auth/status`
+3. `SetupCheckRoute` calls `GET /api/setup/status` to see if initial admin exists
+4. Login stores `token` + `user` (username, isAdmin) in localStorage
+5. API client (`client.ts`) auto-attaches `Authorization: Bearer ${token}` to all requests
+
+### Key State Dependencies
+- `ThemeContext`: persisted theme (light/dark), toggled by button in Layout
+- `localStorage`: token, user object, theme preference
+- WebSocket: Dashboard and Metrics pages connect to `/api/metrics/ws?token=...` for real-time events
+- Recharts: Metrics page has 2 charts (P90 TTFT, P90 Tokens/Second) fed from `/api/metrics/history`
+
+## Admin UI Design Philosophy
+
+- **Refined minimalism** — Stripe-dashboard inspired. No wasted chrome, tight spacing.
+- **Sections are bordered panels**, not heavy cards. Use `rounded-lg border bg-card p-4` instead of `Card`/`CardHeader`/`CardContent` for internal pages. Cards are for primary dashboard tiles only.
+- **No `Separator` components** between sections — 16px spacing (`gap-4`) is enough.
+- **Typography**: Section headers are `text-sm font-semibold`. Labels are `text-[10px] uppercase tracking-wider`. Use `tabular-nums` on all numeric values.
+- **Badges are compact**: `text-[10px] px-1.5 py-0 h-5` consistently across the app.
+- **Tables favor lightness**: `border-b border-border/50` for rows, `hover:bg-muted/30` for hover, hide less-important columns on smaller breakpoints.
+- **Two-column grids on lg+** (`grid-cols-1 lg:grid-cols-2 gap-4`), single-column below. Balance + Permissions side-by-side on desktop.
+- **Info boxes are collapsible** behind a `?` toggle instead of always-visible blocks.
+- **Page wrapper**: `space-y-4 p-4 sm:p-5` — full width, no max-width clamp. Layout handles padding at the nav level.
+- **User identity banner**: Not a card — just a header row with badges inline. Username, type badge, admin badge, created date, external ID all on one compact line.
+- API keys table uses raw `<table>` instead of shadcn `Table` for finer control over column visibility at breakpoints.
+
 ## Authentication & Authorization
 
 See [AUTH.md](AUTH.md) for authentication methods, access control, and user management.

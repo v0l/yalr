@@ -105,6 +105,26 @@ mod tests {
     #[tokio::test]
     async fn test_v1_models() {
         let (state, _) = setup_test_state().await;
+        let token = setup_admin_user(&state).await;
+        let app = create_test_app(state.clone()).await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/models")
+                    .header("authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_v1_models_requires_auth() {
+        let (state, _) = setup_test_state().await;
         let app = create_test_app(state.clone()).await;
 
         let response = app
@@ -112,7 +132,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), 200);
+        assert_eq!(response.status(), 401);
     }
 
     #[tokio::test]

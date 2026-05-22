@@ -2,6 +2,7 @@ use crate::router::{DbModelInfo, ModelInfoDetector};
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
+    Extension,
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -80,15 +81,69 @@ pub struct ProviderModelsResponse {
     pub total_count: usize,
 }
 
-pub async fn list_models(State(state): State<std::sync::Arc<AppState>>) -> Json<ModelsListResponse> {
+pub async fn list_models(
+    State(state): State<std::sync::Arc<AppState>>,
+    Extension(authenticated_user): Extension<crate::auth::admin::AuthenticatedUser>,
+) -> Json<ModelsListResponse> {
+    let user = &authenticated_user.user;
+
     let providers = state.config.router.get_providers().await;
     let routing_configs = state.config.db.list_routing_configs().await.unwrap_or_default();
     let mut all_models = Vec::new();
 
     let payments_enabled = state.payments_state.is_some();
 
+    // Load user's model permissions for filtering
+    let permissions = state.db.list_user_model_permissions(user.id).await.unwrap_or_default();
+
+    // Check if user has a wildcard deny (*) — if so, deny everything
+    let wildcard_deny = permissions.iter().any(|p| p.model == "*" && !p.allow);
+    if wildcard_deny {
+        return Json(ModelsListResponse {
+            object: "list".to_string(),
+            data: vec![],
+        });
+    }
+
+    // Check if user has a wildcard allow (*) — if so, show everything
+    let wildcard_allow = permissions.iter().any(|p| p.model == "*" && p.allow);
+
+    // Helper to check if a model_id is allowed for this user
+    let model_allowed = |model_id: &str| -> bool {
+        if wildcard_allow {
+            // Wildcard allow overrides everything, skip checks unless there's a specific deny
+            if permissions.iter().any(|p| p.model == model_id && !p.allow) {
+                return false;
+            }
+            return true;
+        }
+
+        // No wildcard: default-allow, but check for explicit deny or allow
+        // If no permissions at all, allow everything
+        if permissions.is_empty() {
+            return true;
+        }
+
+        // Check for explicit deny first
+        if permissions.iter().any(|p| p.model == model_id && !p.allow) {
+            return false;
+        }
+
+        // Check for explicit allow
+        if permissions.iter().any(|p| p.model == model_id && p.allow) {
+            return true;
+        }
+
+        // If there are permissions defined but no rule matches this model,
+        // default to denying (only explicitly allowed models are visible)
+        false
+    };
+
     // Add routing configs (routing engines) as models
     for rc in &routing_configs {
+        if !model_allowed(&rc.name) {
+            continue;
+        }
         all_models.push(ModelEntry {
             id: rc.name.clone(),
             object: "model".to_string(),
@@ -106,6 +161,10 @@ pub async fn list_models(State(state): State<std::sync::Arc<AppState>>) -> Json<
             Ok(models) => {
                 for model in models {
                     let full_id = format!("{}/{}", provider_slug, model.id);
+
+                    if !model_allowed(&full_id) {
+                        continue;
+                    }
 
                     // Resolve pricing for this model (even when payments disabled, show defaults)
                     let pricing = if payments_enabled {

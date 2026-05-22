@@ -1,18 +1,14 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { api, API_BASE_URL } from '../api/client'
 import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse, CurrencyAmount, MetricsUser } from '../types'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
 import { cn, formatBalance } from '@/lib/utils'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import {
-  ActivityIcon, GaugeIcon, ShieldAlertIcon, BarChart3Icon,
-  AlertTriangleIcon, CheckCircle2Icon, ClockIcon, UserIcon, KeyIcon
+  ActivityIcon, GaugeIcon, BarChart3Icon,
+  UserIcon, KeyIcon
 } from 'lucide-react'
 
-/* ------------------------------------------------------------------ */
-/*  helpers                                                            */
-/* ------------------------------------------------------------------ */
+/* ── Aggregation types ─────────────────────────────────────────── */
 
 interface AggProvider {
   name: string; models: Map<string, ModelStats>
@@ -23,6 +19,12 @@ interface AggProvider {
 interface ModelStats {
   name: string; requests: number; successes: number; failures: number
   ttftVals: number[]; latVals: number[]; outTpsVals: number[]; lastEvent: number
+}
+
+/* ── Helpers ────────────────────────────────────────────────────── */
+
+function fmtNum(n: number): string {
+  return n.toLocaleString('en-US')
 }
 
 function pct(v: number[], p: number): number | null {
@@ -38,44 +40,42 @@ function has<T extends string>(o: unknown, k: T): o is Record<T, unknown> {
 type EK = 'ok' | 'warn' | 'err' | 'info'
 
 function fmt(e: WsProviderMetrics['event']): { label: string; value: string; kind: EK } {
-  if (e === 'Success') return { label: 'OK', value: '\u2713', kind: 'ok' }
-  if (has(e, 'TTFT')) return { label: 'TTFT', value: `${e.TTFT}ms`, kind: 'info' }
-  if (has(e, 'OutputTokensPerSecond')) return { label: 'tok/s', value: (e.OutputTokensPerSecond as number).toFixed(1), kind: 'info' }
-  if (has(e, 'InputTokensPerSecond')) return { label: 'in tok/s', value: (e.InputTokensPerSecond as number).toFixed(1), kind: 'info' }
-  if (has(e, 'TotalLatency')) return { label: 'Lat', value: `${e.TotalLatency}ms`, kind: 'info' }
-  if (has(e, 'InputTokens')) return { label: 'In tok', value: String(e.InputTokens), kind: 'info' }
-  if (has(e, 'OutputTokens')) return { label: 'Out tok', value: String(e.OutputTokens), kind: 'info' }
+  if (e === 'Success') return { label: '✓', value: 'OK', kind: 'ok' }
+  if (has(e, 'TTFT')) return { label: 'TTFT', value: `${fmtNum(e.TTFT)}ms`, kind: 'info' }
+  if (has(e, 'OutputTokensPerSecond')) return { label: 'O/s', value: (e.OutputTokensPerSecond as number).toFixed(1), kind: 'info' }
+  if (has(e, 'InputTokensPerSecond')) return { label: 'I/s', value: (e.InputTokensPerSecond as number).toFixed(1), kind: 'info' }
+  if (has(e, 'TotalLatency')) return { label: 'LAT', value: `${fmtNum(e.TotalLatency)}ms`, kind: 'info' }
+  if (has(e, 'InputTokens')) return { label: 'IN', value: fmtNum(e.InputTokens), kind: 'info' }
+  if (has(e, 'OutputTokens')) return { label: 'OUT', value: fmtNum(e.OutputTokens), kind: 'info' }
   if (has(e, 'Failure')) {
     const f = e.Failure as { error_message: string }
     return { label: 'FAIL', value: f.error_message, kind: 'err' }
   }
   if (has(e, 'ProviderLoad')) {
     const l = e.ProviderLoad as { in_flight: number; max_concurrency: number | null }
-    return {
-      label: 'Load', value: `${l.in_flight}${l.max_concurrency ? `/${l.max_concurrency}` : ''}`,
-      kind: l.in_flight > 0 ? 'warn' : 'ok'
-    }
+    return { label: 'LOAD', value: `${l.in_flight}${l.max_concurrency ? `/${l.max_concurrency}` : ''}`, kind: l.in_flight > 0 ? 'warn' : 'ok' }
   }
   if (has(e, 'Balance')) {
     const b = e.Balance as CurrencyAmount
-    return { label: 'Balance', value: formatBalance(b.amount, b.currency), kind: 'info' }
+    return { label: 'BAL', value: formatBalance(b.amount, b.currency), kind: 'info' }
   }
   return { label: '?', value: JSON.stringify(e), kind: 'info' }
 }
 
 function fmtUser(u?: MetricsUser | null): string {
   if (!u) return ''
-  if (u.api_key_name) return `API: ${u.api_key_name}`
-  if (u.name) return u.name
-  if (u.id) return `ID: ${u.id}`
-  return ''
+  const parts: string[] = []
+  if (u.name) parts.push(u.name)
+  if (u.api_key_name) parts.push(`🔑 ${u.api_key_name}`)
+  if (parts.length === 0 && u.id) parts.push(`ID:${u.id}`)
+  return parts.join(' · ')
 }
 
 const MAXL = 200, MAXA = 500
 
-/* ------------------------------------------------------------------ */
-/*  component                                                          */
-/* ------------------------------------------------------------------ */
+/* ═══════════════════════════════════════════════════════════════ */
+/*  Metrics Page                                                  */
+/* ═══════════════════════════════════════════════════════════════ */
 
 export default function Metrics() {
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected')
@@ -102,26 +102,21 @@ export default function Metrics() {
       const isOT = has(m.event, 'OutputTokensPerSecond')
       const p: AggProvider = ex
         ? { ...ex, lastEvent: m.timestamp_ms }
-        : { name: m.provider, models: new Map(), totalRequests: 0, successes: 0, failures: 0,
-            ttftVals: [], latVals: [], outTpsVals: [], lastEvent: m.timestamp_ms,
-            inFlight: 0, maxConcurrency: null }
+        : { name: m.provider, models: new Map(), totalRequests: 0, successes: 0, failures: 0, ttftVals: [], latVals: [], outTpsVals: [], lastEvent: m.timestamp_ms, inFlight: 0, maxConcurrency: null }
       if (isO) { p.totalRequests++; m.event === 'Success' ? p.successes++ : p.failures++ }
-      if (isT)  p.ttftVals    = [...p.ttftVals,    (m.event as Record<string, number>).TTFT].slice(-MAXA)
-      if (isL)  p.latVals     = [...p.latVals,     (m.event as Record<string, number>).TotalLatency].slice(-MAXA)
-      if (isOT) p.outTpsVals  = [...p.outTpsVals,  (m.event as Record<string, number>).OutputTokensPerSecond].slice(-MAXA)
+      if (isT) p.ttftVals = [...p.ttftVals, (m.event as Record<string, number>).TTFT].slice(-MAXA)
+      if (isL) p.latVals = [...p.latVals, (m.event as Record<string, number>).TotalLatency].slice(-MAXA)
+      if (isOT) p.outTpsVals = [...p.outTpsVals, (m.event as Record<string, number>).OutputTokensPerSecond].slice(-MAXA)
       if (m.event && has(m.event, 'ProviderLoad')) {
         const l = (m.event as Record<string, unknown>).ProviderLoad as { in_flight: number; max_concurrency: number | null }
         p.inFlight = l.in_flight; p.maxConcurrency = l.max_concurrency
       }
       if (m.model) {
         let ms = p.models.get(m.model)
-        const m2: ModelStats = ms
-          ? { ...ms, lastEvent: m.timestamp_ms }
-          : { name: m.model, requests: 0, successes: 0, failures: 0,
-              ttftVals: [], latVals: [], outTpsVals: [], lastEvent: m.timestamp_ms }
-        if (isO)  { m2.requests++; m.event === 'Success' ? m2.successes++ : m2.failures++ }
-        if (isT)  m2.ttftVals   = [...m2.ttftVals,   (m.event as Record<string, number>).TTFT].slice(-MAXA)
-        if (isL)  m2.latVals    = [...m2.latVals,    (m.event as Record<string, number>).TotalLatency].slice(-MAXA)
+        const m2: ModelStats = ms ? { ...ms, lastEvent: m.timestamp_ms } : { name: m.model, requests: 0, successes: 0, failures: 0, ttftVals: [], latVals: [], outTpsVals: [], lastEvent: m.timestamp_ms }
+        if (isO) { m2.requests++; m.event === 'Success' ? m2.successes++ : m2.failures++ }
+        if (isT) m2.ttftVals = [...m2.ttftVals, (m.event as Record<string, number>).TTFT].slice(-MAXA)
+        if (isL) m2.latVals = [...m2.latVals, (m.event as Record<string, number>).TotalLatency].slice(-MAXA)
         if (isOT) m2.outTpsVals = [...m2.outTpsVals, (m.event as Record<string, number>).OutputTokensPerSecond].slice(-MAXA)
         p.models = new Map(p.models).set(m.model, m2)
       }
@@ -129,91 +124,74 @@ export default function Metrics() {
     })
   }, [])
 
-  /* ---- preload REST data ---- */
+  /* ── Preload REST data ──────────────────────────────────────── */
   useEffect(() => {
     async function preload() {
       try {
-        const [d, h] = await Promise.all([
-          api.getMetrics(),
-          api.getHealthOverview().catch(() => null),
-        ]) as [MetricsResponse, HealthOverviewResponse | null]
+        const [d, h] = await Promise.all([api.getMetrics(), api.getHealthOverview().catch(() => null)]) as [MetricsResponse, HealthOverviewResponse | null]
         if (h) setHealth(h)
         const map = new Map<string, AggProvider>()
-        for (const p of d.providers) {
-          if (p.provider) map.set(p.provider, {
-            name: p.provider, models: new Map(),
-            totalRequests: 0, successes: 0, failures: 0,
-            ttftVals: p.p90_ttft_ms != null ? [p.p90_ttft_ms] : [],
-            latVals: p.avg_latency_ms != null ? [p.avg_latency_ms] : [],
-            outTpsVals: p.p90_tokens_per_second != null ? [p.p90_tokens_per_second] : [],
-            lastEvent: Date.now(), inFlight: p.in_flight ?? 0,
-            maxConcurrency: p.max_concurrency,
+        for (const pr of d.providers) {
+          if (pr.provider) map.set(pr.provider, {
+            name: pr.provider, models: new Map(), totalRequests: 0, successes: 0, failures: 0,
+            ttftVals: pr.p90_ttft_ms != null ? [pr.p90_ttft_ms] : [], latVals: pr.avg_latency_ms != null ? [pr.avg_latency_ms] : [],
+            outTpsVals: pr.p90_tokens_per_second != null ? [pr.p90_tokens_per_second] : [],
+            lastEvent: Date.now(), inFlight: pr.in_flight ?? 0, maxConcurrency: pr.max_concurrency,
           })
         }
         const evt = (d.recent_events as unknown as WsProviderMetrics[]).reverse()
-        for (const e of evt) {
-          const isO = e.event === 'Success' || has(e.event, 'Failure')
-          let p = map.get(e.provider)
-          if (!p) {
-            p = { name: e.provider, models: new Map(), totalRequests: 0, successes: 0, failures: 0,
-                  ttftVals: [], latVals: [], outTpsVals: [], lastEvent: e.timestamp_ms,
-                  inFlight: 0, maxConcurrency: null }
-            map.set(e.provider, p)
-          } else p.lastEvent = e.timestamp_ms
-          if (isO) { p.totalRequests++; e.event === 'Success' ? p.successes++ : p.failures++ }
-          if (has(e.event, 'TTFT'))                p.ttftVals.push((e.event as Record<string, number>).TTFT)
-          if (has(e.event, 'TotalLatency'))         p.latVals.push((e.event as Record<string, number>).TotalLatency)
-          if (has(e.event, 'OutputTokensPerSecond')) p.outTpsVals.push((e.event as Record<string, number>).OutputTokensPerSecond)
-          if (e.event && has(e.event, 'ProviderLoad')) {
-            const l = (e.event as Record<string, unknown>).ProviderLoad as { in_flight: number; max_concurrency: number | null }
-            p.inFlight = l.in_flight; p.maxConcurrency = l.max_concurrency
-          }
-          if (e.model) {
-            let ms = p.models.get(e.model)
-            if (!ms) {
-              ms = { name: e.model, requests: 0, successes: 0, failures: 0,
-                     ttftVals: [], latVals: [], outTpsVals: [], lastEvent: e.timestamp_ms }
-              p.models.set(e.model, ms)
-            } else ms.lastEvent = e.timestamp_ms
-            if (isO) { ms.requests++; e.event === 'Success' ? ms.successes++ : ms.failures++ }
-            if (has(e.event, 'TTFT'))                ms.ttftVals.push((e.event as Record<string, number>).TTFT)
-            if (has(e.event, 'TotalLatency'))         ms.latVals.push((e.event as Record<string, number>).TotalLatency)
-            if (has(e.event, 'OutputTokensPerSecond')) ms.outTpsVals.push((e.event as Record<string, number>).OutputTokensPerSecond)
-          }
-        }
+        for (const e of evt) processEventSilent(e, map)
         setProviders(map); setLiveEvents(evt.reverse().slice(0, MAXL))
-      } catch { /* non-critical */ }
+      } catch {}
     }
     preload()
   }, [])
 
-  /* ---- load history + periodic health ---- */
+  function processEventSilent(e: WsProviderMetrics, map: Map<string, AggProvider>) {
+    const isO = e.event === 'Success' || has(e.event, 'Failure')
+    let p = map.get(e.provider)
+    if (!p) {
+      p = { name: e.provider, models: new Map(), totalRequests: 0, successes: 0, failures: 0, ttftVals: [], latVals: [], outTpsVals: [], lastEvent: e.timestamp_ms, inFlight: 0, maxConcurrency: null }
+      map.set(e.provider, p)
+    } else p.lastEvent = e.timestamp_ms
+    if (isO) { p.totalRequests++; e.event === 'Success' ? p.successes++ : p.failures++ }
+    if (has(e.event, 'TTFT')) p.ttftVals.push((e.event as Record<string, number>).TTFT)
+    if (has(e.event, 'TotalLatency')) p.latVals.push((e.event as Record<string, number>).TotalLatency)
+    if (has(e.event, 'OutputTokensPerSecond')) p.outTpsVals.push((e.event as Record<string, number>).OutputTokensPerSecond)
+    if (e.event && has(e.event, 'ProviderLoad')) {
+      const l = (e.event as Record<string, unknown>).ProviderLoad as { in_flight: number; max_concurrency: number | null }
+      p.inFlight = l.in_flight; p.maxConcurrency = l.max_concurrency
+    }
+    if (e.model) {
+      let ms = p.models.get(e.model)
+      if (!ms) { ms = { name: e.model, requests: 0, successes: 0, failures: 0, ttftVals: [], latVals: [], outTpsVals: [], lastEvent: e.timestamp_ms }; p.models.set(e.model, ms) }
+      else ms.lastEvent = e.timestamp_ms
+      if (isO) { ms.requests++; e.event === 'Success' ? ms.successes++ : ms.failures++ }
+      if (has(e.event, 'TTFT')) ms.ttftVals.push((e.event as Record<string, number>).TTFT)
+      if (has(e.event, 'TotalLatency')) ms.latVals.push((e.event as Record<string, number>).TotalLatency)
+      if (has(e.event, 'OutputTokensPerSecond')) ms.outTpsVals.push((e.event as Record<string, number>).OutputTokensPerSecond)
+    }
+  }
+
+  /* ── History load (once) + periodic health ──────────────────── */
   useEffect(() => {
     let c = false
-    async function load() {
-      setLoadingHist(true)
-      try { const h = await api.getMetricsHistory(); if (!c) setHist(h) } catch {}
-      finally { if (!c) setLoadingHist(false) }
-    }
+    async function load() { setLoadingHist(true); try { const h = await api.getMetricsHistory(); if (!c) setHist(h) } catch {} finally { if (!c) setLoadingHist(false) } }
     load()
-    const iv = setInterval(() => {
-      load()
-      api.getHealthOverview().then(setHealth).catch(() => {})
-    }, 60000)
+    const iv = setInterval(() => { api.getHealthOverview().then(setHealth).catch(() => {}) }, 60000)
     return () => { c = true; clearInterval(iv) }
   }, [])
 
-  /* ---- websocket ---- */
+  /* ── WebSocket ───────────────────────────────────────────────── */
   useEffect(() => {
     let c = false
     function connect() {
       if (c) return
       const tok = localStorage.getItem('token')
       if (!tok) { setWsStatus('disconnected'); return }
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       let base: string
-      try { const u = new URL(API_BASE_URL); u.protocol = proto; base = u.toString().replace(/\/$/, '') }
-      catch { base = `${proto}//${window.location.host}` }
+      try { const u = new URL(API_BASE_URL); u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'; base = u.toString().replace(/\/$/, '') }
+      catch { const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; base = `${proto}//${window.location.host}` }
       setWsStatus('connecting')
       const ws = new WebSocket(`${base}/api/metrics/ws?token=${encodeURIComponent(tok)}`)
       wsRef.current = ws
@@ -226,20 +204,13 @@ export default function Metrics() {
           processEvent(d as WsProviderMetrics)
         } catch {}
       }
-      ws.onclose = () => {
-        if (!c) { setWsStatus('disconnected'); wsRef.current = null; reconnectT.current = setTimeout(connect, 3000) }
-      }
+      ws.onclose = () => { if (!c) { setWsStatus('disconnected'); wsRef.current = null; reconnectT.current = setTimeout(connect, 3000) } }
     }
     connect()
     return () => { c = true; if (reconnectT.current) clearTimeout(reconnectT.current); wsRef.current?.close() }
   }, [processEvent])
 
-  useEffect(() => {
-    const c = endRef.current?.parentElement
-    if (c) c.scrollTo({ top: 0, behavior: 'smooth' })
-  }, [liveEvents.length])
-
-  /* ---- derived data ---- */
+  /* ── Derived data ────────────────────────────────────────────── */
   const plist = Array.from(providers.values()).sort((a, b) => a.name.localeCompare(b.name))
   const sdata = selP ? providers.get(selP) : null
 
@@ -253,6 +224,14 @@ export default function Metrics() {
         for (const p of snap.providers) {
           if (p.provider !== selP) continue
           if (selM && p.model !== selM) continue
+          const k = `${p.provider}/${p.model}`
+          e[`t_${k}`] = p.p90_ttft_ms ?? null
+          e[`o_${k}`] = p.p90_output_tps ?? null
+          e[`i_${k}`] = p.p90_input_tps ?? null
+        }
+      } else if (selM) {
+        for (const p of snap.providers) {
+          if (p.model !== selM) continue
           const k = `${p.provider}/${p.model}`
           e[`t_${k}`] = p.p90_ttft_ms ?? null
           e[`o_${k}`] = p.p90_output_tps ?? null
@@ -275,17 +254,15 @@ export default function Metrics() {
 
   const lines = useMemo(() => {
     const ks = new Set<string>()
-    for (const d of chartData) for (const k of Object.keys(d)) {
-      if (k.startsWith('t_') || k.startsWith('o_') || k.startsWith('i_')) ks.add(k)
-    }
-    const clr = ['#f59e0b', '#06b6d4', '#a855f7', '#ec4899', '#84cc16', '#f97316']
+    for (const d of chartData) for (const k of Object.keys(d)) { if (k.startsWith('t_') || k.startsWith('o_') || k.startsWith('i_')) ks.add(k) }
+    const clr = ['#4ce04c', '#ffb800', '#a855f7', '#ec4899', '#84cc16', '#f97316']
     const all = Array.from(ks)
-    const out: { key: string; name: string; color: string }[] = []
     if (all.length === 0 && !selP) return [
-      { key: 'ttft', name: 'P90 TTFT (ms)', color: clr[0] },
-      { key: 'out', name: 'P90 Out tok/s', color: clr[1] },
-      { key: 'inp', name: 'P90 In tok/s', color: clr[2] },
+      { key: 'ttft', name: 'P90 TTFT', color: clr[0] },
+      { key: 'out', name: 'Output TPS', color: clr[1] },
+      { key: 'inp', name: 'Input TPS', color: clr[2] },
     ]
+    const out: { key: string; name: string; color: string }[] = []
     all.forEach((k, i) => {
       const lp = k.slice(2).replace('/', ' / ')
       const lbl = k.startsWith('t_') ? `TTFT ${lp}` : k.startsWith('o_') ? `Out TPS ${lp}` : `In TPS ${lp}`
@@ -296,148 +273,327 @@ export default function Metrics() {
 
   const fmodels = useMemo(() => {
     if (!sdata) return []
-    return Array.from(sdata.models.values()).sort((a, b) => b.lastEvent - a.lastEvent)
+    return Array.from(sdata.models.values()).sort((a, b) => a.name.localeCompare(b.name))
   }, [sdata])
 
-  const ttStyle = {
-    background: 'var(--card)', border: '1px solid var(--border)',
-    borderRadius: '8px', fontSize: '12px'
-  }
+  const allModels = useMemo(() => {
+    const map = new Map<string, { requests: number; successes: number; failures: number }>()
+    for (const p of plist) {
+      for (const [name, ms] of p.models) {
+        const e = map.get(name)
+        if (e) { e.requests += ms.requests; e.successes += ms.successes; e.failures += ms.failures }
+        else map.set(name, { requests: ms.requests, successes: ms.successes, failures: ms.failures })
+      }
+    }
+    return Array.from(map.entries()).map(([name, s]) => ({ name, ...s })).sort((a, b) => a.name.localeCompare(b.name))
+  }, [plist])
 
-  /* ================================================================ */
-  /*  render                                                           */
-  /* ================================================================ */
+  const chartSubtitle = selP
+    ? (selM ? `${selP} / ${selM}` : selP)
+    : selM ? `${selM} (all providers)` : 'ALL PROVIDERS'
+
+  const ttStyle = { background: '#111113', border: '1px solid #2a2a2e', borderRadius: '4px', fontSize: '11px', fontFamily: '"JetBrains Mono", monospace' }
+
+  /* ── Render ──────────────────────────────────────────────────── */
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="space-y-6 p-6">
+      {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Metrics</h1>
-          <p className="text-sm text-muted-foreground">Real-time provider performance &amp; historical trends</p>
+          <h1 className="font-display text-[28px] tracking-[0.04em] text-foreground leading-none mb-1">METRICS</h1>
+          <p className="font-mono text-[13px] text-muted-foreground">Real-time provider performance monitoring</p>
         </div>
         <div className="flex items-center gap-3">
-          {skipped > 0 && <span className="text-xs text-amber-500 font-mono">{skipped} skipped</span>}
-          <Badge variant="secondary" className="gap-1.5">
-            <span className={cn('size-2 rounded-full',
-              wsStatus==='connected'?'bg-emerald-500':wsStatus==='connecting'?'bg-amber-500':'bg-destructive')}/>
-            {wsStatus==='connected'?'Live':wsStatus==='connecting'?'Connecting':'Disconnected'}
-          </Badge>
+          {skipped > 0 && <span className="font-mono text-[11px] text-[#ffb800]">{skipped} skipped</span>}
+          <div className={cn(
+            'flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider px-2.5 py-1 border',
+            wsStatus === 'connected' ? 'text-[#4ce04c] border-[#4ce04c]/30 bg-[#4ce04c]/5' :
+            wsStatus === 'connecting' ? 'text-[#ffb800] border-[#ffb800]/30 bg-[#ffb800]/5' :
+            'text-[#ff3333] border-[#ff3333]/30 bg-[#ff3333]/5'
+          )}>
+            <span className={cn('w-1.5 h-1.5 rounded-full',
+              wsStatus === 'connected' && 'bg-[#4ce04c] animate-pulse-status',
+              wsStatus === 'connecting' && 'bg-[#ffb800] animate-pulse-status',
+              wsStatus === 'disconnected' && 'bg-[#ff3333]'
+            )} />
+            {wsStatus === 'connected' ? 'LIVE' : wsStatus === 'connecting' ? 'CONN' : 'OFF'}
+          </div>
         </div>
       </div>
 
-      {plist.length===0 ? <Card><CardContent className="py-12 text-center text-muted-foreground">Waiting for metrics…</CardContent></Card> :
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
-        {plist.map(p=>{const sr=p.totalRequests>0?(p.successes/p.totalRequests*100):null
-          const tt=pct(p.ttftVals,.9);const ot=pct(p.outTpsVals,.9);const is=selP===p.name
-          return <button key={p.name} onClick={()=>{setSelP(is?null:p.name);setSelM(null)}}
-            className={cn('text-left p-3 bg-card rounded-xl border transition-colors cursor-pointer',
-              is?'border-primary ring-1 ring-primary/30':'border-border hover:border-primary/40')}>
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-sm font-semibold">{p.name}</span>
-              <span className="text-[10px] text-muted-foreground">{p.models.size}m</span>
-            </div>
-            <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Load</span>
-                <span className="font-mono">{p.inFlight}{p.maxConcurrency?<span className="text-muted-foreground">/{p.maxConcurrency}</span>:''}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Success</span>
-                <span className={cn('font-mono',sr!==null?(sr>=95?'text-emerald-500':sr>=80?'text-amber-500':'text-destructive'):'text-muted-foreground')}>
-                  {sr!==null?`${sr.toFixed(1)}%`:'\u2014'}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">P90 TTFT</span>
-                <span className="font-mono">{tt!==null?`${tt}ms`:'\u2014'}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">P90 tok/s</span>
-                <span className="font-mono">{ot!==null?ot.toFixed(1):'\u2014'}</span>
-              </div>
-            </div></button>})} 
-      </div>}
+      {/* Empty state */}
+      {plist.length === 0 ? (
+        <div className="panel p-12 text-center">
+          <p className="font-mono text-[13px] text-[#716d66]">{'>'} WAITING FOR METRICS...</p>
+        </div>
+      ) : (
+        /* Provider Grid */
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-2">
+          {plist.map(p => {
+            const sr = p.totalRequests > 0 ? (p.successes / p.totalRequests * 100) : null
+            const tt = pct(p.ttftVals, .9)
+            const ot = pct(p.outTpsVals, .9)
+            const is = selP === p.name
+            const h = health?.providers.find(hp => hp.provider === p.name)
+            return (
+              <button
+                key={p.name}
+                onClick={() => { setSelP(is ? null : p.name); setSelM(null) }}
+                className={cn(
+                  'text-left p-3 border transition-colors cursor-pointer font-mono',
+                  is ? 'border-[#4ce04c]/50 bg-[#4ce04c]/5' : 'panel hover:border-[#4ce04c]/20'
+                )}
+              >
+                <div className="flex items-center justify-between mb-2 gap-1.5">
+                  <span className="text-[13px] font-semibold truncate min-w-0">{p.name}</span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {h?.rate_limited && <span className="text-[9px] uppercase text-[#ffb800] font-medium tracking-wider">RL</span>}
+                    {h?.backoff_ms ? h.backoff_ms > 0 && <span className="text-[10px] text-[#716d66] tabular-nums">{h.backoff_ms >= 1000 ? `${(h.backoff_ms / 1000).toFixed(1)}s` : `${h.backoff_ms}ms`}</span> : null}
+                    {h && (
+                      <span className={cn(
+                        'w-1.5 h-1.5 rounded-full shrink-0',
+                        h.health_state === 'healthy' && 'bg-[#4ce04c]',
+                        h.health_state === 'degraded' && 'bg-[#ffb800]',
+                        h.health_state === 'unhealthy' && 'bg-[#ff3333]'
+                      )} title={h.health_state} />
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px]">
+                  <span className="text-[#716d66]">LOAD</span>
+                  <span className="tabular-nums text-right">{p.inFlight}{p.maxConcurrency ? <span className="text-[#716d66]">/{p.maxConcurrency}</span> : ''}</span>
+                  <span className="text-[#716d66]">SUCCESS</span>
+                  <span className={cn('tabular-nums text-right', sr !== null ? (sr >= 95 ? 'text-[#4ce04c]' : sr >= 80 ? 'text-[#ffb800]' : 'text-[#ff3333]') : 'text-[#716d66]')}>
+                    {sr !== null ? `${sr.toFixed(1)}%` : '—'}
+                  </span>
+                  <span className="text-[#716d66]">P90 TTFT</span>
+                  <span className="tabular-nums text-right">{tt !== null ? `${fmtNum(tt)}ms` : '—'}</span>
+                  <span className="text-[#716d66]">P90 TPS</span>
+                  <span className="tabular-nums text-right">{ot !== null ? ot.toFixed(1) : '—'}</span>
+                  <span className="text-[#716d66]">FAILURES</span>
+                  <span className={cn('tabular-nums text-right', (h?.consecutive_failures ?? 0) === 0 ? 'text-[#4ce04c]' : 'text-[#ff3333]')}>{h?.consecutive_failures ?? '—'}</span>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      )}
 
-      {hist&&hist.length>0&&<div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        <Card><CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2">
-          <ActivityIcon className="size-4 text-primary"/>
-          P90 TTFT<span className="text-xs font-normal text-muted-foreground ml-auto">{selP||'All providers'}{selM?` / ${selM}`:''}</span></CardTitle></CardHeader>
-          <CardContent>{loadingHist?<div className="h-48 flex items-center justify-center text-sm text-muted-foreground">Loading...</div>:
-          <ResponsiveContainer width="100%" height={200}><LineChart data={chartData} margin={{top:5,right:5,left:0,bottom:5}}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)"/><XAxis dataKey="time" tick={{fontSize:11}} stroke="var(--muted-foreground)"/>
-            <YAxis tick={{fontSize:11}} stroke="var(--muted-foreground)"/><Tooltip contentStyle={ttStyle}/><Legend wrapperStyle={{fontSize:'11px'}}/>
-            {lines.filter(l=>l.key.startsWith('t_')).map(l=><Line key={l.key} type="monotone" dataKey={l.key} name={l.name} stroke={l.color} strokeWidth={2} dot={false} connectNulls/>)}
-          </LineChart></ResponsiveContainer>}</CardContent></Card>
-        <Card><CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2">
-          <GaugeIcon className="size-4 text-primary"/>
-          P90 Tokens/Second<span className="text-xs font-normal text-muted-foreground ml-auto">{selP||'All providers'}</span></CardTitle></CardHeader>
-          <CardContent>{loadingHist?<div className="h-48 flex items-center justify-center text-sm text-muted-foreground">Loading...</div>:
-          <ResponsiveContainer width="100%" height={200}><LineChart data={chartData} margin={{top:5,right:5,left:0,bottom:5}}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)"/><XAxis dataKey="time" tick={{fontSize:11}} stroke="var(--muted-foreground)"/>
-            <YAxis tick={{fontSize:11}} stroke="var(--muted-foreground)"/><Tooltip contentStyle={ttStyle}/><Legend wrapperStyle={{fontSize:'11px'}}/>
-            {lines.filter(l=>l.key.startsWith('o_')||l.key.startsWith('i_')).map(l=><Line key={l.key} type="monotone" dataKey={l.key} name={l.name} stroke={l.color} strokeWidth={2} dot={false} connectNulls/>)}
-          </LineChart></ResponsiveContainer>}</CardContent></Card>
-      </div>}
+      {/* Charts */}
+      {hist && hist.length > 0 && (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          {/* TTFT Chart */}
+          <div className="panel p-4">
+            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-[#716d66] mb-3 flex items-center gap-2">
+              <ActivityIcon className="size-3.5 text-[#4ce04c]" />
+              P90 TTFT
+              <span className="ml-auto font-mono text-[11px] text-[#716d66] normal-case tracking-normal">{chartSubtitle}</span>
+            </h3>
+            {loadingHist ? (
+              <div className="h-48 flex items-center justify-center font-mono text-[13px] text-[#716d66]">Loading...</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={200}>
+                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1e" />
+                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="#716d66" />
+                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="#716d66" />
+                  <Tooltip contentStyle={ttStyle} />
+                  <Legend wrapperStyle={{ fontSize: '10px', fontFamily: '"JetBrains Mono", monospace' }} />
+                  {lines.filter(l => l.key.startsWith('t_') || l.key === 'ttft').map(l => (
+                    <Line key={l.key} type="monotone" dataKey={l.key} name={l.name} stroke={l.color} strokeWidth={2} dot={false} connectNulls />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Output TPS Chart */}
+          <div className="panel p-4">
+            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-[#716d66] mb-3 flex items-center gap-2">
+              <GaugeIcon className="size-3.5 text-[#4ce04c]" />
+              P90 Output TPS
+              <span className="ml-auto font-mono text-[11px] text-[#716d66] normal-case tracking-normal">{chartSubtitle}</span>
+            </h3>
+            {loadingHist ? (
+              <div className="h-48 flex items-center justify-center font-mono text-[13px] text-[#716d66]">Loading...</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={200}>
+                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1e" />
+                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="#716d66" />
+                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="#716d66" />
+                  <Tooltip contentStyle={ttStyle} />
+                  <Legend wrapperStyle={{ fontSize: '10px', fontFamily: '"JetBrains Mono", monospace' }} />
+                  {lines.filter(l => l.key.startsWith('o_') || l.key === 'out').map(l => (
+                    <Line key={l.key} type="monotone" dataKey={l.key} name={l.name.replace(/^(Out TPS |P90 Out TPS )/, '')} stroke={l.color} strokeWidth={2} dot={false} connectNulls />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+          {/* Input TPS Chart */}
+          <div className="panel p-4">
+            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-[#716d66] mb-3 flex items-center gap-2">
+              <GaugeIcon className="size-3.5 text-[#ffb800]" />
+              P90 Input TPS
+              <span className="ml-auto font-mono text-[11px] text-[#716d66] normal-case tracking-normal">{chartSubtitle}</span>
+            </h3>
+            {loadingHist ? (
+              <div className="h-48 flex items-center justify-center font-mono text-[13px] text-[#716d66]">Loading...</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={200}>
+                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1e" />
+                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="#716d66" />
+                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="#716d66" />
+                  <Tooltip contentStyle={ttStyle} />
+                  <Legend wrapperStyle={{ fontSize: '10px', fontFamily: '"JetBrains Mono", monospace' }} />
+                  {lines.filter(l => l.key.startsWith('i_') || l.key === 'inp').map(l => (
+                    <Line key={l.key} type="monotone" dataKey={l.key} name={l.name.replace(/^(In TPS |P90 In TPS )/, '')} stroke={l.color} strokeWidth={2} dot={false} connectNulls />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Bottom panels: model breakdown + event stream */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Left: Model Breakdown */}
         <div className="lg:col-span-1 space-y-4">
-          <Card><CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><BarChart3Icon className="size-4 text-primary"/>Model Breakdown</CardTitle></CardHeader>
-            <CardContent>{!sdata?<p className="text-sm text-muted-foreground">Select a provider above</p>:fmodels.length===0?<p className="text-sm text-muted-foreground">No model-level data yet</p>:
-            <div className="space-y-2">{fmodels.map(m=>{const sr=m.requests>0?(m.successes/m.requests*100):null
-              const mm=(v:number[],pp:number):number|null=>pct(v,pp)
-              const avg=(v:number[]):number|null=>v.length>0?v.reduce((a,b)=>a+b,0)/v.length:null
-              const pt=mm(m.ttftVals,.9);const po=mm(m.outTpsVals,.9);const al=avg(m.latVals)
-              return <button key={m.name} onClick={()=>setSelM(selM===m.name?null:m.name)}
-                className={cn('w-full text-left p-3 bg-muted/50 rounded-lg transition-colors',selM===m.name&&'ring-1 ring-primary/40')}>
-                <div className="font-mono text-sm font-medium mb-2">{m.name}</div>
-                <div className="grid grid-cols-2 gap-1.5 text-xs">
-                  <span className="text-muted-foreground">Success</span>
-                  <span className={cn('font-mono text-right',sr!==null?(sr>=95?'text-emerald-500':sr>=80?'text-amber-500':'text-destructive'):'text-muted-foreground')}>{sr!==null?`${sr.toFixed(1)}%`:'\u2014'}</span>
-                  <span className="text-muted-foreground">P90 TTFT</span><span className="font-mono text-right">{pt!==null?`${pt}ms`:'\u2014'}</span>
-                  <span className="text-muted-foreground">P90 tok/s</span><span className="font-mono text-right">{po!==null?po.toFixed(1):'\u2014'}</span>
-                  <span className="text-muted-foreground">Avg Lat</span><span className="font-mono text-right">{al!==null?`${al.toFixed(0)}ms`:'\u2014'}</span>
-                </div></button>})}
-            </div>}</CardContent></Card>
-
-          <Card><CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><ShieldAlertIcon className="size-4 text-primary"/>Provider Health
-            {health&&<span className="ml-auto flex gap-2 text-xs font-normal">
-              {health.unhealthy_count>0&&<Badge variant="destructive" className="text-[10px] px-1.5 py-0">{health.unhealthy_count} down</Badge>}
-              {health.degraded_count>0&&<Badge className="text-[10px] px-1.5 py-0 bg-amber-500/20 text-amber-500 border-0">{health.degraded_count} degraded</Badge>}
-            </span>}
-          </CardTitle></CardHeader>
-          <CardContent>{!health||health.providers.length===0?<p className="text-sm text-muted-foreground">No providers</p>:
-            <div className="space-y-1.5">{health.providers.map(h=>{const icon=h.health_state==='healthy'
-              ?<CheckCircle2Icon className="size-3.5 text-emerald-500"/>
-              :h.health_state==='degraded'?<AlertTriangleIcon className="size-3.5 text-amber-500"/>
-              :<ShieldAlertIcon className="size-3.5 text-destructive"/>
-              const lf=h.last_failure_ago_ms!=null?(h.last_failure_ago_ms<60000?`${Math.round(h.last_failure_ago_ms/1000)}s`:`${Math.round(h.last_failure_ago_ms/60000)}m`):null
-              return <div key={h.provider} className="flex items-center justify-between text-xs p-2 bg-muted/30 rounded-lg gap-2">
-                <div className="flex items-center gap-2 min-w-0">{icon}<span className="font-medium truncate">{h.provider}</span>
-                  {h.rate_limited&&<Badge variant="outline" className="text-[9px] px-1 py-0 border-amber-500/30 text-amber-500">RL</Badge>}</div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {h.backoff_ms>0&&<span className="flex items-center gap-1 text-muted-foreground" title="Backoff"><ClockIcon className="size-3"/>{h.backoff_ms>=1000?`${(h.backoff_ms/1000).toFixed(1)}s`:`${h.backoff_ms}ms`}</span>}
-                  {lf&&<span className="text-muted-foreground">{lf}</span>}
-                  <span className={cn('font-mono',h.consecutive_failures===0?'text-emerald-500':'text-destructive')}>{h.consecutive_failures}f</span>
-                </div></div>})}
-            </div>}</CardContent></Card>
+          {/* Model Breakdown */}
+          <div className="panel p-4">
+            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-[#716d66] mb-3 flex items-center gap-2">
+              <BarChart3Icon className="size-3.5 text-[#4ce04c]" /> Models
+              <span className="ml-auto font-mono text-[10px] text-[#716d66] tabular-nums">{allModels.length}</span>
+            </h3>
+            {allModels.length === 0 ? (
+              <p className="font-mono text-[12px] text-[#716d66] py-4 text-center">No model data yet</p>
+            ) : (
+              <div className="space-y-1">
+                {allModels.map(m => {
+                  const sr = m.requests > 0 ? (m.successes / m.requests * 100) : null
+                  return (
+                    <button
+                      key={m.name}
+                      onClick={() => { setSelM(selM === m.name ? null : m.name); setSelP(null) }}
+                      className={cn(
+                        'w-full text-left p-2 border transition-colors',
+                        selM === m.name ? 'border-[#4ce04c]/40 bg-[#4ce04c]/5' : 'border-[#1a1a1e] hover:border-[#2a2a2e] bg-[#0d0d0f]'
+                      )}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-[12px] font-medium text-[#d4d0c8] truncate">{m.name}</span>
+                        {sr !== null && (
+                          <span className={cn('font-mono text-[11px] tabular-nums ml-2 shrink-0', sr >= 95 ? 'text-[#4ce04c]' : sr >= 80 ? 'text-[#ffb800]' : 'text-[#ff3333]')}>
+                            {sr.toFixed(1)}%
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[#716d66] text-[10px] font-mono mt-0.5">{m.requests} reqs</div>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            {sdata && fmodels.length > 0 && (
+              <>
+                <div className="section-header mt-4">{sdata.name} Models</div>
+                {fmodels.map(m => {
+                  const pt = pct(m.ttftVals, .9)
+                  const po = pct(m.outTpsVals, .9)
+                  const is = selP === sdata.name && selM === m.name
+                  return (
+                    <button
+                      key={`${sdata.name}-${m.name}`}
+                      onClick={() => { setSelP(sdata.name); setSelM(is ? null : m.name) }}
+                      className={cn(
+                        'w-full text-left p-2 border transition-colors',
+                        is ? 'border-[#4ce04c]/40 bg-[#4ce04c]/5' : 'border-[#1a1a1e] hover:border-[#2a2a2e] bg-[#0d0d0f]'
+                      )}
+                    >
+                      <div className="font-mono text-[12px] font-medium mb-1 text-[#d4d0c8]">{m.name}</div>
+                      <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[11px] font-mono">
+                        <span className="text-[#716d66]">P90 TTFT</span>
+                        <span className="tabular-nums text-right">{pt !== null ? `${fmtNum(pt)}ms` : '—'}</span>
+                        <span className="text-[#716d66]">P90 TPS</span>
+                        <span className="tabular-nums text-right">{po !== null ? po.toFixed(1) : '—'}</span>
+                        <span className="text-[#716d66]">REQS</span>
+                        <span className="tabular-nums text-right">{m.requests}</span>
+                      </div>
+                    </button>
+                  )
+                })}
+              </>
+            )}
+          </div>
         </div>
 
-        <div className="lg:col-span-2"><Card><CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2">
-          <ActivityIcon className="size-4 text-primary"/>Live Event Stream<span className="ml-2 text-sm font-normal text-muted-foreground">({liveEvents.length})</span></CardTitle></CardHeader>
-          <CardContent><div className="space-y-0.5 max-h-[450px] overflow-y-auto font-mono text-xs">
-            {liveEvents.length===0?<p className="text-muted-foreground py-8 text-center">{wsStatus==='connected'?'Waiting...':'Not connected'}</p>:
-            liveEvents.map((ev,i)=>{const{label,value,kind}=fmt(ev.event)
-              const d=new Date(ev.timestamp_ms);const t=d.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'})
-              const ms=String(d.getMilliseconds()).padStart(3,'0')
-              const kc=kind==='ok'?'bg-emerald-500/10 text-emerald-500':kind==='err'?'bg-destructive/15 text-destructive':kind==='warn'?'bg-amber-500/10 text-amber-500':'bg-muted text-muted-foreground'
-              const userText=fmtUser(ev.user)
-              return <div key={`${ev.timestamp_ms}-${i}`} className={cn('flex items-center gap-2 px-1.5 py-0.5 rounded',i===0&&'bg-accent/10')}>
-                <span className="text-muted-foreground shrink-0">{t}.{ms}</span><span className="font-medium shrink-0 w-24 truncate" title={ev.provider}>{ev.provider}</span>
-                {ev.model&&<span className="text-muted-foreground shrink-0 w-28 truncate" title={ev.model}>{ev.model}</span>}
-                <Badge variant="outline" className={cn('shrink-0 text-[10px] px-1 py-0 border-0',kc)}>{label}</Badge>
-                <span className="truncate flex-1 min-w-0" title={value}>{value}</span>
-                {userText&&<span className="shrink-0 text-[10px] text-muted-foreground flex items-center gap-1" title={userText}>
-                  {userText.includes('API')?<KeyIcon className="size-3"/>:<UserIcon className="size-3"/>}{userText}</span>}
-              </div>})}
-            <div ref={endRef}/></div></CardContent></Card></div>
+        {/* Right: Event Stream */}
+        <div className="lg:col-span-2">
+          <div className="panel p-4">
+            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-[#716d66] mb-3 flex items-center gap-2">
+              <ActivityIcon className="size-3.5 text-[#4ce04c]" /> Live Event Stream
+              <span className="ml-auto font-mono text-[11px] text-[#716d66] normal-case tracking-normal">({liveEvents.length})</span>
+            </h3>
+            <div className="space-y-0 max-h-[450px] overflow-y-auto font-mono text-[11px]">
+              <div className="flex items-center gap-2 px-1.5 py-1 border-b border-[#3a3a3e] text-[10px] uppercase tracking-wider text-[#716d66] sticky top-0 bg-[#0d0d0f]">
+                <span className="shrink-0 w-[82px] text-right pr-2">TIME</span>
+                <span className="shrink-0 w-36">PROVIDER</span>
+                <span className="shrink-0 w-28">MODEL</span>
+                <span className="shrink-0 w-12">EVENT</span>
+                <span className="flex-1 min-w-0">VALUE</span>
+                <span className="shrink-0 w-28">USER</span>
+              </div>
+              {liveEvents.length === 0 ? (
+                <p className="text-[#716d66] py-12 text-center">{wsStatus === 'connected' ? 'WAITING FOR EVENTS...' : 'NOT CONNECTED'}</p>
+              ) : (
+                liveEvents.map((ev, i) => {
+                  const { label, value, kind } = fmt(ev.event)
+                  const d = new Date(ev.timestamp_ms)
+                  const t = d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                  const ms = String(d.getMilliseconds()).padStart(3, '0')
+                  const kc = kind === 'ok'
+                    ? 'text-[#4ce04c]'
+                    : kind === 'err'
+                      ? 'text-[#ff3333]'
+                      : kind === 'warn'
+                        ? 'text-[#ffb800]'
+                        : 'text-[#716d66]'
+                  const userText = fmtUser(ev.user)
+                  return (
+                    <div
+                      key={`${ev.timestamp_ms}-${i}`}
+                      className={cn(
+                        'flex items-center gap-2 px-1.5 py-0.5 border-b border-[#1a1a1e]',
+                        i === 0 && 'bg-[#4ce04c]/5'
+                      )}
+                    >
+                      <span className="text-[#716d66] shrink-0 w-[82px] tabular-nums text-right pr-2">{t}.{ms}</span>
+                      <span className="font-medium shrink-0 w-36 truncate" title={ev.provider}>{ev.provider}</span>
+                      <span className="text-[#716d66] shrink-0 w-28 truncate" title={ev.model ?? ''}>{ev.model ?? ''}</span>
+                      <span className={cn('shrink-0 w-12 text-[10px] px-1 py-0 border font-mono uppercase tracking-wider text-center', kc)} style={{ borderColor: 'currentColor' }}>
+                        {label}
+                      </span>
+                      <span
+                        className={cn('truncate flex-1 min-w-0', kind === 'err' && 'cursor-copy hover:underline')}
+                        title={kind === 'err' ? `Click to copy: ${value}` : value}
+                        onClick={() => { if (kind === 'err') navigator.clipboard.writeText(value) }}
+                      >{value}</span>
+                      <span className="shrink-0 w-32 text-[10px] text-[#716d66] truncate flex items-center gap-1" title={userText}>
+                        {userText && userText.includes('🔑') ? <KeyIcon className="size-2.5 shrink-0" /> : userText ? <UserIcon className="size-2.5 shrink-0" /> : null}
+                        {userText}
+                      </span>
+                    </div>
+                  )
+                })
+              )}
+              <div ref={endRef} />
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )
