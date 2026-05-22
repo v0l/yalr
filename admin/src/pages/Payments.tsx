@@ -186,7 +186,7 @@ export default function Payments() {
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
             className={`inline-flex items-center gap-1.5 px-4 py-2.5 font-mono text-[12px] tracking-wider uppercase border-b-[1.5px] -mb-[1px] transition-colors ${
-              activeTab === tab.id ? 'border-brand text-brand' : 'border-transparent text-muted-foreground hover:text-[#a09b90]'
+              activeTab === tab.id ? 'border-brand text-brand' : 'border-transparent text-muted-foreground hover:text-foreground/80'
             }`}
           >
             {tab.icon}

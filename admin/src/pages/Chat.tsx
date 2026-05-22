@@ -74,13 +74,13 @@ function ChatInterface({ adapter }: { adapter: ChatModelAdapter }) {
             <ComposerPrimitive.Root className="mx-auto flex w-full max-w-3xl items-end border border-border bg-card">
               <ComposerPrimitive.Input
                 placeholder="Message YALR..."
-                className="h-10 max-h-40 grow resize-none bg-transparent p-3 text-[13px] text-foreground outline-none placeholder:text-[#454545] font-mono"
+                className="h-10 max-h-40 grow resize-none bg-transparent p-3 text-[13px] text-foreground outline-none placeholder:text-muted-foreground/60 font-mono"
               />
               <ComposerPrimitive.Send className="m-1.5 flex size-8 items-center justify-center bg-brand/10 border border-brand/30 text-brand transition-opacity disabled:opacity-20 hover:bg-brand/20">
                 <ArrowUpIcon className="size-4" />
               </ComposerPrimitive.Send>
             </ComposerPrimitive.Root>
-            <p className="text-center text-[#454545] text-[10px] font-mono uppercase tracking-wider">
+            <p className="text-center text-muted-foreground/60 text-[10px] font-mono uppercase tracking-wider">
               YALR can make mistakes. Check important info.
             </p>
           </ThreadPrimitive.ViewportFooter>

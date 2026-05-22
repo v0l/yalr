@@ -539,7 +539,7 @@ export default function Metrics() {
               <span className="ml-auto font-mono text-[11px] text-muted-foreground normal-case tracking-normal">({liveEvents.length})</span>
             </h3>
             <div className="space-y-0 max-h-[450px] overflow-y-auto font-mono text-[11px]">
-              <div className="flex items-center gap-2 px-1.5 py-1 border-b border-[#3a3a3e] text-[10px] uppercase tracking-wider text-muted-foreground sticky top-0 bg-surface">
+              <div className="flex items-center gap-2 px-1.5 py-1 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground sticky top-0 bg-surface">
                 <span className="shrink-0 w-[82px] text-right pr-2">TIME</span>
                 <span className="shrink-0 w-36">PROVIDER</span>
                 <span className="shrink-0 w-28">MODEL</span>

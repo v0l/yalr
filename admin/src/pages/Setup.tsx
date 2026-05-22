@@ -50,7 +50,7 @@ export default function Setup() {
             <span className="font-display text-2xl tracking-[0.08em] text-foreground">YALR</span>
           </div>
 
-          <div className="space-y-2 font-mono text-[11px] text-[#454545] tracking-wider">
+          <div className="space-y-2 font-mono text-[11px] text-muted-foreground/60 tracking-wider">
             <div className="flex items-center gap-2">
               <span className="text-brand animate-pulse-status">▸</span>
               <span>INITIAL SETUP</span>
@@ -66,7 +66,7 @@ export default function Setup() {
           <div className="font-mono text-[10px] text-muted-foreground tracking-[0.12em] uppercase">
             Infrastructure for the sovereign web
           </div>
-          <div className="font-mono text-[10px] text-[#454545]">v2.0.0</div>
+          <div className="font-mono text-[10px] text-muted-foreground/60">v2.0.0</div>
         </div>
 
         <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{
@@ -107,7 +107,7 @@ export default function Setup() {
               <div className={cn('border transition-colors bg-surface', focused === 'username' ? 'border-brand' : 'border-border')}>
                 <Input id="s-username" type="text" value={formData.username} onChange={e => setFormData({ ...formData, username: e.target.value })}
                   onFocus={() => setFocused('username')} onBlur={() => setFocused(null)}
-                  className="border-0 bg-transparent font-mono text-[14px] text-foreground placeholder:text-[#454545] h-11 px-3 focus-visible:ring-0"
+                  className="border-0 bg-transparent font-mono text-[14px] text-foreground placeholder:text-muted-foreground/60 h-11 px-3 focus-visible:ring-0"
                   placeholder="admin" required autoFocus />
               </div>
             </div>
@@ -116,7 +116,7 @@ export default function Setup() {
               <div className={cn('border transition-colors bg-surface', focused === 'password' ? 'border-brand' : 'border-border')}>
                 <Input id="s-password" type="password" value={formData.password} onChange={e => setFormData({ ...formData, password: e.target.value })}
                   onFocus={() => setFocused('password')} onBlur={() => setFocused(null)}
-                  className="border-0 bg-transparent font-mono text-[14px] text-foreground placeholder:text-[#454545] h-11 px-3 focus-visible:ring-0"
+                  className="border-0 bg-transparent font-mono text-[14px] text-foreground placeholder:text-muted-foreground/60 h-11 px-3 focus-visible:ring-0"
                   placeholder="••••••••" required />
               </div>
             </div>
@@ -125,7 +125,7 @@ export default function Setup() {
               <div className={cn('border transition-colors bg-surface', focused === 'confirm' ? 'border-brand' : 'border-border')}>
                 <Input id="s-confirm" type="password" value={formData.confirmPassword} onChange={e => setFormData({ ...formData, confirmPassword: e.target.value })}
                   onFocus={() => setFocused('confirm')} onBlur={() => setFocused(null)}
-                  className="border-0 bg-transparent font-mono text-[14px] text-foreground placeholder:text-[#454545] h-11 px-3 focus-visible:ring-0"
+                  className="border-0 bg-transparent font-mono text-[14px] text-foreground placeholder:text-muted-foreground/60 h-11 px-3 focus-visible:ring-0"
                   placeholder="••••••••" required />
               </div>
             </div>
@@ -144,7 +144,7 @@ export default function Setup() {
           </form>
 
           <div className="mt-8 pt-6 border-t border-border/50">
-            <p className="font-mono text-[10px] text-[#454545] text-center tracking-[0.08em] uppercase">
+            <p className="font-mono text-[10px] text-muted-foreground/60 text-center tracking-[0.08em] uppercase">
               Yet Another LLM Router
             </p>
           </div>

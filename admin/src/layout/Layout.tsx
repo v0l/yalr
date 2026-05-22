@@ -33,7 +33,7 @@ export default function Layout() {
   return (
     <div className="min-h-screen flex bg-background">
       {/* ── SIDEBAR ─────────────────────────────────────────── */}
-      <aside className="fixed inset-y-0 left-0 z-40 flex w-56 flex-col bg-[#060607] border-r border-border/50">
+      <aside className="fixed inset-y-0 left-0 z-40 flex w-56 flex-col bg-sidebar border-r border-border/50">
         {/* Logo */}
         <div className="flex items-center gap-2.5 px-5 py-4 border-b border-border/50">
           <div className="flex items-center justify-center w-8 h-8 bg-surface border border-border">
@@ -63,14 +63,14 @@ export default function Layout() {
                   'border border-transparent',
                   isActive
                     ? 'bg-brand/10 border-brand/30 text-brand'
-                    : 'text-muted-foreground hover:text-[#a09b90] hover:bg-surface hover:border-border/50'
+                    : 'text-muted-foreground hover:text-foreground/80 hover:bg-surface hover:border-border/50'
                 )}
               >
                 {/* Active indicator bar */}
                 {isActive && (
                   <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-brand" />
                 )}
-                <Icon className={cn('size-4 shrink-0', isActive ? 'text-brand' : 'text-[#454545] group-hover:text-muted-foreground')} />
+                <Icon className={cn('size-4 shrink-0', isActive ? 'text-brand' : 'text-muted-foreground/60 group-hover:text-muted-foreground')} />
                 <span className="tracking-wide">{item.name}</span>
 
                 {/* Active pointer */}
@@ -87,9 +87,9 @@ export default function Layout() {
           {/* Theme toggle */}
           <button
             onClick={toggleTheme}
-            className="flex items-center gap-3 w-full px-3 py-2 text-[13px] font-mono text-muted-foreground hover:text-[#a09b90] hover:bg-surface border border-transparent hover:border-border/50 transition-colors"
+            className="flex items-center gap-3 w-full px-3 py-2 text-[13px] font-mono text-muted-foreground hover:text-foreground/80 hover:bg-surface border border-transparent hover:border-border/50 transition-colors"
           >
-            {theme === 'light' ? <MoonIcon className="size-4 text-[#454545]" /> : <SunIcon className="size-4 text-[#454545]" />}
+            {theme === 'light' ? <MoonIcon className="size-4 text-muted-foreground/60" /> : <SunIcon className="size-4 text-muted-foreground/60" />}
             <span className="tracking-wide">{theme === 'light' ? 'Dark Mode' : 'Light Mode'}</span>
             <span className="ml-auto text-[10px] text-brand/70 font-mono tabular-nums">
               {theme === 'dark' ? 'ON' : 'OFF'}

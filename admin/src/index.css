@@ -50,15 +50,15 @@
   --status-down: #cc2222;
   --status-idle: #6b6760;
 
-  /* Sidebar — always dark */
-  --sidebar: #0a0a0b;
-  --sidebar-foreground: #d4d0c8;
-  --sidebar-primary: #4ce04c;
-  --sidebar-primary-foreground: #0a0a0b;
-  --sidebar-accent: #1c1c1e;
-  --sidebar-accent-foreground: #d4d0c8;
-  --sidebar-border: #2a2a2e;
-  --sidebar-ring: #4ce04c;
+  /* Sidebar */
+  --sidebar: #e0dcd4;
+  --sidebar-foreground: #1a1a1c;
+  --sidebar-primary: #0f7c0f;
+  --sidebar-primary-foreground: #f0ede8;
+  --sidebar-accent: #d5d0c6;
+  --sidebar-accent-foreground: #1a1a1c;
+  --sidebar-border: #c4c0b8;
+  --sidebar-ring: #0f7c0f;
 
   --chart-1: #0f7c0f;
   --chart-2: #b37b00;

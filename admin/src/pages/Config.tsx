@@ -201,9 +201,9 @@ export default function Config() {
                   <h2 className="font-mono text-[16px] font-semibold mb-1">{config.name}</h2>
                   <div className="flex flex-wrap items-center gap-2 font-mono text-[12px] text-muted-foreground">
                     <Badge variant="secondary" className="font-mono text-[10px] uppercase tracking-wider bg-secondary text-muted-foreground border-border">{config.strategy.replace(/_/g, ' ')}</Badge>
-                    <span className="text-[#3a3a3e]">|</span>
+                    <span className="text-border">|</span>
                     <span>{config.providers.length} provider{config.providers.length !== 1 ? 's' : ''}</span>
-                    <span className="text-[#3a3a3e]">|</span>
+                    <span className="text-border">|</span>
                     <span>Health: {config.health_check_enabled ? `EVERY ${config.health_check_interval_seconds}s` : 'OFF'}</span>
                   </div>
                 </div>
