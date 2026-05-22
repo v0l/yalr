@@ -1,4 +1,5 @@
 use crate::state::AppState;
+use crate::db::ModelAccess;
 use crate::ChatCompletionRequest;
 use axum::{
     extract::{Extension, State},
@@ -25,6 +26,40 @@ pub async fn chat_handler(
         Ok(response.into_response())
     }
 }
+
+// ── Model Access Control ───────────────────────────────────────
+
+/// Check if user has access to the requested model.
+/// Returns `Ok(())` if allowed, or a `(StatusCode, String)` error if denied.
+async fn check_model_access(
+    db: &crate::db::Database,
+    user_id: i64,
+    model: &str,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    db.check_model_access(user_id, model).await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to check model access");
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to check model access: {}", e))
+        })
+        .and_then(|access| {
+            if access == ModelAccess::Deny {
+                Err((
+                    axum::http::StatusCode::FORBIDDEN,
+                    serde_json::json!({
+                        "error": {
+                            "message": format!("User does not have access to model '{}'", model),
+                            "type": "model_access_denied",
+                        }
+                    })
+                    .to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        })
+}
+
+// ──────────────────────────────────────────────────────────
 
 #[axum::debug_handler]
 pub async fn chat_completions_handler(
@@ -75,29 +110,7 @@ pub async fn chat_completions_handler(
     // ──────────────────────────────────────────────────────────
 
     // ── Model Access Control ───────────────────────────────────────
-    // Check if user has access to this model
-    let access_check = state.db.check_model_access(user.id, &request.model).await
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to check model access");
-            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to check model access: {}", e))
-        })?;
-
-    // If there's an explicit permission rule, enforce it
-    // None means no rule exists, so we allow by default
-    if let Some(allowed) = access_check {
-        if !allowed {
-            return Err((
-                axum::http::StatusCode::FORBIDDEN,
-                serde_json::json!({
-                    "error": {
-                        "message": format!("User does not have access to model '{}'", request.model),
-                        "type": "model_access_denied",
-                    }
-                })
-                .to_string(),
-            ));
-        }
-    }
+    check_model_access(&state.db, user.id, &request.model).await?;
     // ──────────────────────────────────────────────────────────
 
     let metrics_user = crate::metrics::MetricsUser {
@@ -199,29 +212,7 @@ pub async fn chat_completions_stream(
     // ──────────────────────────────────────────────────────────
 
     // ── Model Access Control ───────────────────────────────────────
-    // Check if user has access to this model
-    let access_check = state.db.check_model_access(user.id, &request.model).await
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to check model access");
-            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to check model access: {}", e))
-        })?;
-
-    // If there's an explicit permission rule, enforce it
-    // None means no rule exists, so we allow by default
-    if let Some(allowed) = access_check {
-        if !allowed {
-            return Err((
-                axum::http::StatusCode::FORBIDDEN,
-                serde_json::json!({
-                    "error": {
-                        "message": format!("User does not have access to model '{}'", request.model),
-                        "type": "model_access_denied",
-                    }
-                })
-                .to_string(),
-            ));
-        }
-    }
+    check_model_access(&state.db, user.id, &request.model).await?;
     // ──────────────────────────────────────────────────────────
 
     let metrics_user = crate::metrics::MetricsUser {

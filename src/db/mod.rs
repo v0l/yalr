@@ -1040,33 +1040,35 @@ impl Database {
     /// - `Some(true)` if access is explicitly allowed
     /// - `Some(false)` if access is explicitly denied
     /// - `None` if no permission rule exists (default: allow)
+    /// Check if a user has access to a model.
+    ///
+    /// - No rules for this user → Allow
+    /// - Exact match → use that rule
+    /// - Wildcard (`*`) match → use that rule
+    /// - Rules exist but none match → Deny (only explicitly allowed models pass)
     pub async fn check_model_access(
         &self,
         user_id: i64,
         model: &str,
-    ) -> Result<Option<bool>, sqlx::Error> {
-        // First check for exact match
-        let exact_match = sqlx::query_as::<_, (bool,)>(
-            "SELECT allow FROM user_model_permissions WHERE user_id = ? AND model = ?"
-        )
-        .bind(user_id)
-        .bind(model)
-        .fetch_optional(&self.pool)
-        .await?;
+    ) -> Result<ModelAccess, sqlx::Error> {
+        let permissions = self.list_user_model_permissions(user_id).await?;
 
-        if let Some((allow,)) = exact_match {
-            return Ok(Some(allow));
+        // Exact match
+        if let Some(perm) = permissions.iter().find(|p| p.model == model) {
+            return Ok(if perm.allow { ModelAccess::Allow } else { ModelAccess::Deny });
         }
 
-        // Then check for wildcard match (*)
-        let wildcard_match = sqlx::query_as::<_, (bool,)>(
-            "SELECT allow FROM user_model_permissions WHERE user_id = ? AND model = '*'"
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        // Wildcard match
+        if let Some(perm) = permissions.iter().find(|p| p.model == "*") {
+            return Ok(if perm.allow { ModelAccess::Allow } else { ModelAccess::Deny });
+        }
 
-        Ok(wildcard_match.map(|(allow,)| allow))
+        // No exact or wildcard match
+        if permissions.is_empty() {
+            Ok(ModelAccess::Allow) // No rules at all → default-allow
+        } else {
+            Ok(ModelAccess::Deny) // Rules exist but none match → default-deny
+        }
     }
 
     pub async fn create_user_model_permission(
@@ -1267,6 +1269,13 @@ pub struct NewUserModelPermission<'a> {
 #[derive(Debug, Clone)]
 pub struct UpdateUserModelPermission {
     pub allow: Option<bool>,
+}
+
+/// Result of a model access check for a user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelAccess {
+    Allow,
+    Deny,
 }
 
 #[cfg(test)]
@@ -2146,7 +2155,33 @@ mod tests {
 
         // No permission rules exist, should allow by default
         let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
-        assert!(result.is_none()); // No rule means allow by default
+        assert_eq!(result, ModelAccess::Allow);
+    }
+
+    #[tokio::test]
+    async fn test_check_model_access_rules_exist_but_none_match_denies() {
+        let db = setup_test_db().await;
+        let user = db.create_user(NewUser {
+            username: Some("test_user"),
+            password_hash: None,
+            external_id: None,
+            user_type: UserType::Internal,
+            is_admin: false,
+        }).await.unwrap();
+
+        // User has rules for "code" but tries to use "gpt-4" — should deny
+        db.create_user_model_permission(NewUserModelPermission {
+            user_id: user.id,
+            model: "code",
+            allow: true,
+        }).await.unwrap();
+
+        let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
+        assert_eq!(result, ModelAccess::Deny);
+
+        // But "code" itself should still be allowed
+        let result2 = db.check_model_access(user.id, "code").await.unwrap();
+        assert_eq!(result2, ModelAccess::Allow);
     }
 
     #[tokio::test]
@@ -2167,7 +2202,7 @@ mod tests {
         }).await.unwrap();
 
         let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
-        assert_eq!(result, Some(true));
+        assert_eq!(result, ModelAccess::Allow);
     }
 
     #[tokio::test]
@@ -2188,7 +2223,7 @@ mod tests {
         }).await.unwrap();
 
         let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
-        assert_eq!(result, Some(false));
+        assert_eq!(result, ModelAccess::Deny);
     }
 
     #[tokio::test]
@@ -2210,10 +2245,10 @@ mod tests {
 
         // Wildcard should apply to all models
         let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
-        assert_eq!(result, Some(true));
+        assert_eq!(result, ModelAccess::Allow);
 
         let result2 = db.check_model_access(user.id, "claude-3").await.unwrap();
-        assert_eq!(result2, Some(true));
+        assert_eq!(result2, ModelAccess::Allow);
     }
 
     #[tokio::test]
@@ -2235,7 +2270,7 @@ mod tests {
 
         // Wildcard deny should apply to all models
         let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
-        assert_eq!(result, Some(false));
+        assert_eq!(result, ModelAccess::Deny);
     }
 
     #[tokio::test]
@@ -2265,11 +2300,11 @@ mod tests {
 
         // Exact match should take precedence
         let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
-        assert_eq!(result, Some(true));
+        assert_eq!(result, ModelAccess::Allow);
 
         // Other models should still be denied
         let result2 = db.check_model_access(user.id, "claude-3").await.unwrap();
-        assert_eq!(result2, Some(false));
+        assert_eq!(result2, ModelAccess::Deny);
     }
 
     #[tokio::test]
@@ -2322,7 +2357,7 @@ mod tests {
         }).await.unwrap();
 
         let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
-        assert_eq!(result, Some(true));
+        assert_eq!(result, ModelAccess::Allow);
     }
 
     #[tokio::test]
@@ -2345,8 +2380,8 @@ mod tests {
         let deleted = db.delete_user_model_permission(user.id, "gpt-4").await.unwrap();
         assert!(deleted);
 
-        // Should return None after deletion (no rule = allow by default)
+        // Should return Allow after deletion (no rule = allow by default)
         let result = db.check_model_access(user.id, "gpt-4").await.unwrap();
-        assert!(result.is_none());
+        assert_eq!(result, ModelAccess::Allow);
     }
 }

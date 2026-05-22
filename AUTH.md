@@ -139,16 +139,44 @@ Authorization: Bearer <api_key>
 
 ---
 
-## Model Access
+## Model Access Control
 
-**Current Status**: ⚠️ **No per-model access control**
+**Current Status**: ✅ **Implemented**
 
-All authenticated users can access all models. There is no:
-- User-model permission system
-- Model whitelisting/blacklisting
-- Role-based model restrictions
+Per-model access control is enforced on all model interactions. Each user can have per-model allow/deny rules stored in `user_model_permissions`.
 
-**Future Work**: See [PLAN.md](PLAN.md) for potential model access control implementation.
+### How It Works
+
+1. **`check_model_access(user_id, model)`** in [`src/db/mod.rs`](src/db/mod.rs) checks permissions with two-tier matching:
+   - **Exact match first**: looks for a permission row where `model` equals the requested model
+   - **Wildcard fallback**: checks for a `model = '*'` row as a catch-all
+   - Returns `None` (no rules exist → default-allow), `Some(true)` (explicit allow), or `Some(false)` (explicit deny)
+
+2. **Chat completions** ([`src/api/chat.rs`](src/api/chat.rs)): calls `check_model_access` before routing. If a rule returns `allow = false`, the request is rejected with `403` and error type `"model_access_denied"`.
+
+3. **Model listing** ([`src/api/models.rs`](src/api/models.rs)): filters the models returned based on user permissions. A wildcard deny (`* = false`) hides everything; a wildcard allow (`* = true`) shows all unless an explicit deny exists for a specific model. If permissions are defined but no rule matches a model, the model is hidden (default-deny when any rules exist).
+
+### Permission Rules
+
+| Scenario | Rules | Result for `gpt-4` |
+|---|---|---|
+| No rules at all | (none) | ✅ Allowed (default-open) |
+| Wildcard allow | `* = true` | ✅ Allowed |
+| Wildcard deny | `* = false` | ❌ Denied |
+| Explicit allow | `gpt-4 = true` | ✅ Allowed |
+| Explicit deny | `gpt-4 = false` | ❌ Denied |
+| Exact overrides wildcard | `* = true`, `gpt-4 = false` | ❌ Denied (exact match wins) |
+| Wildcard allow, no exact | `* = true` (no `claude-3` rule) | ✅ Allowed for `claude-3` |
+
+### API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/users/:user_id/models` | List user's model permissions |
+| `POST` | `/api/users/:user_id/models` | Create a new model permission |
+| `DELETE` | `/api/users/:user_id/models/:model` | Delete a model permission |
+
+All endpoints are admin-only. See [`src/api/users.rs`](src/api/users.rs) and [`src/api/server.rs`](src/api/server.rs) for route definitions.
 
 ---
 
