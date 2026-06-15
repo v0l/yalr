@@ -399,6 +399,24 @@ impl Router {
                                         }
                                     }
 
+                                    // Fetch and emit quota snapshot with timeout
+                                    let quota_result = tokio::time::timeout(
+                                        Duration::from_secs(5),
+                                        provider_clone.fetch_quota()
+                                    ).await;
+
+                                    match quota_result {
+                                        Ok(Some(quota)) => {
+                                            router_clone.metrics_store.emitter().emit_quota(&provider_name, quota, None);
+                                        }
+                                        Ok(None) => {
+                                            // Provider doesn't support quota tracking
+                                        }
+                                        Err(_) => {
+                                            tracing::debug!(provider = %provider_name, "Quota fetch timeout");
+                                        }
+                                    }
+
                                     // Health check with timeout
                                     let result = tokio::time::timeout(timeout_duration, provider_clone.health_check()).await;
                                     match result {

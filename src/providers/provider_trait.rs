@@ -52,6 +52,34 @@ impl CurrencyAmount {
     }
 }
 
+/// A usage-quota snapshot for subscription-style providers (e.g. Claude Max,
+/// ChatGPT). Mirrors balance tracking but expresses consumption against a
+/// rolling rate-limit window rather than a spendable credit.
+///
+/// All fields are optional because different upstreams expose different subsets
+/// of rate-limit information (usually via response headers).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct QuotaSnapshot {
+    /// Remaining units (requests or tokens) in the current window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<i64>,
+    /// Total units allowed in the current window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    /// Percentage of the window consumed (0.0–100.0), if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_pct: Option<f32>,
+    /// When the window resets, as epoch milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+    /// Human label for the window, e.g. "requests", "tokens", "5h".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    /// Upstream status hint, e.g. "allowed", "allowed_warning", "rejected".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn name(&self) -> &str;
@@ -101,6 +129,13 @@ pub trait Provider: Send + Sync {
     /// The returned PaymentInstruction enum tells the UI how to handle the payment.
     async fn create_topup(&self, amount: CurrencyAmount) -> Option<crate::payments::instructions::PaymentInstruction> {
         let _ = amount;
+        None
+    }
+
+    /// Fetch the current usage quota for the provider.
+    /// Result is emitted as a `MetricsEvent::Quota` by the health check loop.
+    /// Returns `None` for providers that don't support quota tracking.
+    async fn fetch_quota(&self) -> Option<QuotaSnapshot> {
         None
     }
 }

@@ -32,6 +32,7 @@ pub mod anthropic;
 pub mod anthropic_oauth;
 pub mod openai_oauth;
 pub mod provider_trait;
+pub mod quota;
 pub mod routstr;
 pub mod vllm;
 pub mod ppq;

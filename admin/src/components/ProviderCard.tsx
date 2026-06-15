@@ -3,6 +3,7 @@ import type { Provider, ProviderHealthEntry } from '../types'
 import { Button } from '@/components/ui/button'
 import { HealthBadge } from '@/components/HealthBadge'
 import { BalanceDisplay } from '@/components/BalanceDisplay'
+import { QuotaDisplay } from '@/components/QuotaDisplay'
 import { Badge } from '@/components/ui/badge'
 
 /* ═══════════════════════════════════════════════════════════════ */
@@ -80,6 +81,8 @@ export function ProviderCard({ provider, onEdit, onDelete, onTopup, onGenerateKe
         <div className="font-mono text-[10px] text-muted-foreground/60 truncate" title={provider.base_url}>
           {provider.base_url.replace(/^https?:\/\//, '').replace(/\/v\d+$/, '')}
         </div>
+
+        {h?.quota && <QuotaDisplay health={h} className="mt-2" />}
 
         {/* ── Actions ────────────────────────────────────── */}
         <div className="flex items-center gap-1 mt-2.5 pt-2.5 border-t border-border/40">

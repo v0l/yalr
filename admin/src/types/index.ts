@@ -98,6 +98,16 @@ export interface ProviderHealthEntry {
   last_failure_ago_ms: number | null
   rate_limited: boolean
   balance?: CurrencyAmount
+  quota?: QuotaSnapshot
+}
+
+export interface QuotaSnapshot {
+  remaining?: number
+  limit?: number
+  used_pct?: number
+  resets_at?: number
+  window?: string
+  status?: string
 }
 
 export interface CurrencyAmount {
@@ -166,6 +176,7 @@ export type WsMetricsEvent =
   | { Failure: WsFailureDetails }
   | { ProviderLoad: { in_flight: number; max_concurrency: number | null } }
   | { Balance: CurrencyAmount }
+  | { Quota: QuotaSnapshot }
 
 export interface WsFailureDetails {
   error_type: 'RateLimit' | 'ServerError' | 'Timeout' | 'Authentication' | 'NotFound' | 'Other'

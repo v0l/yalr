@@ -59,6 +59,13 @@ function fmt(e: WsProviderMetrics['event']): { label: string; value: string; kin
     const b = e.Balance as CurrencyAmount
     return { label: 'BAL', value: formatBalance(b.amount, b.currency), kind: 'info' }
   }
+  if (has(e, 'Quota')) {
+    const q = e.Quota as { used_pct?: number; remaining?: number; status?: string }
+    const v = typeof q.used_pct === 'number'
+      ? `${q.used_pct.toFixed(0)}% used`
+      : (typeof q.remaining === 'number' ? `${q.remaining.toLocaleString()} left` : (q.status ?? '?'))
+    return { label: 'QUOTA', value: v, kind: q.status === 'rejected' ? 'err' : (q.status === 'allowed_warning' ? 'warn' : 'info') }
+  }
   return { label: '?', value: JSON.stringify(e), kind: 'info' }
 }
 

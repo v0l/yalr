@@ -7,7 +7,7 @@
 
 mod wire;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -16,6 +16,8 @@ use futures::StreamExt;
 use super::*;
 use crate::db::Database;
 use crate::oauth::{OAuthKind, OAuthSession};
+use crate::providers::provider_trait::QuotaSnapshot;
+use crate::providers::quota::anthropic_quota_from_headers;
 use wire::*;
 
 const BETA_HEADER: &str = "oauth-2025-04-20";
@@ -36,6 +38,8 @@ pub struct AnthropicOAuthProvider {
     base_url: String,
     http: reqwest::Client,
     session: Arc<OAuthSession>,
+    /// Last quota snapshot seen on a response, captured from rate-limit headers.
+    quota: Arc<RwLock<Option<QuotaSnapshot>>>,
 }
 
 impl AnthropicOAuthProvider {
@@ -55,6 +59,7 @@ impl AnthropicOAuthProvider {
             base_url: record.base_url.trim_end_matches('/').to_string(),
             http: reqwest::Client::new(),
             session: Arc::new(session),
+            quota: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -150,6 +155,11 @@ impl Provider for AnthropicOAuthProvider {
             .map_err(|e| ProviderError::Other(e.into()))?;
 
         let status = resp.status();
+        if let Some(q) = anthropic_quota_from_headers(resp.headers()) {
+            if let Ok(mut guard) = self.quota.write() {
+                *guard = Some(q);
+            }
+        }
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             return Err(map_status_error(status.as_u16(), text));
@@ -209,6 +219,7 @@ impl Provider for AnthropicOAuthProvider {
         let http = self.http.clone();
         let session = self.session.clone();
         let model = request.model.clone();
+        let quota_cache = self.quota.clone();
 
         let stream = async_stream::stream! {
             let token = match session.access_token().await {
@@ -232,6 +243,11 @@ impl Provider for AnthropicOAuthProvider {
                 Err(e) => { yield Err(ProviderError::Other(e.into())); return; }
             };
             let status = resp.status();
+            if let Some(q) = anthropic_quota_from_headers(resp.headers()) {
+                if let Ok(mut guard) = quota_cache.write() {
+                    *guard = Some(q);
+                }
+            }
             if !status.is_success() {
                 let text = resp.text().await.unwrap_or_default();
                 yield Err(map_status_error(status.as_u16(), text));
@@ -311,5 +327,9 @@ impl Provider for AnthropicOAuthProvider {
             Ok(r) => Ok(r.status().is_success()),
             Err(_) => Ok(false),
         }
+    }
+
+    async fn fetch_quota(&self) -> Option<QuotaSnapshot> {
+        self.quota.read().ok().and_then(|g| g.clone())
     }
 }

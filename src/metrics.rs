@@ -66,6 +66,8 @@ pub enum MetricsEvent {
     },
     /// Provider balance snapshot (account credit, upstream cost tracking)
     Balance(CurrencyAmount),
+    /// Provider usage-quota snapshot (subscription rate-limit consumption)
+    Quota(crate::providers::provider_trait::QuotaSnapshot),
 }
 
 /// Error details for failure events
@@ -274,6 +276,11 @@ impl MetricsEmitter {
     /// Emit a balance snapshot for a provider.
     pub fn emit_balance(&self, provider: &str, amount: CurrencyAmount, user: Option<MetricsUser>) {
         self.emit(provider.to_string(), String::new(), MetricsEvent::Balance(amount), user);
+    }
+
+    /// Emit a usage-quota snapshot for a provider.
+    pub fn emit_quota(&self, provider: &str, quota: crate::providers::provider_trait::QuotaSnapshot, user: Option<MetricsUser>) {
+        self.emit(provider.to_string(), String::new(), MetricsEvent::Quota(quota), user);
     }
 }
 
@@ -822,6 +829,15 @@ impl MetricsStore {
                 false
             }
         });
+
+        // Check for an exhausted quota (subscription rate-limit) that has not yet
+        // reset. Treated like a balance issue: provider becomes a fallback-only
+        // Degraded provider and auto-recovers once the quota window resets.
+        let now_ms = now
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let has_quota_issue = latest_quota_issue_reset(&provider_events, now_ms).is_some();
         
         // Check for recent failures
         let failure_count = provider_events
@@ -830,7 +846,7 @@ impl MetricsStore {
             .count();
         
         // Compute health state
-        if has_balance_issue {
+        if has_balance_issue || has_quota_issue {
             HealthState::Degraded
         } else if failure_count >= 5 {
             HealthState::Unhealthy
@@ -867,9 +883,18 @@ impl MetricsStore {
             .iter()
             .filter(|e| matches!(&e.event, MetricsEvent::Failure(_)))
             .count() as u32;
+
+        // If the quota is exhausted, back off until the quota window resets.
+        let now_ms = now
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let quota_backoff = latest_quota_issue_reset(&provider_events, now_ms)
+            .map(|reset| Duration::from_millis((reset - now_ms).max(0) as u64))
+            .unwrap_or_default();
         
         if failure_count == 0 {
-            return Duration::from_millis(0);
+            return quota_backoff;
         }
         
         // Exponential backoff: base * 2^failures, capped at 30 seconds
@@ -880,7 +905,7 @@ impl MetricsStore {
             .checked_mul(2_u32.saturating_pow(failure_count.saturating_sub(1).min(10)))
             .unwrap_or(max_backoff);
         
-        exponential_backoff.min(max_backoff)
+        exponential_backoff.min(max_backoff).max(quota_backoff)
     }
 
     /// Get recent failure count for a provider (last 5 minutes)
@@ -956,6 +981,24 @@ impl MetricsStore {
             })
     }
 
+    /// Get the most recent quota snapshot for a provider.
+    pub async fn get_quota(&self, provider: &str) -> Option<crate::providers::provider_trait::QuotaSnapshot> {
+        let events = self.events.lock().unwrap();
+        events
+            .iter()
+            .rev()
+            .find_map(|e| {
+                if e.provider == provider {
+                    match &e.event {
+                        MetricsEvent::Quota(quota) => Some(quota.clone()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            })
+    }
+
     /// Compute health from recent metrics (for external health calculation)
     pub async fn compute_health_from_metrics(&self, provider: &str) -> (HealthState, f32, u32) {
         let events = self.get_events_for(provider, None).await;
@@ -986,6 +1029,34 @@ impl MetricsStore {
         };
 
         (state, success_rate, recent_failures)
+    }
+}
+
+/// Inspect a provider's recent events for an exhausted usage quota.
+///
+/// Returns `Some(resets_at_epoch_ms)` if the most recent quota snapshot shows the
+/// provider is at/over its limit (or upstream reports `rejected`) and the window
+/// has not yet reset. Returns `None` otherwise (no quota, not exhausted, or the
+/// reset time has already passed — i.e. the quota is considered recovered).
+fn latest_quota_issue_reset(provider_events: &[&ProviderMetrics], now_ms: i64) -> Option<i64> {
+    let quota = provider_events.iter().rev().find_map(|e| {
+        if let MetricsEvent::Quota(q) = &e.event { Some(q) } else { None }
+    })?;
+
+    let exhausted = quota.status.as_deref() == Some("rejected")
+        || quota.used_pct.is_some_and(|p| p >= 100.0)
+        || matches!((quota.remaining, quota.limit), (Some(r), Some(l)) if l > 0 && r <= 0);
+    if !exhausted {
+        return None;
+    }
+
+    // If we know the reset time and it has already passed, the quota has
+    // recovered even if the cached snapshot is stale.
+    match quota.resets_at {
+        Some(reset) if reset <= now_ms => None,
+        Some(reset) => Some(reset),
+        // Unknown reset time: treat as exhausted with no extra backoff.
+        None => Some(now_ms),
     }
 }
 
@@ -1086,6 +1157,75 @@ mod tests {
             .await;
 
         assert_eq!(store.get_provider_health(provider_name).await, HealthState::Degraded);
+    }
+
+    fn quota_snapshot(used_pct: Option<f32>, status: Option<&str>, resets_at: Option<i64>) -> crate::providers::provider_trait::QuotaSnapshot {
+        crate::providers::provider_trait::QuotaSnapshot {
+            remaining: None,
+            limit: None,
+            used_pct,
+            resets_at,
+            window: Some("unified".to_string()),
+            status: status.map(|s| s.to_string()),
+        }
+    }
+
+    fn now_epoch_ms() -> i64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    }
+
+    #[tokio::test]
+    async fn test_health_state_degraded_on_quota_exhausted() {
+        let store = create_test_metrics_store();
+        let provider_name = "test-provider";
+        let reset = now_epoch_ms() + 3_600_000; // 1h in the future
+
+        store
+            .record(create_metrics_event(provider_name, MetricsEvent::Quota(quota_snapshot(Some(100.0), None, Some(reset))), 0))
+            .await;
+
+        assert_eq!(store.get_provider_health(provider_name).await, HealthState::Degraded);
+        // Backoff should reflect time until reset (well above the 30s failure cap).
+        assert!(store.get_provider_backoff(provider_name).await > Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn test_health_state_degraded_on_quota_rejected() {
+        let store = create_test_metrics_store();
+        let provider_name = "test-provider";
+
+        store
+            .record(create_metrics_event(provider_name, MetricsEvent::Quota(quota_snapshot(None, Some("rejected"), None)), 0))
+            .await;
+
+        assert_eq!(store.get_provider_health(provider_name).await, HealthState::Degraded);
+    }
+
+    #[tokio::test]
+    async fn test_quota_recovers_after_reset_passes() {
+        let store = create_test_metrics_store();
+        let provider_name = "test-provider";
+        let past_reset = now_epoch_ms() - 1_000; // already reset
+
+        store
+            .record(create_metrics_event(provider_name, MetricsEvent::Quota(quota_snapshot(Some(100.0), None, Some(past_reset))), 0))
+            .await;
+
+        // Stale 100% snapshot but reset time passed -> considered recovered.
+        assert_eq!(store.get_provider_health(provider_name).await, HealthState::Healthy);
+        assert_eq!(store.get_provider_backoff(provider_name).await, Duration::from_millis(0));
+    }
+
+    #[tokio::test]
+    async fn test_quota_healthy_when_under_limit() {
+        let store = create_test_metrics_store();
+        let provider_name = "test-provider";
+
+        store
+            .record(create_metrics_event(provider_name, MetricsEvent::Quota(quota_snapshot(Some(42.0), Some("allowed"), None)), 0))
+            .await;
+
+        assert_eq!(store.get_provider_health(provider_name).await, HealthState::Healthy);
     }
 
     #[tokio::test]

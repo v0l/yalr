@@ -6,7 +6,7 @@
 
 mod wire;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -15,6 +15,8 @@ use futures::StreamExt;
 use super::*;
 use crate::db::Database;
 use crate::oauth::{OAuthKind, OAuthSession};
+use crate::providers::provider_trait::QuotaSnapshot;
+use crate::providers::quota::openai_quota_from_headers;
 use wire::*;
 
 const BETA_HEADER: &str = "responses=experimental";
@@ -29,6 +31,8 @@ pub struct OpenAiOAuthProvider {
     base_url: String,
     http: reqwest::Client,
     session: Arc<OAuthSession>,
+    /// Last quota snapshot seen on a response, captured from rate-limit headers.
+    quota: Arc<RwLock<Option<QuotaSnapshot>>>,
 }
 
 impl OpenAiOAuthProvider {
@@ -48,6 +52,7 @@ impl OpenAiOAuthProvider {
             base_url: record.base_url.trim_end_matches('/').to_string(),
             http: reqwest::Client::new(),
             session: Arc::new(session),
+            quota: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -138,6 +143,7 @@ impl Provider for OpenAiOAuthProvider {
         let http = self.http.clone();
         let session = self.session.clone();
         let model = request.model.clone();
+        let quota_cache = self.quota.clone();
 
         let stream = async_stream::stream! {
             let token = match session.access_token().await {
@@ -161,6 +167,11 @@ impl Provider for OpenAiOAuthProvider {
                 Err(e) => { yield Err(ProviderError::Other(e.into())); return; }
             };
             let status = resp.status();
+            if let Some(q) = openai_quota_from_headers(resp.headers()) {
+                if let Ok(mut guard) = quota_cache.write() {
+                    *guard = Some(q);
+                }
+            }
             if !status.is_success() {
                 let text = resp.text().await.unwrap_or_default();
                 yield Err(map_status_error(status.as_u16(), text));
@@ -239,5 +250,9 @@ impl Provider for OpenAiOAuthProvider {
     async fn health_check(&self) -> Result<bool, ProviderError> {
         // No public health endpoint; treat a valid (refreshable) token as healthy.
         Ok(self.session.access_token().await.is_ok())
+    }
+
+    async fn fetch_quota(&self) -> Option<QuotaSnapshot> {
+        self.quota.read().ok().and_then(|g| g.clone())
     }
 }

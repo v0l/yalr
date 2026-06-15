@@ -44,6 +44,9 @@ pub struct ProviderHealthEntry {
     /// Serialized as `{"currency": "msats"|"sats"|"usd_micro", "amount": N}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub balance: Option<crate::providers::provider_trait::CurrencyAmount>,
+    /// Current usage quota for this provider, if it supports quota tracking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota: Option<crate::providers::provider_trait::QuotaSnapshot>,
 }
 
 #[derive(Serialize)]
@@ -117,6 +120,7 @@ pub async fn build_provider_health_entry(
         last_failure_ago_ms,
         rate_limited,
         balance: state.metrics_store.get_balance(name).await,
+        quota: state.metrics_store.get_quota(name).await,
     }
 }
 
