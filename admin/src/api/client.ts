@@ -1,5 +1,8 @@
 import type {
   Provider,
+  OAuthProviderKind,
+  OAuthStartResponse,
+  OAuthCompleteResponse,
   Model,
   MetricsResponse,
   HealthResponse,
@@ -29,15 +32,21 @@ import type {
 export const API_BASE_URL = import.meta.env.VITE_API_URL || window.location.origin
 
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  const token = localStorage.getItem('token')
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options?.headers,
     },
   })
 
   if (!response.ok) {
+    if (response.status === 401) {
+      localStorage.removeItem('token')
+      window.location.href = '/login'
+    }
     const error = await response.text().catch(() => 'Unknown error')
     throw new Error(`API Error: ${response.status} - ${error}`)
   }
@@ -168,6 +177,48 @@ export const api = {
       throw new Error(error.error || 'Failed to generate API key')
     }
     
+    return response.json()
+  },
+
+  async startOAuth(provider: OAuthProviderKind, name: string, slug: string): Promise<OAuthStartResponse> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/oauth/start`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, name, slug }),
+    })
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(error || 'Failed to start OAuth flow')
+    }
+    return response.json()
+  },
+
+  async completeOAuth(state: string, code: string): Promise<OAuthCompleteResponse> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/oauth/complete`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state, code }),
+    })
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(error || 'Failed to complete OAuth flow')
+    }
+    return response.json()
+  },
+
+  async reauthOAuth(slug: string, provider: OAuthProviderKind): Promise<OAuthStartResponse> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/oauth/${slug}/reauth`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider }),
+    })
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(error || 'Failed to start re-auth')
+    }
     return response.json()
   },
 

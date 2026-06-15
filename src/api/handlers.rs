@@ -62,6 +62,7 @@ mod tests {
             session_store,
             db: Arc::new(db),
             payments_state: None,
+            oauth_pending: Default::default(),
         });
 
         (state, metrics_store)

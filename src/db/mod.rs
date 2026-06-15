@@ -39,6 +39,8 @@ pub enum ProviderType {
     OpenRouter = 5,
     Anthropic = 6,
     Ppq = 7,
+    AnthropicOauth = 8,
+    OpenAiOauth = 9,
 }
 
 impl ProviderType {
@@ -52,7 +54,14 @@ impl ProviderType {
             ProviderType::OpenRouter => "openrouter",
             ProviderType::Anthropic => "anthropic",
             ProviderType::Ppq => "ppq",
+            ProviderType::AnthropicOauth => "anthropic-oauth",
+            ProviderType::OpenAiOauth => "openai-oauth",
         }
+    }
+
+    /// Whether this provider type authenticates via OAuth tokens rather than a static API key.
+    pub fn is_oauth(&self) -> bool {
+        matches!(self, ProviderType::AnthropicOauth | ProviderType::OpenAiOauth)
     }
     
     pub fn from_str(s: &str) -> Option<Self> {
@@ -65,6 +74,8 @@ impl ProviderType {
             "openrouter" => Some(ProviderType::OpenRouter),
             "anthropic" => Some(ProviderType::Anthropic),
             "ppq" => Some(ProviderType::Ppq),
+            "anthropic-oauth" => Some(ProviderType::AnthropicOauth),
+            "openai-oauth" => Some(ProviderType::OpenAiOauth),
             _ => None,
         }
     }
@@ -78,8 +89,26 @@ pub struct Provider {
     pub base_url: String,
     pub api_key: Option<String>,
     pub provider_type: ProviderType,
+    #[sqlx(default)]
+    pub oauth_access_token: Option<String>,
+    #[sqlx(default)]
+    pub oauth_refresh_token: Option<String>,
+    #[sqlx(default)]
+    pub oauth_expires_at: Option<i64>,
+    #[sqlx(default)]
+    pub oauth_account_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// OAuth credentials persisted for an OAuth-backed provider.
+#[derive(Clone, Debug)]
+pub struct OAuthCredentials {
+    pub access_token: String,
+    pub refresh_token: String,
+    /// Unix epoch milliseconds at which the access token expires.
+    pub expires_at: i64,
+    pub account_id: Option<String>,
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -354,6 +383,27 @@ impl Database {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Persist OAuth credentials (access/refresh tokens, expiry, account id) for a provider.
+    /// Used both on initial connect and on token refresh.
+    pub async fn update_provider_oauth(
+        &self,
+        id: i64,
+        creds: &OAuthCredentials,
+    ) -> Result<Provider, sqlx::Error> {
+        sqlx::query_as::<_, Provider>(
+            "UPDATE providers SET oauth_access_token = ?, oauth_refresh_token = ?, \
+             oauth_expires_at = ?, oauth_account_id = ?, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ? RETURNING *",
+        )
+        .bind(&creds.access_token)
+        .bind(&creds.refresh_token)
+        .bind(creds.expires_at)
+        .bind(creds.account_id.as_deref())
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await
     }
 
     // Model CRUD

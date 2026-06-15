@@ -29,6 +29,8 @@ pub mod ollama;
 pub mod openai;
 pub mod openrouter;
 pub mod anthropic;
+pub mod anthropic_oauth;
+pub mod openai_oauth;
 pub mod provider_trait;
 pub mod routstr;
 pub mod vllm;
@@ -39,14 +41,20 @@ pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
 pub use openrouter::OpenRouterProvider;
 pub use anthropic::AnthropicProvider;
+pub use anthropic_oauth::AnthropicOAuthProvider;
+pub use openai_oauth::OpenAiOAuthProvider;
 pub use routstr::RoutstrProvider;
 pub use vllm::VllmProvider;
 pub use ppq::PpqProvider;
 
-use crate::db::ProviderType;
+use crate::db::{Database, Provider as ProviderRecord, ProviderType};
 use std::sync::Arc;
 
-/// Factory function to create a provider instance based on type
+/// Factory function to create a provider instance based on type.
+///
+/// For OAuth provider types this does NOT have access to the stored tokens and
+/// will panic; callers handling OAuth providers must use
+/// [`create_provider_from_record`] instead.
 pub fn create_provider(
     name: &str,
     slug: Option<&str>,
@@ -63,6 +71,28 @@ pub fn create_provider(
         ProviderType::OpenRouter => Arc::new(OpenRouterProvider::new(name, slug, base_url, api_key)),
         ProviderType::Anthropic => Arc::new(AnthropicProvider::new(name, slug, base_url, api_key)),
         ProviderType::Ppq => Arc::new(PpqProvider::new(name, slug, base_url, api_key)),
+        ProviderType::AnthropicOauth | ProviderType::OpenAiOauth => {
+            panic!("OAuth providers must be created via create_provider_from_record")
+        }
+    }
+}
+
+/// Factory that builds a provider from a full DB record, giving OAuth providers
+/// access to their stored tokens and a database handle for token refresh.
+pub fn create_provider_from_record(
+    record: &ProviderRecord,
+    db: Arc<Database>,
+) -> Arc<dyn Provider> {
+    match record.provider_type {
+        ProviderType::AnthropicOauth => Arc::new(AnthropicOAuthProvider::new(record, db)),
+        ProviderType::OpenAiOauth => Arc::new(OpenAiOAuthProvider::new(record, db)),
+        other => create_provider(
+            &record.name,
+            Some(&record.slug),
+            &record.base_url,
+            record.api_key.as_deref(),
+            other,
+        ),
     }
 }
 

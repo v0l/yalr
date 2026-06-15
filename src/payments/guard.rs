@@ -152,6 +152,7 @@ mod tests {
             session_store: Arc::new(crate::auth::admin::SessionStore::new()),
             db,
             payments_state: None,
+            oauth_pending: Default::default(),
         })
     }
 

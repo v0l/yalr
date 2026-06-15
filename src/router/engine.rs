@@ -1,6 +1,6 @@
 use crate::db::Database;
 use crate::metrics::{MetricsStore, MetricsUser};
-use crate::providers::{create_provider, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
+use crate::providers::{create_provider_from_record, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
 use crate::router::strategies::ProviderEntry;
 use crate::{ChatCompletionRequest, ChatCompletionResponse, ProviderError};
 use crate::providers::StreamingChunk;
@@ -195,13 +195,7 @@ impl Router {
         let mut id_to_slug: HashMap<i64, String> = HashMap::new();
 
         for record in &provider_records {
-            let provider = create_provider(
-                &record.name,
-                Some(&record.slug),
-                &record.base_url,
-                record.api_key.as_deref(),
-                record.provider_type,
-            );
+            let provider = create_provider_from_record(record, self.db.clone());
             self.metrics_store.register_provider(&record.name).await;
             id_to_slug.insert(record.id, record.slug.clone());
             providers.insert(record.slug.clone(), provider);

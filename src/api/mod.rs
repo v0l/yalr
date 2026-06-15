@@ -3,6 +3,7 @@ pub mod config;
 pub mod health;
 pub mod model_pricing;
 pub mod models;
+pub mod oauth;
 pub mod providers;
 pub mod responses;
 pub mod routing;

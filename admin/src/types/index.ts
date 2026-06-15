@@ -8,6 +8,30 @@ export interface Provider {
   updated_at: string
   health?: ProviderHealthEntry
   payment_options: PaymentOption[]
+  is_oauth?: boolean
+  oauth?: OAuthStatus
+}
+
+export interface OAuthStatus {
+  connected: boolean
+  expires_at?: number
+  expired: boolean
+}
+
+/** OAuth subscription provider kinds the server can connect. */
+export type OAuthProviderKind = 'anthropic' | 'openai'
+
+export interface OAuthStartResponse {
+  authorize_url: string
+  state: string
+  instructions: string
+}
+
+export interface OAuthCompleteResponse {
+  id: number
+  name: string
+  slug: string
+  provider_type: string
 }
 
 export interface ProviderFormData {

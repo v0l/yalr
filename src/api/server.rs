@@ -114,6 +114,7 @@ pub async fn run_with_shutdown<F>(
         session_store: session_store.clone(),
         db,
         payments_state,
+        oauth_pending: Default::default(),
     });
 
     let admin_ui_path = config.admin_ui_path.clone();
@@ -140,6 +141,9 @@ pub async fn run_with_shutdown<F>(
         .route("/providers/:slug", put(providers::update_provider))
         .route("/providers/:slug/generate-api-key", post(providers::generate_provider_api_key))
         .route("/providers/:slug", delete(providers::delete_provider))
+        .route("/oauth/start", post(crate::api::oauth::start))
+        .route("/oauth/complete", post(crate::api::oauth::complete))
+        .route("/oauth/:slug/reauth", post(crate::api::oauth::reauth))
         .route("/metrics", get(health::get_metrics))
         .route("/metrics/history", get(health::get_metrics_history))
         .route("/metrics/health", get(health::get_health_overview))

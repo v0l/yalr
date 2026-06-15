@@ -22,6 +22,22 @@ pub struct ProviderResponse {
     pub health: Option<ProviderHealthEntry>,
     /// Supported payment options for this provider.
     pub payment_options: Vec<PaymentOption>,
+    /// Whether this provider authenticates via OAuth (subscription) rather than an API key.
+    pub is_oauth: bool,
+    /// OAuth connection status (present only for OAuth providers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<OAuthStatus>,
+}
+
+#[derive(Serialize)]
+pub struct OAuthStatus {
+    /// True when an access/refresh token pair is stored.
+    pub connected: bool,
+    /// Unix epoch milliseconds at which the access token expires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    /// True when the stored access token is already past its expiry.
+    pub expired: bool,
 }
 
 #[derive(Serialize)]
@@ -120,6 +136,21 @@ pub async fn list_providers(State(state): State<std::sync::Arc<AppState>>) -> Js
                 _ => vec![], // Other providers don't support direct top-ups
             };
 
+            let is_oauth = p.provider_type.is_oauth();
+            let oauth = if is_oauth {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                Some(OAuthStatus {
+                    connected: p.oauth_access_token.is_some() && p.oauth_refresh_token.is_some(),
+                    expires_at: p.oauth_expires_at,
+                    expired: p.oauth_expires_at.map(|e| e <= now_ms).unwrap_or(false),
+                })
+            } else {
+                None
+            };
+
             ProviderResponse {
                 id: p.id,
                 name: p.name.clone(),
@@ -130,6 +161,8 @@ pub async fn list_providers(State(state): State<std::sync::Arc<AppState>>) -> Js
                 updated_at: p.updated_at,
                 health: health_by_slug.remove(&p.slug),
                 payment_options: supported_currencies,
+                is_oauth,
+                oauth,
             }
         })
         .collect();
@@ -397,5 +430,7 @@ pub async fn update_provider(
         updated_at: updated.updated_at,
         health: None,
         payment_options,
+        is_oauth: updated.provider_type.is_oauth(),
+        oauth: None,
     }))
 }

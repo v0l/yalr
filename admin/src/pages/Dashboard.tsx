@@ -9,6 +9,9 @@ import { TopupDialog } from '@/components/TopupDialog'
 import { ProviderCard } from '@/components/ProviderCard'
 import { ProviderCatalogDialog } from '@/components/ProviderQuickAdd'
 import { ProviderFormDialog } from '@/components/ProviderFormDialog'
+import { OAuthConnectDialog } from '@/components/OAuthConnectDialog'
+import { ShieldCheckIcon } from 'lucide-react'
+import type { OAuthProviderKind } from '../types'
 import { ProviderDeleteDialog } from '@/components/ProviderDeleteDialog'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
@@ -79,6 +82,8 @@ export default function Dashboard() {
   const [confirmGenKey, setConfirmGenKey] = useState<Provider | null>(null)  // confirmation step before actual generation
   const [generatedApiKey, setGeneratedApiKey] = useState<string | null>(null)
   const [catalogOpen, setCatalogOpen] = useState(false)
+  const [oauthOpen, setOauthOpen] = useState(false)
+  const [oauthReauth, setOauthReauth] = useState<{ slug: string; kind: OAuthProviderKind; name: string } | undefined>(undefined)
 
   /* ── Effects ──────────────────────────────────────────── */
 
@@ -312,9 +317,14 @@ export default function Dashboard() {
       <div>
         <div className="flex items-center justify-between mb-3">
           <h2 className="section-header mb-0">Providers</h2>
-          <Button onClick={() => setCatalogOpen(true)} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">
-            <PlusIcon className="size-3.5" /> Add Provider
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button onClick={() => { setOauthReauth(undefined); setOauthOpen(true) }} className="font-mono text-[12px] tracking-wider uppercase border border-border bg-transparent text-muted-foreground hover:text-brand hover:border-brand/40">
+              <ShieldCheckIcon className="size-3.5" /> Connect Subscription
+            </Button>
+            <Button onClick={() => setCatalogOpen(true)} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">
+              <PlusIcon className="size-3.5" /> Add Provider
+            </Button>
+          </div>
         </div>
 
         {/* Provider Cards */}
@@ -332,6 +342,11 @@ export default function Dashboard() {
                 onDelete={setDeleteTarget}
                 onTopup={setTopupProvider}
                 onGenerateKey={setConfirmGenKey}
+                onReauth={pr => {
+                  const kind: OAuthProviderKind = pr.provider_type === 'openai-oauth' ? 'openai' : 'anthropic'
+                  setOauthReauth({ slug: pr.slug, kind, name: pr.name })
+                  setOauthOpen(true)
+                }}
               />
             ))}
           </div>
@@ -344,6 +359,13 @@ export default function Dashboard() {
         onOpenChange={setCatalogOpen}
         onSelect={openCreateFromCatalog}
         onCustomAdd={openCustomAdd}
+      />
+
+      <OAuthConnectDialog
+        open={oauthOpen}
+        onOpenChange={o => { setOauthOpen(o); if (!o) setOauthReauth(undefined) }}
+        reauth={oauthReauth}
+        onConnected={async (msg) => { setSuccessMessage(msg); await loadProviders() }}
       />
 
       <ProviderFormDialog

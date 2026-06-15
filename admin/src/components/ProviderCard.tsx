@@ -1,4 +1,4 @@
-import { PencilIcon, TrashIcon, WalletIcon, KeyIcon } from 'lucide-react'
+import { PencilIcon, TrashIcon, WalletIcon, KeyIcon, RefreshCwIcon } from 'lucide-react'
 import type { Provider, ProviderHealthEntry } from '../types'
 import { Button } from '@/components/ui/button'
 import { HealthBadge } from '@/components/HealthBadge'
@@ -15,9 +15,10 @@ export interface ProviderCardProps {
   onDelete: (p: Provider) => void
   onTopup: (p: Provider) => void
   onGenerateKey: (p: Provider) => void
+  onReauth?: (p: Provider) => void
 }
 
-export function ProviderCard({ provider, onEdit, onDelete, onTopup, onGenerateKey }: ProviderCardProps) {
+export function ProviderCard({ provider, onEdit, onDelete, onTopup, onGenerateKey, onReauth }: ProviderCardProps) {
   const h: ProviderHealthEntry | undefined = provider.health
   const state = h?.health_state ?? 'unknown'
   const accent =
@@ -65,6 +66,15 @@ export function ProviderCard({ provider, onEdit, onDelete, onTopup, onGenerateKe
             {provider.provider_type.toUpperCase()}
           </Badge>
           <HealthBadge state={state} />
+          {provider.is_oauth && (
+            provider.oauth?.expired ? (
+              <Badge variant="outline" className="font-mono text-[10px] tracking-wider bg-destructive/15 text-destructive border-destructive/30 px-1.5 py-0 h-5">OAUTH EXPIRED</Badge>
+            ) : provider.oauth?.connected ? (
+              <Badge variant="outline" className="font-mono text-[10px] tracking-wider bg-brand/15 text-brand border-brand/30 px-1.5 py-0 h-5">OAUTH</Badge>
+            ) : (
+              <Badge variant="outline" className="font-mono text-[10px] tracking-wider bg-warning/15 text-warning border-warning/30 px-1.5 py-0 h-5">NOT CONNECTED</Badge>
+            )
+          )}
         </div>
 
         <div className="font-mono text-[10px] text-muted-foreground/60 truncate" title={provider.base_url}>
@@ -91,6 +101,16 @@ export function ProviderCard({ provider, onEdit, onDelete, onTopup, onGenerateKe
               className="h-6 font-mono text-[10px] uppercase tracking-wider border-border/60 text-muted-foreground hover:text-brand hover:border-brand/40 transition-colors gap-1 px-1.5"
             >
               <KeyIcon className="size-3" /> KEY
+            </Button>
+          )}
+          {provider.is_oauth && onReauth && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onReauth(provider)}
+              className="h-6 font-mono text-[10px] uppercase tracking-wider border-border/60 text-muted-foreground hover:text-brand hover:border-brand/40 transition-colors gap-1 px-1.5"
+            >
+              <RefreshCwIcon className="size-3" /> RE-AUTH
             </Button>
           )}
           <div className="flex-1" />
