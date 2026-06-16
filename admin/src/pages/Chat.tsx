@@ -3,6 +3,7 @@ import { ThreadPrimitive, ComposerPrimitive, MessagePrimitive, ActionBarPrimitiv
 import { api } from '../api/client'
 import type { Model } from '../types'
 import { ArrowUpIcon } from 'lucide-react'
+import ModelCombobox from '../components/ModelCombobox'
 
 const createChatModelAdapter = (modelId: string): ChatModelAdapter => {
   return {
@@ -191,16 +192,13 @@ export default function Chat() {
         <h1 className="font-display text-[28px] tracking-[0.04em] text-foreground mb-3 leading-none">CHAT</h1>
         <div className="flex items-center gap-3">
           <label className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground shrink-0">Model:</label>
-          <select
+          <ModelCombobox
             value={selectedModel}
-            onChange={e => setSelectedModel(e.target.value)}
-            className="font-mono text-[13px] bg-card border border-border text-foreground px-3 py-1.5 outline-none focus:border-brand/50 transition-colors flex-1 max-w-sm"
+            models={models.map(m => m.id)}
+            onChange={setSelectedModel}
             disabled={models.length === 0}
-          >
-            {models.map(model => (
-              <option key={model.id} value={model.id} className="bg-card text-foreground">{model.id}</option>
-            ))}
-          </select>
+            className="flex-1 max-w-sm"
+          />
         </div>
       </div>
       <div className="flex-1 px-6 pb-6">
