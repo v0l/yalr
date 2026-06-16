@@ -170,12 +170,7 @@ impl Provider for AnthropicOAuthProvider {
             .await
             .map_err(|e| ProviderError::Other(e.into()))?;
 
-        let text = parsed
-            .content
-            .iter()
-            .filter_map(|b| b.text.clone())
-            .collect::<Vec<_>>()
-            .join("");
+        let (text, tool_calls) = split_content_blocks(&parsed.content);
         let usage = parsed.usage.map(|u| CompletionUsage {
             prompt_tokens: u.input_tokens,
             completion_tokens: u.output_tokens,
@@ -187,7 +182,7 @@ impl Provider for AnthropicOAuthProvider {
         let message = async_openai::types::chat::ChatCompletionResponseMessage {
             content: Some(text),
             refusal: None,
-            tool_calls: None,
+            tool_calls,
             annotations: None,
             role: Role::Assistant,
             function_call: None,
@@ -259,6 +254,10 @@ impl Provider for AnthropicOAuthProvider {
             let mut bytes_stream = resp.bytes_stream();
             let mut buffer = String::new();
             let mut message_id = String::new();
+            // Maps an Anthropic content-block index to its OpenAI tool_call index.
+            let mut tool_block_indices: std::collections::HashMap<usize, u32> =
+                std::collections::HashMap::new();
+            let mut next_tool_index: u32 = 0;
 
             while let Some(chunk) = bytes_stream.next().await {
                 let chunk = match chunk {
@@ -285,10 +284,39 @@ impl Provider for AnthropicOAuthProvider {
                                 message_id = m.id.unwrap_or_default();
                             }
                         }
+                        "content_block_start" => {
+                            if let (Some(idx), Some(block)) = (event.index, event.content_block) {
+                                if block.block_type.as_deref() == Some("tool_use") {
+                                    if let (Some(call_id), Some(name)) = (block.id, block.name) {
+                                        let tool_index = next_tool_index;
+                                        next_tool_index += 1;
+                                        tool_block_indices.insert(idx, tool_index);
+                                        yield Ok(tool_call_start_chunk(
+                                            &message_id,
+                                            &model,
+                                            tool_index,
+                                            call_id,
+                                            name,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                         "content_block_delta" => {
                             if let Some(delta) = event.delta {
                                 if let Some(text) = delta.text {
                                     yield Ok(text_chunk(&message_id, &model, text));
+                                } else if let Some(partial_json) = delta.partial_json {
+                                    let tool_index = event
+                                        .index
+                                        .and_then(|i| tool_block_indices.get(&i).copied())
+                                        .unwrap_or(0);
+                                    yield Ok(tool_call_args_chunk(
+                                        &message_id,
+                                        &model,
+                                        tool_index,
+                                        partial_json,
+                                    ));
                                 }
                             }
                         }
