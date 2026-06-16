@@ -151,6 +151,20 @@ impl RoutingTable {
 }
 
 /// Helper struct for health check tasks that only needs metrics access
+/// Clamp a configured health-check duration (in seconds) to a positive value,
+/// falling back to `default_secs` when the stored value is 0 or negative.
+///
+/// A 0 here is dangerous: `Duration::ZERO` makes `tokio::time::interval` panic
+/// and `tokio::time::timeout` fire immediately, so every provider health check
+/// would record a spurious "Health check timeout".
+fn sane_health_secs(configured: i32, default_secs: u64) -> u64 {
+    if configured > 0 {
+        configured as u64
+    } else {
+        default_secs
+    }
+}
+
 #[derive(Clone)]
 struct HealthCheckRouter {
     metrics_store: MetricsStore,
@@ -379,11 +393,15 @@ impl Router {
         // or fall back to sensible defaults.
         let routing_configs = self.db.list_routing_configs().await?;
         let health_config = routing_configs.iter().find(|rc| rc.health_check_enabled);
+        // Clamp configured seconds to a positive value. A 0 (e.g. a routing
+        // config saved with a cleared field) would make `tokio::time::interval`
+        // panic and `tokio::time::timeout` elapse immediately, causing EVERY
+        // health check to report "Health check timeout" on every tick.
         let interval = Duration::from_secs(
-            health_config.map_or(30, |rc| rc.health_check_interval_seconds as u64),
+            health_config.map_or(30, |rc| sane_health_secs(rc.health_check_interval_seconds, 30)),
         );
         let timeout = Duration::from_secs(
-            health_config.map_or(10, |rc| rc.health_check_timeout_seconds as u64),
+            health_config.map_or(10, |rc| sane_health_secs(rc.health_check_timeout_seconds, 10)),
         );
 
         let has_health_config = health_config.is_some();
@@ -1323,6 +1341,16 @@ mod tests {
     use crate::metrics::{MetricsStore, ProviderMetrics, MetricsEvent, FailureDetails, ErrorType};
     use crate::db::{NewRoutingConfig, NewRoutingConfigProvider, NewProvider, ProviderType};
     use std::sync::Arc;
+
+    #[test]
+    fn sane_health_secs_clamps_non_positive_to_default() {
+        // 0 / negative would make timeouts fire immediately and intervals panic.
+        assert_eq!(sane_health_secs(0, 10), 10);
+        assert_eq!(sane_health_secs(-5, 30), 30);
+        // Positive values pass through unchanged.
+        assert_eq!(sane_health_secs(5, 10), 5);
+        assert_eq!(sane_health_secs(1, 10), 1);
+    }
 
     async fn setup_test_router() -> (Router, MetricsStore) {
         let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());

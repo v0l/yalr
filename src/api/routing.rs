@@ -20,6 +20,29 @@ pub struct RoutingConfigUpdateRequest {
     pub health_check_timeout_seconds: Option<i32>,
 }
 
+/// Reject health-check seconds that would break the health loop.
+/// A 0 (or negative) timeout makes `tokio::time::timeout` elapse immediately and
+/// a 0 interval panics `tokio::time::interval`, so they must be >= 1.
+fn validate_health_seconds(
+    interval: Option<i32>,
+    timeout: Option<i32>,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    for (field, value) in [
+        ("health_check_interval_seconds", interval),
+        ("health_check_timeout_seconds", timeout),
+    ] {
+        if let Some(v) = value {
+            if v < 1 {
+                return Err((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    format!("{field} must be >= 1 (got {v})"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 pub struct RoutingConfigProviderCreateRequest {
     pub routing_config_id: i64,
@@ -141,6 +164,10 @@ pub async fn create_routing_config(
     State(state): State<std::sync::Arc<AppState>>,
     Json(request): Json<RoutingConfigCreateRequest>,
 ) -> Result<Json<RoutingConfigFullResponse>, (axum::http::StatusCode, String)> {
+    validate_health_seconds(
+        Some(request.health_check_interval_seconds),
+        Some(request.health_check_timeout_seconds),
+    )?;
     let config = crate::db::NewRoutingConfig {
         name: request.name.clone(),
         strategy: request.strategy.clone(),
@@ -223,6 +250,10 @@ pub async fn update_routing_config(
     State(state): State<std::sync::Arc<AppState>>,
     Json(request): Json<RoutingConfigUpdateRequest>,
 ) -> Result<Json<RoutingConfigFullResponse>, (axum::http::StatusCode, String)> {
+    validate_health_seconds(
+        request.health_check_interval_seconds,
+        request.health_check_timeout_seconds,
+    )?;
     let updates = crate::db::UpdateRoutingConfig {
         name: request.name.clone(),
         strategy: request.strategy.clone(),

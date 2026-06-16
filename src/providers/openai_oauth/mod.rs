@@ -50,7 +50,7 @@ impl OpenAiOAuthProvider {
             name: record.name.clone(),
             slug: record.slug.clone(),
             base_url: record.base_url.trim_end_matches('/').to_string(),
-            http: reqwest::Client::new(),
+            http: crate::providers::streaming_http_client(),
             session: Arc::new(session),
             quota: Arc::new(RwLock::new(Vec::new())),
         }

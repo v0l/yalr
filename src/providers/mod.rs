@@ -37,6 +37,24 @@ pub mod routstr;
 pub mod vllm;
 pub mod ppq;
 
+/// Build a reqwest client for a provider that may stream long responses.
+///
+/// Sets a connect timeout (so a dead/hanging upstream fails fast instead of
+/// wedging health checks) and a short idle-pool timeout (so infrequent calls
+/// don't reuse a server-closed keep-alive socket and hang). Deliberately sets
+/// **no** total request `.timeout()` — that would truncate long streaming chat
+/// completions. Falls back to the default client if the builder fails.
+pub fn streaming_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(8))
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to build provider HTTP client with timeouts; using default");
+            reqwest::Client::new()
+        })
+}
+
 pub use llamacpp::LlamaCppProvider;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;

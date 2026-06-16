@@ -14,6 +14,30 @@ use super::{now_ms, refresh_tokens, OAuthKind, OAuthTokens};
 /// Refresh the token when it has this many milliseconds (or fewer) of life left.
 const REFRESH_SKEW_MS: i64 = 60_000;
 
+/// Bound the OAuth token-refresh HTTP call. Without this, a token endpoint that
+/// accepts the connection but never responds makes `refresh()` hang forever
+/// while holding the state write lock — stalling health checks (logged as
+/// "Health check timeout") and every real request that needs a fresh token.
+const REFRESH_HTTP_TIMEOUT_SECS: u64 = 15;
+const REFRESH_CONNECT_TIMEOUT_SECS: u64 = 8;
+
+/// Build the HTTP client used for token refreshes, with hard timeouts so a
+/// hanging upstream cannot wedge the session. Falls back to the default client
+/// only if the builder somehow fails (it shouldn't for static config).
+fn build_refresh_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(REFRESH_HTTP_TIMEOUT_SECS))
+        .connect_timeout(std::time::Duration::from_secs(REFRESH_CONNECT_TIMEOUT_SECS))
+        // Drop idle keep-alive connections quickly so an infrequent (≈hourly)
+        // refresh never reuses a server-closed socket and hangs on it.
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to build OAuth refresh client with timeouts; using default");
+            reqwest::Client::new()
+        })
+}
+
 #[derive(Debug, Clone)]
 struct TokenState {
     access_token: String,
@@ -45,7 +69,7 @@ impl OAuthSession {
             kind,
             provider_id,
             db,
-            http: reqwest::Client::new(),
+            http: build_refresh_client(),
             state: RwLock::new(TokenState {
                 access_token,
                 refresh_token,

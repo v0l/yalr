@@ -173,11 +173,11 @@ export default function Config() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="c-interval" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Interval (s)</Label>
-                  <Input id="c-interval" type="number" min={1} value={configForm.health_check_interval_seconds} onChange={e => setConfigForm({ ...configForm, health_check_interval_seconds: Number(e.target.value) })} className="font-mono bg-surface border-border text-foreground" />
+                  <Input id="c-interval" type="number" min={1} value={configForm.health_check_interval_seconds} onChange={e => setConfigForm({ ...configForm, health_check_interval_seconds: Math.max(1, Number(e.target.value) || 1) })} className="font-mono bg-surface border-border text-foreground" />
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="c-timeout" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Timeout (s)</Label>
-                  <Input id="c-timeout" type="number" min={1} value={configForm.health_check_timeout_seconds} onChange={e => setConfigForm({ ...configForm, health_check_timeout_seconds: Number(e.target.value) })} className="font-mono bg-surface border-border text-foreground" />
+                  <Input id="c-timeout" type="number" min={1} value={configForm.health_check_timeout_seconds} onChange={e => setConfigForm({ ...configForm, health_check_timeout_seconds: Math.max(1, Number(e.target.value) || 1) })} className="font-mono bg-surface border-border text-foreground" />
                 </div>
               </div>
             )}
