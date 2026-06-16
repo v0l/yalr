@@ -2,6 +2,11 @@ FROM rust:trixie AS rust-deps
 
 WORKDIR /app
 
+# Keep CI builds lean and reproducible.
+ENV CARGO_INCREMENTAL=0 \
+    CARGO_NET_RETRY=10 \
+    CARGO_TERM_COLOR=never
+
 # Install build dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -21,30 +26,24 @@ RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/bin/cli.rs && \
     echo "// Empty lib for dependency caching" > src/lib.rs
 
-# Step 1: Build dependencies only (cached unless Cargo.lock changes)
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
-    cargo build --release --bin yalr-server --bin yalr-cli
-
-# Step 2: Remove stub binary artifacts so real source rebuilds
-RUN rm -f target/release/*yalr*
+# Build dependencies only. NO cache mounts: artifacts must land in the image
+# layer so they are exported via `cache-to: type=gha,mode=max` and reused on the
+# next run. BuildKit `type=cache` mounts are NOT persisted across GHA runners,
+# which previously caused every dependency to recompile from scratch (twice).
+# This layer is invalidated only when Cargo.toml / Cargo.lock change.
+RUN cargo build --release --bin yalr-server --bin yalr-cli && \
+    rm -f target/release/*yalr* target/release/deps/*yalr*
 
 # Build the admin UI
 FROM oven/bun:1 AS admin-builder
 
 WORKDIR /app/admin
 
-# Cache node_modules for faster installs
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-    mkdir -p /app/admin
-
 COPY admin/package.json admin/bun.lock ./
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install --frozen-lockfile
+RUN bun install --frozen-lockfile
 
 COPY admin/ ./
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun run build
+RUN bun run build
 
 # Rust application build
 FROM rust-deps AS rust-build
@@ -56,11 +55,11 @@ COPY migrations ./migrations
 # Touch entry points so Cargo sees them as changed vs. the stubs above
 RUN touch src/lib.rs src/bin/server.rs src/bin/cli.rs
 
-# Rebuild - dependencies cached, only source files recompile
+# Rebuild - dependencies cached from the layer above, only our crate recompiles.
 RUN cargo build --release --bin yalr-server --bin yalr-cli
 
-# Run tests to ensure nothing is broken
-RUN cargo test --lib
+# Run tests reusing the release artifacts (avoids a full dev-profile recompile).
+RUN cargo test --release --lib
 
 # Runtime image
 FROM debian:trixie-slim
