@@ -159,10 +159,15 @@ impl MetricsEmitter {
         );
         let _ = self.sender.send(metrics.clone());
         
-        // Record directly in the store (synchronously with Mutex)
+        // Record directly in the store (synchronously with Mutex).
+        // Bound by `max_events`, NOT `capacity()`: `len()` can never exceed
+        // `capacity()`, so the old check never pruned and the deque grew without
+        // bound. An unbounded deque turns every O(n) scan under the shared Mutex
+        // (e.g. get_provider_health on the routing hot path) into a runtime-wide
+        // stall, which starves health-check tasks ("Health check timeout").
         let mut events = self.store.lock().unwrap();
         events.push_back(metrics);
-        while events.len() > events.capacity() {
+        while events.len() > self.max_events {
             events.pop_front();
         }
     }
@@ -466,7 +471,7 @@ impl MetricsStore {
         let total = {
             let mut events = self.events.lock().unwrap();
             events.push_back(event.clone());
-            if events.len() > self.max_events {
+            while events.len() > self.max_events {
                 events.pop_front();
             }
             events.len()
@@ -1075,6 +1080,28 @@ fn percentile<T: Copy + PartialOrd>(values: &[T], p: f32) -> Option<T> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn emitter_bounds_event_deque_to_max_events() {
+        // Regression: emit() previously pruned with `len > capacity()`, which can
+        // never be true, so the deque grew without bound under load.
+        let max_events = 100;
+        let store = MetricsStore::new(max_events);
+        let emitter = store.emitter().clone();
+        for _ in 0..(max_events * 10) {
+            emitter.emit(
+                "p".to_string(),
+                "m".to_string(),
+                MetricsEvent::ProviderLoad { in_flight: 1, max_concurrency: None },
+                None,
+            );
+        }
+        let len = store.events.lock().unwrap().len();
+        assert!(
+            len <= max_events,
+            "deque should stay bounded at {max_events}, got {len}"
+        );
+    }
 
     fn create_test_metrics_store() -> MetricsStore {
         MetricsStore::with_health_config(1000, Some(HealthConfig::default()))
