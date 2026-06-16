@@ -607,17 +607,27 @@ impl Router {
         let mut cooling: Vec<(u64, (Arc<dyn Provider>, String))> = Vec::new();
         let mut unavailable = Vec::new();
 
-        for (order_idx, entry) in ordered.into_iter().enumerate() {
+        // Compute health/availability/cooldown for every candidate in ONE pass
+        // under a single lock (O(providers)), instead of three O(events) scans
+        // per provider.
+        let provider_names: Vec<&str> = ordered.iter().map(|e| e.provider.name()).collect();
+        let snapshot = self.metrics_store.routing_snapshot(&provider_names).await;
+
+        for (order_idx, entry) in ordered.iter().enumerate() {
             let resolved_model = entry
                 .model_override
                 .clone()
                 .unwrap_or_else(|| model.to_string());
             let pair = (entry.provider.clone(), resolved_model);
             let provider_name = entry.provider.name();
-            
-            let health_state = self.metrics_store.get_provider_health(provider_name).await;
-            let is_available = self.metrics_store.is_provider_available(provider_name).await;
-            let retry_in = self.metrics_store.time_until_retry(provider_name).await;
+
+            let rh = snapshot
+                .get(provider_name)
+                .copied()
+                .unwrap_or_else(crate::metrics::RoutingHealth::unknown);
+            let health_state = rh.health;
+            let is_available = rh.available;
+            let retry_in = rh.retry_in;
 
             tracing::debug!(
                 provider = provider_name,

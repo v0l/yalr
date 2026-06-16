@@ -9,6 +9,27 @@ use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
 use crate::router::ModelRuntimeInfo;
 use crate::providers::CurrencyAmount;
+use crate::metrics_agg::ProviderAgg;
+pub use crate::metrics_agg::RoutingHealth;
+
+/// Shared per-provider incremental aggregate map (hot-path O(1) reads).
+type AggMap = Arc<std::sync::RwLock<std::collections::HashMap<String, ProviderAgg>>>;
+
+/// Apply an event to the shared aggregate map. Cheap, O(1) amortized.
+fn apply_aggregate(aggregates: &AggMap, provider: &str, event: &MetricsEvent, ts_ms: u64) {
+    // Only failures / balance / quota affect routing aggregates.
+    if !matches!(
+        event,
+        MetricsEvent::Failure(_) | MetricsEvent::Balance(_) | MetricsEvent::Quota(_)
+    ) {
+        return;
+    }
+    let now = now_ms();
+    let mut map = aggregates.write().unwrap();
+    map.entry(provider.to_string())
+        .or_default()
+        .apply(event, ts_ms, now);
+}
 
 /// User context for metrics tracking
 #[derive(Debug, Clone, Serialize, Default)]
@@ -95,6 +116,7 @@ pub enum ErrorType {
 pub struct MetricsEmitter {
     sender: broadcast::Sender<ProviderMetrics>,
     store: Arc<Mutex<VecDeque<ProviderMetrics>>>,
+    aggregates: AggMap,
     max_events: usize,
     total_requests: Arc<AtomicU64>,
     total_successes: Arc<AtomicU64>,
@@ -102,11 +124,17 @@ pub struct MetricsEmitter {
 }
 
 impl MetricsEmitter {
-    pub fn with_store(buffer_size: usize, store: Arc<Mutex<VecDeque<ProviderMetrics>>>, max_events: usize) -> Self {
+    pub fn with_store(
+        buffer_size: usize,
+        store: Arc<Mutex<VecDeque<ProviderMetrics>>>,
+        aggregates: AggMap,
+        max_events: usize,
+    ) -> Self {
         let (sender, _) = broadcast::channel(buffer_size);
         Self { 
             sender,
             store,
+            aggregates,
             max_events,
             total_requests: Arc::new(AtomicU64::new(0)),
             total_successes: Arc::new(AtomicU64::new(0)),
@@ -151,20 +179,27 @@ impl MetricsEmitter {
             _ => {}
         }
 
-        tracing::info!(
+        // Per-event logging is hot: at trace level so it doesn't dominate under load.
+        tracing::trace!(
             provider = %provider,
             model = %model,
             event = ?event,
             "Metrics event emitted"
         );
+
+        // Update O(1) routing aggregates (failures / balance / quota only).
+        apply_aggregate(&self.aggregates, &provider, &event, metrics.timestamp_ms);
+
         let _ = self.sender.send(metrics.clone());
-        
-        // Record directly in the store (synchronously with Mutex).
-        // Bound by `max_events`, NOT `capacity()`: `len()` can never exceed
-        // `capacity()`, so the old check never pruned and the deque grew without
-        // bound. An unbounded deque turns every O(n) scan under the shared Mutex
-        // (e.g. get_provider_health on the routing hot path) into a runtime-wide
-        // stall, which starves health-check tasks ("Health check timeout").
+
+        // High-frequency ProviderLoad events are only for the live WS feed and
+        // are derived from the in-flight atomics elsewhere; keeping them out of
+        // the deque roughly halves write volume and shrinks every scan.
+        if matches!(event, MetricsEvent::ProviderLoad { .. }) {
+            return;
+        }
+
+        // Record in the store (synchronously with Mutex), bounded by max_events.
         let mut events = self.store.lock().unwrap();
         events.push_back(metrics);
         while events.len() > self.max_events {
@@ -333,6 +368,8 @@ pub struct MetricsStore {
     emitter: MetricsEmitter,
     /// Store recent events for percentile calculations (wrapped in Arc<Mutex> for shared access)
     pub(crate) events: Arc<Mutex<VecDeque<ProviderMetrics>>>,
+    /// Per-provider incremental aggregates for O(1) hot-path routing reads.
+    aggregates: AggMap,
     /// Track per-provider in-flight request counts
     provider_in_flight: Arc<RwLock<std::collections::HashMap<String, Arc<AtomicU32>>>>,
     /// Cache provider runtime info (including max_concurrency)
@@ -375,11 +412,13 @@ impl MetricsStore {
 
     pub fn with_health_config(max_events: usize, health_config: Option<HealthConfig>) -> Self {
         let events = Arc::new(Mutex::new(VecDeque::with_capacity(max_events)));
-        let emitter = MetricsEmitter::with_store(10000, events.clone(), max_events);
+        let aggregates: AggMap = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+        let emitter = MetricsEmitter::with_store(10000, events.clone(), aggregates.clone(), max_events);
         let history_max = 288; // 24 hours at 5-minute intervals
         Self {
             emitter,
             events,
+            aggregates,
             provider_in_flight: Arc::new(RwLock::new(std::collections::HashMap::new())),
             provider_runtime_info: Arc::new(RwLock::new(std::collections::HashMap::new())),
             max_events,
@@ -466,8 +505,10 @@ impl MetricsStore {
     pub async fn record(&self, event: ProviderMetrics) {
         let provider = event.provider.clone();
         let model = event.model.clone();
-        let event_type = format!("{:?}", event.event);
-        
+
+        // Update O(1) routing aggregates (failures / balance / quota only).
+        apply_aggregate(&self.aggregates, &provider, &event.event, event.timestamp_ms);
+
         let total = {
             let mut events = self.events.lock().unwrap();
             events.push_back(event.clone());
@@ -477,10 +518,10 @@ impl MetricsStore {
             events.len()
         };
 
-        tracing::info!(
+        tracing::trace!(
             provider = %provider,
             model = %model,
-            event_type = %event_type,
+            event_type = ?event.event,
             total,
             "Metrics event recorded"
         );
@@ -808,184 +849,69 @@ impl MetricsStore {
             .collect()
     }
 
-    /// Get health state for a provider - computed dynamically from recent metrics (last 5 minutes)
+    /// Get health state for a provider — O(1) read of the incremental aggregate
+    /// (failures/balance/quota over the last 5 minutes).
     pub async fn get_provider_health(&self, provider: &str) -> HealthState {
-        let events = self.events.lock().unwrap();
-        let now = std::time::SystemTime::now();
-        let window_start = now - Duration::from_secs(300); // 5 minute window
-        
-        let provider_events: Vec<&ProviderMetrics> = events
-            .iter()
-            .filter(|e| {
-                e.provider == provider
-                    && e.timestamp_ms >= window_start.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
-            })
-            .collect();
-        
-        // Check for balance issues in recent events
-        let has_balance_issue = provider_events.iter().any(|e| {
-            if let MetricsEvent::Balance(amount) = &e.event {
-                match amount {
-                    CurrencyAmount::Msats(m) => *m <= 0,
-                    CurrencyAmount::Sats(s) => *s <= 0,
-                    CurrencyAmount::UsdMicro(u) => *u <= 0,
-                }
-            } else {
-                false
-            }
-        });
-
-        // Check for an exhausted quota (subscription rate-limit) that has not yet
-        // reset. Treated like a balance issue: provider becomes a fallback-only
-        // Degraded provider and auto-recovers once the quota window resets.
-        let now_ms = now
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
-        let has_quota_issue = latest_quota_issue_reset(&provider_events, now_ms).is_some();
-        
-        // Check for recent failures
-        let failure_count = provider_events
-            .iter()
-            .filter(|e| matches!(&e.event, MetricsEvent::Failure(_)))
-            .count();
-        
-        // Compute health state
-        if has_balance_issue || has_quota_issue {
-            HealthState::Degraded
-        } else if failure_count >= 5 {
-            HealthState::Unhealthy
-        } else if failure_count >= 2 {
-            HealthState::Degraded
-        } else {
-            HealthState::Healthy
-        }
+        let now = now_ms();
+        let map = self.aggregates.read().unwrap();
+        map.get(provider)
+            .map(|a| a.health(now))
+            .unwrap_or(HealthState::Healthy)
     }
 
-    /// Check if a provider is available for routing
+    /// Check if a provider is available for routing (anything but Unhealthy).
     pub async fn is_provider_available(&self, provider: &str) -> bool {
-        // Provider is available unless it's unhealthy
-        // Degraded providers (including those with balance issues) are still available as fallback
         self.get_provider_health(provider).await != HealthState::Unhealthy
     }
 
+    /// Batched routing view: compute health, availability, and rate-limit cooldown
+    /// for many providers under a single read lock, in O(providers). Replaces the
+    /// previous pattern of three separate O(events) scans per provider per request.
+    pub async fn routing_snapshot(
+        &self,
+        providers: &[&str],
+    ) -> std::collections::HashMap<String, RoutingHealth> {
+        let now = now_ms();
+        let map = self.aggregates.read().unwrap();
+        providers
+            .iter()
+            .map(|name| {
+                let rh = map
+                    .get(*name)
+                    .map(|a| a.routing_health(now))
+                    .unwrap_or_else(RoutingHealth::unknown);
+                ((*name).to_string(), rh)
+            })
+            .collect()
+    }
+
     /// How long until this provider should be retried, based on the most recent
-    /// failure and any active rate-limit / quota window. Returns `Duration::ZERO`
-    /// when the provider is ready to use right now.
+    /// failure and any active rate-limit / quota window. `Duration::ZERO` = ready.
     ///
-    /// Unlike [`get_provider_backoff`] (which returns the *size* of the backoff),
-    /// this measures the *remaining* cooldown from the last failure's timestamp,
-    /// so it can gate provider selection: a provider that just returned `429
-    /// retry_after: 60s` is excluded for ~60s instead of being re-hammered on the
-    /// next request.
+    /// Unlike [`get_provider_backoff`] (the backoff *size*), this is the *remaining*
+    /// cooldown from the last failure's timestamp, so it can gate selection: a
+    /// provider that just returned `429 retry_after: 60s` is excluded for ~60s
+    /// instead of being re-hammered on the next request.
     pub async fn time_until_retry(&self, provider: &str) -> Duration {
-        let events = self.events.lock().unwrap();
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = now_ms();
+        let map = self.aggregates.read().unwrap();
+        map.get(provider)
+            .map(|a| a.time_until_retry(now))
             .unwrap_or_default()
-            .as_millis() as u64;
-        let window_start_ms = now_ms.saturating_sub(300_000); // 5 minute window
-
-        let provider_events: Vec<&ProviderMetrics> = events
-            .iter()
-            .filter(|e| e.provider == provider && e.timestamp_ms >= window_start_ms)
-            .collect();
-
-        // Absolute backoff: stay out until an exhausted quota window resets.
-        let quota_remaining = latest_quota_issue_reset(&provider_events, now_ms as i64)
-            .map(|reset| Duration::from_millis((reset - now_ms as i64).max(0) as u64))
-            .unwrap_or_default();
-
-        // Relative backoff: measured from the most recent failure's timestamp.
-        let failures: Vec<&ProviderMetrics> = provider_events
-            .iter()
-            .copied()
-            .filter(|e| matches!(&e.event, MetricsEvent::Failure(_)))
-            .collect();
-
-        let failure_remaining = failures
-            .iter()
-            .max_by_key(|e| e.timestamp_ms)
-            .map(|last| {
-                let backoff_ms = match &last.event {
-                    // Honor the upstream's Retry-After for rate limits.
-                    MetricsEvent::Failure(d) if d.error_type == ErrorType::RateLimit => {
-                        d.retry_after_ms.unwrap_or(30_000)
-                    }
-                    // Otherwise exponential backoff by failure count (cap 30s).
-                    _ => {
-                        let count = failures.len() as u32;
-                        100u64
-                            .saturating_mul(2u64.saturating_pow(count.saturating_sub(1).min(10)))
-                            .min(30_000)
-                    }
-                };
-                let ready_at_ms = last.timestamp_ms.saturating_add(backoff_ms);
-                Duration::from_millis(ready_at_ms.saturating_sub(now_ms))
-            })
-            .unwrap_or_default();
-
-        failure_remaining.max(quota_remaining)
     }
 
-    /// Get recommended backoff duration for a provider based on recent failures
+    /// Get recommended backoff duration for a provider based on recent failures.
     pub async fn get_provider_backoff(&self, provider: &str) -> Duration {
-        let events = self.events.lock().unwrap();
-        let now = std::time::SystemTime::now();
-        let window_start = now - Duration::from_secs(300); // 5 minute window
-        
-        let provider_events: Vec<&ProviderMetrics> = events
-            .iter()
-            .filter(|e| {
-                e.provider == provider
-                    && e.timestamp_ms >= window_start.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
-            })
-            .collect();
-        
-        // Count recent failures
-        let failure_count = provider_events
-            .iter()
-            .filter(|e| matches!(&e.event, MetricsEvent::Failure(_)))
-            .count() as u32;
-
-        // If the quota is exhausted, back off until the quota window resets.
-        let now_ms = now
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
-        let quota_backoff = latest_quota_issue_reset(&provider_events, now_ms)
-            .map(|reset| Duration::from_millis((reset - now_ms).max(0) as u64))
-            .unwrap_or_default();
-        
-        if failure_count == 0 {
-            return quota_backoff;
-        }
-        
-        // Exponential backoff: base * 2^failures, capped at 30 seconds
-        let base_backoff = Duration::from_millis(100);
-        let max_backoff = Duration::from_secs(30);
-        
-        let exponential_backoff = base_backoff
-            .checked_mul(2_u32.saturating_pow(failure_count.saturating_sub(1).min(10)))
-            .unwrap_or(max_backoff);
-        
-        exponential_backoff.min(max_backoff).max(quota_backoff)
+        let now = now_ms();
+        let map = self.aggregates.read().unwrap();
+        map.get(provider).map(|a| a.backoff(now)).unwrap_or_default()
     }
 
-    /// Get recent failure count for a provider (last 5 minutes)
+    /// Get recent failure count for a provider (last 5 minutes) — O(1) aggregate.
     pub async fn get_recent_failures(&self, provider: &str) -> u32 {
-        let events = self.events.lock().unwrap();
-        let now = std::time::SystemTime::now();
-        let window_start = now - Duration::from_secs(300); // 5 minute window
-        
-        events
-            .iter()
-            .filter(|e| {
-                e.provider == provider
-                    && e.timestamp_ms >= window_start.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
-                    && matches!(e.event, MetricsEvent::Failure(_))
-            })
-            .count() as u32
+        let now = now_ms();
+        let map = self.aggregates.read().unwrap();
+        map.get(provider).map(|a| a.failure_count(now)).unwrap_or(0)
     }
 
     /// Get total request counts (success + failure) since process start
@@ -993,23 +919,13 @@ impl MetricsStore {
         self.emitter.get_total_requests()
     }
 
-    /// Get current provider load (in-flight requests)
+    /// Get current provider load (in-flight requests) from the in-flight atomics
+    /// and cached runtime info. (ProviderLoad events are no longer stored in the
+    /// event deque — they were high-volume and purely for the live feed.)
     pub async fn get_provider_load(&self, provider: &str) -> Option<(u32, Option<u32>)> {
-        let events = self.events.lock().unwrap();
-        let provider_events: Vec<&ProviderMetrics> = events
-            .iter()
-            .filter(|e| e.provider == provider)
-            .collect();
-        
-        provider_events
-            .iter()
-            .rev()
-            .find_map(|e| match &e.event {
-                MetricsEvent::ProviderLoad { in_flight, max_concurrency } => {
-                    Some((*in_flight, *max_concurrency))
-                }
-                _ => None,
-            })
+        let in_flight = self.get_in_flight(provider).await;
+        let max_concurrency = self.get_provider_max_concurrency(provider).await;
+        Some((in_flight, max_concurrency))
     }
 
     /// Get load score for routing (0.0 = fully loaded, 1.0 = completely idle)
@@ -1027,40 +943,16 @@ impl MetricsStore {
         }
     }
 
-    /// Get the most recent balance snapshot for a provider.
+    /// Get the most recent balance snapshot for a provider — O(1) aggregate.
     pub async fn get_balance(&self, provider: &str) -> Option<CurrencyAmount> {
-        let events = self.events.lock().unwrap();
-        events
-            .iter()
-            .rev()
-            .find_map(|e| {
-                if e.provider == provider {
-                    match &e.event {
-                        MetricsEvent::Balance(amount) => Some(*amount),
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
-            })
+        let map = self.aggregates.read().unwrap();
+        map.get(provider).and_then(|a| a.balance())
     }
 
-    /// Get the most recent quota snapshot (all windows) for a provider.
+    /// Get the most recent quota snapshot (all windows) for a provider — O(1).
     pub async fn get_quota(&self, provider: &str) -> Option<Vec<crate::providers::provider_trait::QuotaSnapshot>> {
-        let events = self.events.lock().unwrap();
-        events
-            .iter()
-            .rev()
-            .find_map(|e| {
-                if e.provider == provider {
-                    match &e.event {
-                        MetricsEvent::Quota(quotas) => Some(quotas.clone()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
-            })
+        let map = self.aggregates.read().unwrap();
+        map.get(provider).and_then(|a| a.quota())
     }
 
     /// Compute health from recent metrics (for external health calculation)
@@ -1094,33 +986,6 @@ impl MetricsStore {
 
         (state, success_rate, recent_failures)
     }
-}
-
-/// Inspect a provider's recent events for an exhausted usage quota.
-///
-/// Returns `Some(resets_at_epoch_ms)` if the most recent quota snapshot shows the
-/// provider is at/over its limit (or upstream reports `rejected`) and the window
-/// has not yet reset. Returns `None` otherwise (no quota, not exhausted, or the
-/// reset time has already passed — i.e. the quota is considered recovered).
-fn latest_quota_issue_reset(provider_events: &[&ProviderMetrics], now_ms: i64) -> Option<i64> {
-    use crate::providers::quota::quota_exhausted;
-
-    let quotas = provider_events.iter().rev().find_map(|e| {
-        if let MetricsEvent::Quota(q) = &e.event { Some(q) } else { None }
-    })?;
-
-    // Map each exhausted window to the moment it stops blocking. A window whose
-    // reset already passed has recovered and is dropped. The provider stays
-    // blocked until the latest such moment across all exhausted windows.
-    quotas
-        .iter()
-        .filter(|q| quota_exhausted(q))
-        .filter_map(|q| match q.resets_at {
-            Some(reset) if reset <= now_ms => None, // recovered
-            Some(reset) => Some(reset),
-            None => Some(now_ms), // exhausted, no reset info => no extra backoff
-        })
-        .max()
 }
 
 fn percentile<T: Copy + PartialOrd>(values: &[T], p: f32) -> Option<T> {
@@ -1529,7 +1394,7 @@ mod tests {
 }
 
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthState {
     Healthy,
