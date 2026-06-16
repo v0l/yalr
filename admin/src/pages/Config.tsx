@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { PlusIcon, PencilIcon, TrashIcon, Loader2Icon } from 'lucide-react'
+import { PlusIcon, PencilIcon, TrashIcon, Loader2Icon, ChevronUpIcon, ChevronDownIcon } from 'lucide-react'
 import { api } from '../api/client'
 import type { RoutingConfigFull, RoutingConfigCreateRequest, ProviderListItem } from '../types'
 import { Button } from '@/components/ui/button'
@@ -51,6 +51,7 @@ export default function Config() {
   const [loadingModels, setLoadingModels] = useState(false)
   const [providerSaving, setProviderSaving] = useState(false)
   const [deleteAssignment, setDeleteAssignment] = useState<{ id: number; routing_config_id: number; provider_name: string } | null>(null)
+  const [reordering, setReordering] = useState(false)
 
   useEffect(() => { loadData() }, [])
 
@@ -141,6 +142,31 @@ export default function Config() {
     if (!deleteAssignment) return
     try { await api.deleteProviderFromConfig(deleteAssignment.id); setDeleteAssignment(null); setSuccessMessage('PROVIDER REMOVED'); loadData() }
     catch (e) { setError(e instanceof Error ? e.message : 'Failed to remove') }
+  }
+
+  /* ── Priority reordering ──────────────────────────────────────── */
+  // Providers are returned ordered by weight DESC, which is the priority order
+  // the engine uses. Moving a row swaps it with its neighbour, then we
+  // renormalise weights to a strictly-descending sequence so ordering stays
+  // unambiguous (handles ties / equal default weights).
+  async function handleReorder(config: RoutingConfigFull, index: number, dir: -1 | 1) {
+    const target = index + dir
+    if (reordering || target < 0 || target >= config.providers.length) return
+    const list = [...config.providers]
+    ;[list[index], list[target]] = [list[target], list[index]]
+    const n = list.length
+    setReordering(true); setError(null)
+    try {
+      for (let i = 0; i < list.length; i++) {
+        const a = list[i]
+        const desired = n - i
+        if (a.weight !== desired) {
+          await api.updateProviderInConfig(a.id, { model: a.model || null, weight: desired, is_active: a.is_active })
+        }
+      }
+      await loadData()
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to reorder providers') }
+    finally { setReordering(false) }
   }
 
   /* ── Loading ─────────────────────────────────────────────────── */
@@ -234,15 +260,16 @@ export default function Config() {
                         <tr className="border-b border-border/50 text-left">
                           <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium">Provider</th>
                           <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium">Model</th>
-                          <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium text-right">Weight</th>
+                          <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium text-right">{config.strategy === 'priority' ? 'Priority' : 'Weight'}</th>
                           <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium">Status</th>
                           <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {config.providers.map(a => (
+                        {config.providers.map((a, idx) => (
                           <tr key={a.id} className="border-b border-border/50 hover:bg-surface">
                             <td className="px-3 py-2">
+                              {config.strategy === 'priority' && <span className="mr-1.5 font-mono text-[11px] text-muted-foreground tabular-nums">#{idx + 1}</span>}
                               <span className="font-mono text-[13px] font-medium">{a.provider_name}</span>
                               <span className="ml-1.5 font-mono text-[11px] text-muted-foreground">{a.provider_slug}</span>
                             </td>
@@ -257,6 +284,12 @@ export default function Config() {
                             </td>
                             <td className="px-3 py-2">
                               <div className="flex items-center justify-end gap-1">
+                                {config.strategy === 'priority' && (
+                                  <>
+                                    <Button variant="ghost" size="icon-xs" disabled={idx === 0 || reordering} onClick={() => handleReorder(config, idx, -1)} title="Move up (higher priority)" className="text-muted-foreground hover:text-foreground disabled:opacity-30"><ChevronUpIcon className="size-3" /></Button>
+                                    <Button variant="ghost" size="icon-xs" disabled={idx === config.providers.length - 1 || reordering} onClick={() => handleReorder(config, idx, 1)} title="Move down (lower priority)" className="text-muted-foreground hover:text-foreground disabled:opacity-30"><ChevronDownIcon className="size-3" /></Button>
+                                  </>
+                                )}
                                 <Button variant="ghost" size="icon-xs" onClick={() => openEditProvider(config.id, a)} className="text-muted-foreground hover:text-foreground"><PencilIcon className="size-3" /></Button>
                                 <Button variant="ghost" size="icon-xs" onClick={() => setDeleteAssignment({ id: a.id, routing_config_id: config.id, provider_name: a.provider_name })} className="text-muted-foreground hover:text-destructive"><TrashIcon className="size-3" /></Button>
                               </div>
@@ -291,10 +324,13 @@ export default function Config() {
                 <SelectTrigger id="c-strategy" className="font-mono bg-surface border-border text-foreground"><SelectValue /></SelectTrigger>
                 <SelectContent className="bg-card border-border">
                   <SelectGroup>
-                    {['round_robin','least_loaded','random'].map(s => <SelectItem key={s} value={s} className="font-mono text-foreground">{s.replace(/_/g, ' ')}</SelectItem>)}
+                    {['round_robin','priority','least_loaded','random'].map(s => <SelectItem key={s} value={s} className="font-mono text-foreground">{s.replace(/_/g, ' ')}</SelectItem>)}
                   </SelectGroup>
                 </SelectContent>
               </Select>
+              {configForm.strategy === 'priority' && (
+                <p className="font-mono text-[11px] text-muted-foreground">Providers are tried top-to-bottom; failover only moves to the next when one is unavailable. Reorder with the arrows in the assignments list.</p>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <Checkbox id="c-health" checked={configForm.health_check_enabled} onCheckedChange={c => setConfigForm({ ...configForm, health_check_enabled: !!c })} />

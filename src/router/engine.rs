@@ -52,8 +52,31 @@ impl Drop for InFlightGuard {
     }
 }
 
+/// How a routing table picks the order in which providers are tried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StrategyKind {
+    /// Weighted round-robin: traffic is spread across providers proportionally
+    /// to their configured weight.
+    RoundRobin,
+    /// Priority-first failover: providers are tried strictly in priority order
+    /// (highest weight first). The next provider is only used when the higher
+    /// priority one is unavailable or fails.
+    Priority,
+}
+
+impl StrategyKind {
+    fn from_str(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "priority" | "priority_first" | "fallback" => StrategyKind::Priority,
+            _ => StrategyKind::RoundRobin,
+        }
+    }
+}
+
 struct RoutingTable {
     entries: Vec<ProviderEntry>,
+    /// Ordering strategy for this table.
+    strategy: StrategyKind,
     /// Counter for weighted round-robin. Each call to `collect_candidates`
     /// advances this so that over many requests the distribution matches the
     /// configured weights.
@@ -62,10 +85,25 @@ struct RoutingTable {
 
 impl RoutingTable {
     fn new(entries: Vec<ProviderEntry>) -> Self {
+        Self::with_strategy(entries, StrategyKind::RoundRobin)
+    }
+
+    fn with_strategy(entries: Vec<ProviderEntry>, strategy: StrategyKind) -> Self {
         Self {
             entries,
+            strategy,
             rr_counter: AtomicUsize::new(0),
         }
+    }
+
+    /// Return entries in strict priority order (highest weight first).
+    ///
+    /// Entries are already loaded `ORDER BY weight DESC`, but we sort here too
+    /// so the ordering is robust regardless of insertion order.
+    fn priority_order(&self) -> Vec<&ProviderEntry> {
+        let mut ordered: Vec<&ProviderEntry> = self.entries.iter().collect();
+        ordered.sort_by(|a, b| b.weight.cmp(&a.weight));
+        ordered
     }
 
     /// Return entries reordered for a single weighted round-robin step.
@@ -239,7 +277,7 @@ impl Router {
 
             tables.insert(
                 rc.name.clone(),
-                RoutingTable::new(entries),
+                RoutingTable::with_strategy(entries, StrategyKind::from_str(&rc.strategy)),
             );
         }
 
@@ -533,8 +571,13 @@ impl Router {
             return vec![];
         }
 
-        // Get entries in weighted round-robin order
-        let ordered = table.weighted_rr_order();
+        // Get entries in the order dictated by the configured strategy.
+        // - RoundRobin: weighted round-robin spread across providers.
+        // - Priority: strict priority order (highest weight first), failover only.
+        let ordered = match table.strategy {
+            StrategyKind::RoundRobin => table.weighted_rr_order(),
+            StrategyKind::Priority => table.priority_order(),
+        };
 
         // Build candidate list with health information.
         // Three categories: healthy (available), degraded (fallback), unavailable (last resort)
@@ -542,7 +585,7 @@ impl Router {
         let mut degraded = Vec::new();
         let mut unavailable = Vec::new();
 
-        for entry in ordered {
+        for (order_idx, entry) in ordered.into_iter().enumerate() {
             let resolved_model = entry
                 .model_override
                 .clone()
@@ -562,10 +605,19 @@ impl Router {
             
             if is_available {
                 if health_state == crate::metrics::HealthState::Healthy {
-                    let in_flight = self.metrics_store.get_in_flight(provider_name).await;
-                    let weight = entry.weight.max(1) as f32;
-                    let load_score = in_flight as f32 / weight;
-                    healthy.push((load_score, pair));
+                    // For Priority strategy, the sort key is simply the priority
+                    // order index so that providers are tried strictly highest
+                    // priority first. For RoundRobin, use a load score so the
+                    // least-loaded provider is preferred.
+                    let score = match table.strategy {
+                        StrategyKind::Priority => order_idx as f32,
+                        StrategyKind::RoundRobin => {
+                            let in_flight = self.metrics_store.get_in_flight(provider_name).await;
+                            let weight = entry.weight.max(1) as f32;
+                            in_flight as f32 / weight
+                        }
+                    };
+                    healthy.push((score, pair));
                 } else {
                     // Degraded but still available - use as fallback
                     tracing::info!(provider = provider_name, "Provider degraded, using as fallback");
@@ -576,7 +628,9 @@ impl Router {
             }
         }
 
-        // Sort healthy providers by load score (ascending) — least loaded first.
+        // Sort healthy providers by score (ascending). For RoundRobin this is
+        // load (least loaded first); for Priority this is the priority index
+        // (highest priority first), so failover walks down the priority list.
         healthy.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
         let mut candidates: Vec<(Arc<dyn Provider>, String)> = healthy
@@ -1369,6 +1423,70 @@ mod tests {
         
         assert!(!candidates.is_empty(), "Should find candidates");
         assert_eq!(candidates[0].0.name(), "Provider1", "Should list available provider first");
+    }
+
+    #[test]
+    fn test_strategy_kind_from_str() {
+        assert_eq!(StrategyKind::from_str("priority"), StrategyKind::Priority);
+        assert_eq!(StrategyKind::from_str("priority_first"), StrategyKind::Priority);
+        assert_eq!(StrategyKind::from_str("fallback"), StrategyKind::Priority);
+        assert_eq!(StrategyKind::from_str("PRIORITY"), StrategyKind::Priority);
+        assert_eq!(StrategyKind::from_str("round_robin"), StrategyKind::RoundRobin);
+        assert_eq!(StrategyKind::from_str("weighted"), StrategyKind::RoundRobin);
+        assert_eq!(StrategyKind::from_str("anything_else"), StrategyKind::RoundRobin);
+    }
+
+    #[tokio::test]
+    async fn test_collect_candidates_priority_order_by_weight() {
+        let (router, _metrics_store) = setup_test_router().await;
+        let db = router.db.clone();
+
+        // Create three providers
+        let low = db.create_provider(NewProvider {
+            name: "Low", slug: "low", base_url: "http://localhost:8001",
+            api_key: Some("key"), provider_type: Some(ProviderType::OpenAi),
+        }).await.unwrap();
+        let high = db.create_provider(NewProvider {
+            name: "High", slug: "high", base_url: "http://localhost:8002",
+            api_key: Some("key"), provider_type: Some(ProviderType::OpenAi),
+        }).await.unwrap();
+        let mid = db.create_provider(NewProvider {
+            name: "Mid", slug: "mid", base_url: "http://localhost:8003",
+            api_key: Some("key"), provider_type: Some(ProviderType::OpenAi),
+        }).await.unwrap();
+
+        router.add_provider(Arc::new(OpenAiProvider::new("Low", Some("low"), "http://localhost:8001", Some("key")))).await;
+        router.add_provider(Arc::new(OpenAiProvider::new("High", Some("high"), "http://localhost:8002", Some("key")))).await;
+        router.add_provider(Arc::new(OpenAiProvider::new("Mid", Some("mid"), "http://localhost:8003", Some("key")))).await;
+
+        // Create a priority routing config and assign providers with distinct weights
+        let rc = db.create_routing_config(NewRoutingConfig {
+            name: "priority-model".to_string(),
+            strategy: "priority".to_string(),
+            health_check_enabled: true,
+            health_check_interval_seconds: 30,
+            health_check_timeout_seconds: 5,
+        }).await.unwrap();
+
+        // Insert deliberately out of priority order to prove sorting works.
+        db.create_routing_config_provider(NewRoutingConfigProvider {
+            routing_config_id: rc.id, provider_id: low.id, weight: 10, model: None, is_active: true,
+        }).await.unwrap();
+        db.create_routing_config_provider(NewRoutingConfigProvider {
+            routing_config_id: rc.id, provider_id: high.id, weight: 100, model: None, is_active: true,
+        }).await.unwrap();
+        db.create_routing_config_provider(NewRoutingConfigProvider {
+            routing_config_id: rc.id, provider_id: mid.id, weight: 50, model: None, is_active: true,
+        }).await.unwrap();
+
+        router.reload_config().await.unwrap();
+
+        // Run several times: priority order must be deterministic (no round-robin rotation).
+        for _ in 0..5 {
+            let candidates = router.collect_candidates("priority-model").await;
+            let order: Vec<&str> = candidates.iter().map(|(p, _)| p.name()).collect();
+            assert_eq!(order, vec!["High", "Mid", "Low"], "priority must try highest weight first");
+        }
     }
 
     #[tokio::test]
