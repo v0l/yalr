@@ -869,6 +869,65 @@ impl MetricsStore {
         self.get_provider_health(provider).await != HealthState::Unhealthy
     }
 
+    /// How long until this provider should be retried, based on the most recent
+    /// failure and any active rate-limit / quota window. Returns `Duration::ZERO`
+    /// when the provider is ready to use right now.
+    ///
+    /// Unlike [`get_provider_backoff`] (which returns the *size* of the backoff),
+    /// this measures the *remaining* cooldown from the last failure's timestamp,
+    /// so it can gate provider selection: a provider that just returned `429
+    /// retry_after: 60s` is excluded for ~60s instead of being re-hammered on the
+    /// next request.
+    pub async fn time_until_retry(&self, provider: &str) -> Duration {
+        let events = self.events.lock().unwrap();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let window_start_ms = now_ms.saturating_sub(300_000); // 5 minute window
+
+        let provider_events: Vec<&ProviderMetrics> = events
+            .iter()
+            .filter(|e| e.provider == provider && e.timestamp_ms >= window_start_ms)
+            .collect();
+
+        // Absolute backoff: stay out until an exhausted quota window resets.
+        let quota_remaining = latest_quota_issue_reset(&provider_events, now_ms as i64)
+            .map(|reset| Duration::from_millis((reset - now_ms as i64).max(0) as u64))
+            .unwrap_or_default();
+
+        // Relative backoff: measured from the most recent failure's timestamp.
+        let failures: Vec<&ProviderMetrics> = provider_events
+            .iter()
+            .copied()
+            .filter(|e| matches!(&e.event, MetricsEvent::Failure(_)))
+            .collect();
+
+        let failure_remaining = failures
+            .iter()
+            .max_by_key(|e| e.timestamp_ms)
+            .map(|last| {
+                let backoff_ms = match &last.event {
+                    // Honor the upstream's Retry-After for rate limits.
+                    MetricsEvent::Failure(d) if d.error_type == ErrorType::RateLimit => {
+                        d.retry_after_ms.unwrap_or(30_000)
+                    }
+                    // Otherwise exponential backoff by failure count (cap 30s).
+                    _ => {
+                        let count = failures.len() as u32;
+                        100u64
+                            .saturating_mul(2u64.saturating_pow(count.saturating_sub(1).min(10)))
+                            .min(30_000)
+                    }
+                };
+                let ready_at_ms = last.timestamp_ms.saturating_add(backoff_ms);
+                Duration::from_millis(ready_at_ms.saturating_sub(now_ms))
+            })
+            .unwrap_or_default();
+
+        failure_remaining.max(quota_remaining)
+    }
+
     /// Get recommended backoff duration for a provider based on recent failures
     pub async fn get_provider_backoff(&self, provider: &str) -> Duration {
         let events = self.events.lock().unwrap();
@@ -1080,6 +1139,31 @@ fn percentile<T: Copy + PartialOrd>(values: &[T], p: f32) -> Option<T> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn time_until_retry_honors_rate_limit() {
+        let store = create_test_metrics_store();
+        // No events => ready immediately.
+        assert_eq!(store.time_until_retry("p").await, Duration::ZERO);
+
+        // A fresh 429 with retry_after should cool the provider for ~that long.
+        store.record(ProviderMetrics {
+            provider: "p".to_string(),
+            model: String::new(),
+            timestamp_ms: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64,
+            event: MetricsEvent::Failure(FailureDetails {
+                error_type: ErrorType::RateLimit,
+                error_code: None,
+                error_message: "429".to_string(),
+                retry_after_ms: Some(60_000),
+                status_code: Some(429),
+            }),
+            user: None,
+        }).await;
+
+        let remaining = store.time_until_retry("p").await;
+        assert!(remaining.as_millis() > 55_000 && remaining.as_millis() <= 60_000, "got {remaining:?}");
+    }
 
     #[tokio::test]
     async fn emitter_bounds_event_deque_to_max_events() {

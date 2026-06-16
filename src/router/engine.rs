@@ -601,6 +601,10 @@ impl Router {
         // Three categories: healthy (available), degraded (fallback), unavailable (last resort)
         let mut healthy = Vec::new();
         let mut degraded = Vec::new();
+        // Providers in an active rate-limit / quota cooldown. Kept out of normal
+        // selection (so we stop hammering a 429'd provider) but usable as a
+        // last resort, shortest remaining cooldown first.
+        let mut cooling: Vec<(u64, (Arc<dyn Provider>, String))> = Vec::new();
         let mut unavailable = Vec::new();
 
         for (order_idx, entry) in ordered.into_iter().enumerate() {
@@ -613,14 +617,28 @@ impl Router {
             
             let health_state = self.metrics_store.get_provider_health(provider_name).await;
             let is_available = self.metrics_store.is_provider_available(provider_name).await;
-            
+            let retry_in = self.metrics_store.time_until_retry(provider_name).await;
+
             tracing::debug!(
                 provider = provider_name,
                 health_state = ?health_state,
                 is_available = is_available,
+                retry_in_ms = retry_in.as_millis() as u64,
                 "Evaluating provider for routing"
             );
-            
+
+            // Respect an active rate-limit / quota cooldown: don't select this
+            // provider for the duration the upstream asked us to wait.
+            if !retry_in.is_zero() {
+                tracing::debug!(
+                    provider = provider_name,
+                    retry_in_ms = retry_in.as_millis() as u64,
+                    "Provider in backoff/rate-limit cooldown, deprioritizing"
+                );
+                cooling.push((retry_in.as_millis() as u64, pair));
+                continue;
+            }
+
             if is_available {
                 if health_state == crate::metrics::HealthState::Healthy {
                     // For Priority strategy, the sort key is simply the priority
@@ -666,7 +684,21 @@ impl Router {
             candidates.extend(degraded);
         }
         
-        // Only fall back to unavailable providers if there are no healthy or degraded ones.
+        // Next fall back to cooling (rate-limited / quota) providers, soonest to
+        // recover first — better than blindly retrying a hard-down provider.
+        if candidates.is_empty() && !cooling.is_empty() {
+            cooling.sort_by_key(|(remaining_ms, _)| *remaining_ms);
+            tracing::warn!(
+                model = %model,
+                cooling_count = cooling.len(),
+                soonest_retry_ms = cooling.first().map(|(r, _)| *r).unwrap_or(0),
+                "No available providers, falling back to rate-limited providers"
+            );
+            candidates.extend(cooling.into_iter().map(|(_, pair)| pair));
+        }
+
+        // Only fall back to unavailable providers if there are no healthy,
+        // degraded, or cooling ones.
         if candidates.is_empty() {
             tracing::warn!(
                 model = %model,
@@ -1451,6 +1483,75 @@ mod tests {
         
         assert!(!candidates.is_empty(), "Should find candidates");
         assert_eq!(candidates[0].0.name(), "Provider1", "Should list available provider first");
+    }
+
+    #[tokio::test]
+    async fn test_collect_candidates_excludes_rate_limited() {
+        let (router, metrics_store) = setup_test_router().await;
+        let db = router.db.clone();
+
+        let p1 = db.create_provider(NewProvider {
+            name: "Provider1", slug: "provider1", base_url: "http://localhost:8001",
+            api_key: Some("key"), provider_type: Some(ProviderType::OpenAi),
+        }).await.unwrap();
+        let p2 = db.create_provider(NewProvider {
+            name: "Provider2", slug: "provider2", base_url: "http://localhost:8002",
+            api_key: Some("key"), provider_type: Some(ProviderType::OpenAi),
+        }).await.unwrap();
+
+        router.add_provider(Arc::new(OpenAiProvider::new("Provider1", Some("provider1"), "http://localhost:8001", Some("key")))).await;
+        router.add_provider(Arc::new(OpenAiProvider::new("Provider2", Some("provider2"), "http://localhost:8002", Some("key")))).await;
+
+        let rc = db.get_first_routing_config().await.unwrap().unwrap();
+        for pid in [p1.id, p2.id] {
+            db.create_routing_config_provider(NewRoutingConfigProvider {
+                routing_config_id: rc.id, provider_id: pid, weight: 100, model: None, is_active: true,
+            }).await.unwrap();
+        }
+        router.reload_config().await.unwrap();
+
+        // Provider2 just got rate-limited with a 60s retry-after.
+        metrics_store.record(ProviderMetrics {
+            provider: "Provider2".to_string(),
+            model: "default".to_string(),
+            timestamp_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+            event: MetricsEvent::Failure(FailureDetails {
+                error_type: ErrorType::RateLimit,
+                error_code: None,
+                error_message: "429".to_string(),
+                retry_after_ms: Some(60_000),
+                status_code: Some(429),
+            }),
+            user: None,
+        }).await;
+
+        assert!(metrics_store.time_until_retry("Provider2").await.as_millis() > 0, "rate-limited provider should be cooling");
+        assert_eq!(metrics_store.time_until_retry("Provider1").await.as_millis(), 0, "healthy provider should be ready");
+
+        // While a healthy provider exists, the rate-limited one is excluded entirely.
+        let candidates = router.collect_candidates("default").await;
+        assert_eq!(candidates.len(), 1, "rate-limited provider must be excluded when a healthy one exists");
+        assert_eq!(candidates[0].0.name(), "Provider1");
+
+        // Rate-limit Provider1 too with a shorter retry-after: now both are
+        // cooling, so they become last-resort candidates, soonest-to-recover first.
+        metrics_store.record(ProviderMetrics {
+            provider: "Provider1".to_string(),
+            model: "default".to_string(),
+            timestamp_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+            event: MetricsEvent::Failure(FailureDetails {
+                error_type: ErrorType::RateLimit,
+                error_code: None,
+                error_message: "429".to_string(),
+                retry_after_ms: Some(5_000),
+                status_code: Some(429),
+            }),
+            user: None,
+        }).await;
+
+        let candidates = router.collect_candidates("default").await;
+        assert_eq!(candidates.len(), 2, "both cooling providers should be last-resort candidates");
+        assert_eq!(candidates[0].0.name(), "Provider1", "shortest remaining cooldown should come first");
     }
 
     #[test]
