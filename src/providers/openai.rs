@@ -26,6 +26,16 @@ struct ErrorDetail {
     message: String,
     #[serde(default, deserialize_with = "deserialize_optional_string_or_number")]
     code: Option<String>,
+    #[serde(default)]
+    metadata: Option<ErrorMetadata>,
+}
+
+/// Provider-specific error metadata (e.g. OpenRouter rate-limit hints)
+#[derive(Debug, Clone, Deserialize)]
+struct ErrorMetadata {
+    /// Suggested retry delay in seconds (OpenRouter on 429 upstream rate limits)
+    #[serde(default)]
+    retry_after_seconds: Option<u64>,
 }
 
 /// Deserialize a field that can be either string or integer, returning Option<String>
@@ -60,6 +70,65 @@ impl ErrorResponse {
             ErrorResponse::Nested { detail } => detail.error.clone(),
         }
     }
+}
+
+/// Convert an `ErrorDetail` into a richly-typed `ProviderError`.
+///
+/// Classifies rate limits (429 / `insufficient_quota`), payment errors, and
+/// generic server errors so the routing engine can retry / back off correctly.
+fn error_detail_to_provider_error(detail: ErrorDetail) -> ProviderError {
+    let code_str = detail.code.as_deref();
+    let numeric_code = code_str.and_then(|c| c.parse::<u16>().ok());
+    let retry_after_ms = detail
+        .metadata
+        .as_ref()
+        .and_then(|m| m.retry_after_seconds)
+        .map(|s| s.saturating_mul(1000));
+
+    // Rate limit: numeric 429, or known string codes
+    let is_rate_limit = numeric_code == Some(429)
+        || matches!(code_str, Some("rate_limit_exceeded") | Some("429"));
+    if is_rate_limit {
+        return ProviderError::RateLimit {
+            // Default to 30s if upstream didn't provide a hint
+            retry_after_ms: retry_after_ms.unwrap_or(30_000),
+            message: detail.message,
+        };
+    }
+
+    // Payment / quota errors
+    if matches!(code_str, Some("insufficient_quota") | Some("insufficient_balance"))
+        || numeric_code == Some(402)
+    {
+        return ProviderError::ServerError {
+            message: detail.message,
+            status_code: Some(402),
+        };
+    }
+
+    ProviderError::ServerError {
+        message: detail.message,
+        status_code: numeric_code,
+    }
+}
+
+/// Map an `async_openai` error into a richer `ProviderError`.
+///
+/// async-openai's `ApiError.code` is typed as `Option<String>`, so when an
+/// upstream (e.g. OpenRouter) returns an integer `code` (such as `429`), the
+/// library fails to deserialize the error body and surfaces a generic
+/// `JSONDeserialize` error — losing the rate-limit classification and any
+/// `retry_after_seconds` hint. This helper re-parses the raw body (which the
+/// `JSONDeserialize` variant carries) using our own lenient `ErrorResponse`.
+fn map_openai_error(err: async_openai::error::OpenAIError) -> ProviderError {
+    use async_openai::error::OpenAIError;
+
+    if let OpenAIError::JSONDeserialize(_, ref content) = err {
+        if let Ok(parsed) = serde_json::from_str::<ErrorResponse>(content) {
+            return error_detail_to_provider_error(parsed.extract());
+        }
+    }
+    ProviderError::OpenAIError(err)
 }
 
 #[derive(Clone)]
@@ -130,7 +199,12 @@ impl Provider for OpenAiProvider {
         &self,
         request: &CreateChatCompletionRequest,
     ) -> Result<CreateChatCompletionResponse, ProviderError> {
-        let response = self.client.chat().create(request.clone()).await?;
+        let response = self
+            .client
+            .chat()
+            .create(request.clone())
+            .await
+            .map_err(map_openai_error)?;
         Ok(response)
     }
 
@@ -168,13 +242,7 @@ impl Provider for OpenAiProvider {
                                         error_code = ?error_detail.code,
                                         "Stream returned error response"
                                     );
-                                    return Err(ProviderError::ServerError {
-                                        message: error_detail.message,
-                                        status_code: error_detail.code.as_ref().and_then(|c| match c.as_str() {
-                                            "insufficient_quota" | "insufficient_balance" => Some(402), // Payment Required
-                                            _ => None,
-                                        }),
-                                    });
+                                    return Err(error_detail_to_provider_error(error_detail));
                                 }
 
                                 // Not an error, try to deserialize as streaming chunk
@@ -266,7 +334,12 @@ impl Provider for OpenAiProvider {
     }
 
     async fn responses(&self, request: &CreateResponse) -> Result<ApiResponse, ProviderError> {
-        let response = self.client.responses().create(request.clone()).await?;
+        let response = self
+            .client
+            .responses()
+            .create(request.clone())
+            .await
+            .map_err(map_openai_error)?;
         Ok(response)
     }
 
@@ -383,6 +456,55 @@ mod tests {
         
         assert_eq!(detail.message, "Error without code");
         assert_eq!(detail.code, None);
+    }
+
+    #[test]
+    fn test_openrouter_integer_code_rate_limit() {
+        // OpenRouter returns code as an integer (429), which async-openai cannot
+        // parse. Our lenient ErrorResponse must handle it and classify it as a
+        // rate limit with the retry_after hint.
+        let body = r#"{"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"rate-limited upstream","provider_name":"Darkbloom","is_byok":false,"retry_after_seconds":30,"retry_after_seconds_raw":30}},"user_id":"user_abc"}"#;
+
+        let parsed: ErrorResponse = serde_json::from_str(body).unwrap();
+        let detail = parsed.extract();
+        assert_eq!(detail.code, Some("429".to_string()));
+
+        let err = error_detail_to_provider_error(detail);
+        match err {
+            ProviderError::RateLimit { retry_after_ms, message } => {
+                assert_eq!(retry_after_ms, 30_000);
+                assert_eq!(message, "Provider returned error");
+            }
+            other => panic!("expected RateLimit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_map_openai_error_reparses_jsondeserialize() {
+        let body = r#"{"error":{"message":"Provider returned error","code":429,"metadata":{"retry_after_seconds":15}}}"#;
+        // Simulate async-openai's failure: it tried to parse code as a string.
+        let serde_err = serde_json::from_str::<String>("429").unwrap_err();
+        let oai_err = async_openai::error::OpenAIError::JSONDeserialize(serde_err, body.to_string());
+
+        match map_openai_error(oai_err) {
+            ProviderError::RateLimit { retry_after_ms, .. } => {
+                assert_eq!(retry_after_ms, 15_000);
+            }
+            other => panic!("expected RateLimit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_error_detail_insufficient_balance_maps_402() {
+        let detail = ErrorDetail {
+            message: "Insufficient balance".to_string(),
+            code: Some("insufficient_balance".to_string()),
+            metadata: None,
+        };
+        match error_detail_to_provider_error(detail) {
+            ProviderError::ServerError { status_code, .. } => assert_eq!(status_code, Some(402)),
+            other => panic!("expected ServerError(402), got {other:?}"),
+        }
     }
 
     #[tokio::test]
