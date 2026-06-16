@@ -19,6 +19,39 @@ fn header_i64(headers: &HeaderMap, name: &str) -> Option<i64> {
     header_str(headers, name).and_then(|s| s.parse::<i64>().ok())
 }
 
+fn header_f64(headers: &HeaderMap, name: &str) -> Option<f64> {
+    header_str(headers, name).and_then(|s| s.parse::<f64>().ok())
+}
+
+/// Returns true if a quota window is effectively exhausted (the request that
+/// produced it was, or the next would be, blocked).
+pub fn quota_exhausted(q: &QuotaSnapshot) -> bool {
+    matches!(
+        q.status.as_deref(),
+        Some("rejected") | Some("exceeded") | Some("rate_limited")
+    ) || q.used_pct.is_some_and(|p| p >= 100.0)
+        || matches!((q.remaining, q.limit), (Some(r), Some(l)) if l > 0 && r <= 0)
+}
+
+/// Severity score used to rank quota windows by how close they are to blocking.
+/// Exhausted windows always rank highest.
+fn quota_severity(q: &QuotaSnapshot) -> f32 {
+    if quota_exhausted(q) {
+        return f32::INFINITY;
+    }
+    q.used_pct.or_else(|| used_pct(q.remaining, q.limit)).unwrap_or(0.0)
+}
+
+/// Pick the most-consumed quota window — the one most likely to throttle next.
+/// This is what the provider card surfaces ("first to stop").
+pub fn worst_quota(quotas: &[QuotaSnapshot]) -> Option<QuotaSnapshot> {
+    quotas.iter().cloned().max_by(|a, b| {
+        quota_severity(a)
+            .partial_cmp(&quota_severity(b))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
 /// Parse a reset value into epoch milliseconds.
 ///
 /// Accepts RFC 3339 timestamps (Anthropic), epoch seconds, or relative
@@ -91,78 +124,114 @@ fn used_pct(remaining: Option<i64>, limit: Option<i64>) -> Option<f32> {
     }
 }
 
-/// Extract a quota snapshot from Anthropic rate-limit headers.
+/// Per-window unified limits exposed for Claude subscription (OAuth) tokens.
+/// Each window reports `utilization` as a float 0.0–1.0 plus a status/reset.
+const ANTHROPIC_UNIFIED_WINDOWS: &[&str] = &["5h", "7d", "7d_sonnet", "7d_opus"];
+
+/// Extract all quota windows from Anthropic rate-limit headers.
 ///
-/// Prefers the unified (subscription) limit, falling back to the standard
-/// token/request limits. Returns `None` if no relevant headers are present.
-pub fn anthropic_quota_from_headers(headers: &HeaderMap) -> Option<QuotaSnapshot> {
-    // Unified limit used for Claude subscription OAuth.
-    let unified_status = header_str(headers, "anthropic-ratelimit-unified-status");
-    let unified_remaining = header_i64(headers, "anthropic-ratelimit-unified-remaining");
-    let unified_limit = header_i64(headers, "anthropic-ratelimit-unified-limit");
-    let unified_reset = header_str(headers, "anthropic-ratelimit-unified-reset");
+/// Anthropic enforces several independent windows simultaneously:
+/// - Subscription OAuth: per-window unified limits (`5h`, `7d`, …).
+/// - API key: separate requests / tokens / input-tokens / output-tokens limits.
+///
+/// Returns every window present so callers can show them all and pick the
+/// most-consumed one for compact display. Empty if no relevant headers exist.
+pub fn anthropic_quotas_from_headers(headers: &HeaderMap) -> Vec<QuotaSnapshot> {
+    let mut out = Vec::new();
 
-    if unified_status.is_some() || unified_remaining.is_some() || unified_reset.is_some() {
-        return Some(QuotaSnapshot {
-            remaining: unified_remaining,
-            limit: unified_limit,
-            used_pct: used_pct(unified_remaining, unified_limit),
-            resets_at: unified_reset.as_deref().and_then(parse_reset_to_epoch_ms),
-            window: Some("unified".to_string()),
-            status: unified_status,
-        });
+    // Per-window unified (subscription) limits. `utilization` is a 0.0–1.0 float.
+    for win in ANTHROPIC_UNIFIED_WINDOWS {
+        let util = header_f64(headers, &format!("anthropic-ratelimit-unified-{win}-utilization"));
+        let status = header_str(headers, &format!("anthropic-ratelimit-unified-{win}-status"));
+        let reset = header_str(headers, &format!("anthropic-ratelimit-unified-{win}-reset"));
+        if util.is_some() || status.is_some() || reset.is_some() {
+            out.push(QuotaSnapshot {
+                remaining: None,
+                limit: None,
+                used_pct: util.map(|u| (u * 100.0) as f32),
+                resets_at: reset.as_deref().and_then(parse_reset_to_epoch_ms),
+                window: Some((*win).to_string()),
+                status,
+            });
+        }
     }
 
-    // Standard token-based limit.
-    let tok_remaining = header_i64(headers, "anthropic-ratelimit-tokens-remaining");
-    let tok_limit = header_i64(headers, "anthropic-ratelimit-tokens-limit");
-    let tok_reset = header_str(headers, "anthropic-ratelimit-tokens-reset");
-    if tok_remaining.is_some() || tok_limit.is_some() {
-        return Some(QuotaSnapshot {
-            remaining: tok_remaining,
-            limit: tok_limit,
-            used_pct: used_pct(tok_remaining, tok_limit),
-            resets_at: tok_reset.as_deref().and_then(parse_reset_to_epoch_ms),
-            window: Some("tokens".to_string()),
-            status: None,
-        });
+    // Legacy single unified limit (no per-window suffix).
+    if out.is_empty() {
+        let unified_status = header_str(headers, "anthropic-ratelimit-unified-status");
+        let unified_remaining = header_i64(headers, "anthropic-ratelimit-unified-remaining");
+        let unified_limit = header_i64(headers, "anthropic-ratelimit-unified-limit");
+        let unified_reset = header_str(headers, "anthropic-ratelimit-unified-reset");
+        if unified_status.is_some() || unified_remaining.is_some() || unified_reset.is_some() {
+            out.push(QuotaSnapshot {
+                remaining: unified_remaining,
+                limit: unified_limit,
+                used_pct: used_pct(unified_remaining, unified_limit),
+                resets_at: unified_reset.as_deref().and_then(parse_reset_to_epoch_ms),
+                window: Some("unified".to_string()),
+                status: unified_status,
+            });
+        }
     }
 
-    None
+    // Standard per-resource limits (API-key based).
+    for (win, prefix) in [
+        ("requests", "anthropic-ratelimit-requests"),
+        ("tokens", "anthropic-ratelimit-tokens"),
+        ("input tokens", "anthropic-ratelimit-input-tokens"),
+        ("output tokens", "anthropic-ratelimit-output-tokens"),
+    ] {
+        let remaining = header_i64(headers, &format!("{prefix}-remaining"));
+        let limit = header_i64(headers, &format!("{prefix}-limit"));
+        let reset = header_str(headers, &format!("{prefix}-reset"));
+        if remaining.is_some() || limit.is_some() {
+            out.push(QuotaSnapshot {
+                remaining,
+                limit,
+                used_pct: used_pct(remaining, limit),
+                resets_at: reset.as_deref().and_then(parse_reset_to_epoch_ms),
+                window: Some(win.to_string()),
+                status: None,
+            });
+        }
+    }
+
+    out
 }
 
-/// Extract a quota snapshot from OpenAI-style `x-ratelimit-*` headers.
-pub fn openai_quota_from_headers(headers: &HeaderMap) -> Option<QuotaSnapshot> {
-    // Prefer token-based limit, fall back to request-based.
-    let tok_remaining = header_i64(headers, "x-ratelimit-remaining-tokens");
-    let tok_limit = header_i64(headers, "x-ratelimit-limit-tokens");
-    let tok_reset = header_str(headers, "x-ratelimit-reset-tokens");
-    if tok_remaining.is_some() || tok_limit.is_some() {
-        return Some(QuotaSnapshot {
-            remaining: tok_remaining,
-            limit: tok_limit,
-            used_pct: used_pct(tok_remaining, tok_limit),
-            resets_at: tok_reset.as_deref().and_then(parse_reset_to_epoch_ms),
-            window: Some("tokens".to_string()),
-            status: None,
-        });
+/// Extract all quota windows from OpenAI-style `x-ratelimit-*` headers
+/// (both token- and request-based limits when present).
+pub fn openai_quotas_from_headers(headers: &HeaderMap) -> Vec<QuotaSnapshot> {
+    let mut out = Vec::new();
+    for (win, rem, lim, rst) in [
+        (
+            "tokens",
+            "x-ratelimit-remaining-tokens",
+            "x-ratelimit-limit-tokens",
+            "x-ratelimit-reset-tokens",
+        ),
+        (
+            "requests",
+            "x-ratelimit-remaining-requests",
+            "x-ratelimit-limit-requests",
+            "x-ratelimit-reset-requests",
+        ),
+    ] {
+        let remaining = header_i64(headers, rem);
+        let limit = header_i64(headers, lim);
+        let reset = header_str(headers, rst);
+        if remaining.is_some() || limit.is_some() {
+            out.push(QuotaSnapshot {
+                remaining,
+                limit,
+                used_pct: used_pct(remaining, limit),
+                resets_at: reset.as_deref().and_then(parse_reset_to_epoch_ms),
+                window: Some(win.to_string()),
+                status: None,
+            });
+        }
     }
-
-    let req_remaining = header_i64(headers, "x-ratelimit-remaining-requests");
-    let req_limit = header_i64(headers, "x-ratelimit-limit-requests");
-    let req_reset = header_str(headers, "x-ratelimit-reset-requests");
-    if req_remaining.is_some() || req_limit.is_some() {
-        return Some(QuotaSnapshot {
-            remaining: req_remaining,
-            limit: req_limit,
-            used_pct: used_pct(req_remaining, req_limit),
-            resets_at: req_reset.as_deref().and_then(parse_reset_to_epoch_ms),
-            window: Some("requests".to_string()),
-            status: None,
-        });
-    }
-
-    None
+    out
 }
 
 #[cfg(test)]
@@ -209,14 +278,16 @@ mod tests {
     }
 
     #[test]
-    fn test_anthropic_unified() {
+    fn test_anthropic_legacy_unified() {
         let h = hm(&[
             ("anthropic-ratelimit-unified-status", "allowed_warning"),
             ("anthropic-ratelimit-unified-remaining", "20"),
             ("anthropic-ratelimit-unified-limit", "100"),
             ("anthropic-ratelimit-unified-reset", "2026-01-01T00:00:00Z"),
         ]);
-        let q = anthropic_quota_from_headers(&h).unwrap();
+        let qs = anthropic_quotas_from_headers(&h);
+        assert_eq!(qs.len(), 1);
+        let q = &qs[0];
         assert_eq!(q.remaining, Some(20));
         assert_eq!(q.limit, Some(100));
         assert_eq!(q.used_pct, Some(80.0));
@@ -226,46 +297,70 @@ mod tests {
     }
 
     #[test]
-    fn test_anthropic_tokens_fallback() {
+    fn test_anthropic_unified_multi_window() {
         let h = hm(&[
+            ("anthropic-ratelimit-unified-status", "allowed_warning"),
+            ("anthropic-ratelimit-unified-5h-status", "allowed"),
+            ("anthropic-ratelimit-unified-5h-utilization", "0.38"),
+            ("anthropic-ratelimit-unified-5h-reset", "1767225600"),
+            ("anthropic-ratelimit-unified-7d-status", "allowed_warning"),
+            ("anthropic-ratelimit-unified-7d-utilization", "0.81"),
+            ("anthropic-ratelimit-unified-7d-reset", "1767225600"),
+        ]);
+        let qs = anthropic_quotas_from_headers(&h);
+        assert_eq!(qs.len(), 2);
+        let five = qs.iter().find(|q| q.window.as_deref() == Some("5h")).unwrap();
+        assert_eq!(five.used_pct, Some(38.0));
+        assert_eq!(five.status.as_deref(), Some("allowed"));
+        let week = qs.iter().find(|q| q.window.as_deref() == Some("7d")).unwrap();
+        assert_eq!(week.used_pct, Some(81.0));
+
+        // Worst window is the 7d at 81% used.
+        let worst = worst_quota(&qs).unwrap();
+        assert_eq!(worst.window.as_deref(), Some("7d"));
+    }
+
+    #[test]
+    fn test_anthropic_standard_multi() {
+        let h = hm(&[
+            ("anthropic-ratelimit-requests-remaining", "50"),
+            ("anthropic-ratelimit-requests-limit", "100"),
             ("anthropic-ratelimit-tokens-remaining", "5000"),
             ("anthropic-ratelimit-tokens-limit", "20000"),
         ]);
-        let q = anthropic_quota_from_headers(&h).unwrap();
-        assert_eq!(q.remaining, Some(5000));
-        assert_eq!(q.window.as_deref(), Some("tokens"));
-        assert_eq!(q.used_pct, Some(75.0));
+        let qs = anthropic_quotas_from_headers(&h);
+        assert_eq!(qs.len(), 2);
+        // tokens at 75% used is worse than requests at 50%.
+        assert_eq!(worst_quota(&qs).unwrap().window.as_deref(), Some("tokens"));
     }
 
     #[test]
     fn test_anthropic_none() {
         let h = hm(&[("content-type", "application/json")]);
-        assert!(anthropic_quota_from_headers(&h).is_none());
+        assert!(anthropic_quotas_from_headers(&h).is_empty());
     }
 
     #[test]
-    fn test_openai_tokens() {
+    fn test_worst_quota_prefers_exhausted() {
+        let qs = vec![
+            QuotaSnapshot { remaining: None, limit: None, used_pct: Some(50.0), resets_at: None, window: Some("5h".into()), status: Some("allowed".into()) },
+            QuotaSnapshot { remaining: None, limit: None, used_pct: Some(20.0), resets_at: None, window: Some("7d".into()), status: Some("rejected".into()) },
+        ];
+        assert_eq!(worst_quota(&qs).unwrap().window.as_deref(), Some("7d"));
+    }
+
+    #[test]
+    fn test_openai_multi() {
         let h = hm(&[
             ("x-ratelimit-remaining-tokens", "8000"),
             ("x-ratelimit-limit-tokens", "10000"),
             ("x-ratelimit-reset-tokens", "6m0s"),
-        ]);
-        let q = openai_quota_from_headers(&h).unwrap();
-        assert_eq!(q.remaining, Some(8000));
-        assert_eq!(q.limit, Some(10000));
-        assert_eq!(q.used_pct, Some(20.0));
-        assert_eq!(q.window.as_deref(), Some("tokens"));
-        assert!(q.resets_at.is_some());
-    }
-
-    #[test]
-    fn test_openai_requests_fallback() {
-        let h = hm(&[
             ("x-ratelimit-remaining-requests", "40"),
             ("x-ratelimit-limit-requests", "60"),
         ]);
-        let q = openai_quota_from_headers(&h).unwrap();
-        assert_eq!(q.remaining, Some(40));
-        assert_eq!(q.window.as_deref(), Some("requests"));
+        let qs = openai_quotas_from_headers(&h);
+        assert_eq!(qs.len(), 2);
+        // requests at 33% used is worse than tokens at 20%.
+        assert_eq!(worst_quota(&qs).unwrap().window.as_deref(), Some("requests"));
     }
 }

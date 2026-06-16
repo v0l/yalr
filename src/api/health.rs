@@ -44,9 +44,12 @@ pub struct ProviderHealthEntry {
     /// Serialized as `{"currency": "msats"|"sats"|"usd_micro", "amount": N}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub balance: Option<crate::providers::provider_trait::CurrencyAmount>,
-    /// Current usage quota for this provider, if it supports quota tracking.
+    /// Most-consumed quota window ("first to stop") for compact card display.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quota: Option<crate::providers::provider_trait::QuotaSnapshot>,
+    /// All enforced quota windows for this provider (for the detail modal).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub quotas: Vec<crate::providers::provider_trait::QuotaSnapshot>,
 }
 
 #[derive(Serialize)]
@@ -108,6 +111,8 @@ pub async fn build_provider_health_entry(
         })
     };
 
+    let quotas = state.metrics_store.get_quota(name).await;
+
     ProviderHealthEntry {
         provider: name.to_string(),
         health_state: format!("{:?}", health).to_lowercase(),
@@ -120,7 +125,10 @@ pub async fn build_provider_health_entry(
         last_failure_ago_ms,
         rate_limited,
         balance: state.metrics_store.get_balance(name).await,
-        quota: state.metrics_store.get_quota(name).await,
+        quota: quotas
+            .as_deref()
+            .and_then(crate::providers::quota::worst_quota),
+        quotas: quotas.unwrap_or_default(),
     }
 }
 

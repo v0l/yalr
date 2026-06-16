@@ -1,9 +1,11 @@
+import { useState } from 'react'
 import { PencilIcon, TrashIcon, WalletIcon, KeyIcon, RefreshCwIcon } from 'lucide-react'
-import type { Provider, ProviderHealthEntry } from '../types'
+import type { Provider, ProviderHealthEntry, QuotaSnapshot } from '../types'
 import { Button } from '@/components/ui/button'
 import { HealthBadge } from '@/components/HealthBadge'
 import { BalanceDisplay } from '@/components/BalanceDisplay'
 import { QuotaDisplay } from '@/components/QuotaDisplay'
+import { QuotaDialog } from '@/components/QuotaDialog'
 import { Badge } from '@/components/ui/badge'
 
 /* ═══════════════════════════════════════════════════════════════ */
@@ -21,6 +23,8 @@ export interface ProviderCardProps {
 
 export function ProviderCard({ provider, onEdit, onDelete, onTopup, onGenerateKey, onReauth }: ProviderCardProps) {
   const h: ProviderHealthEntry | undefined = provider.health
+  const [quotaOpen, setQuotaOpen] = useState(false)
+  const quotaWindows: QuotaSnapshot[] = h?.quotas ?? (h?.quota ? [h.quota] : [])
   const state = h?.health_state ?? 'unknown'
   const accent =
     state === 'healthy' ? 'var(--brand)' :
@@ -82,7 +86,21 @@ export function ProviderCard({ provider, onEdit, onDelete, onTopup, onGenerateKe
           {provider.base_url.replace(/^https?:\/\//, '').replace(/\/v\d+$/, '')}
         </div>
 
-        {h?.quota && <QuotaDisplay health={h} className="mt-2" />}
+        {(h?.quota || quotaWindows.length > 0) && (
+          <QuotaDisplay
+            health={h}
+            className="mt-2"
+            onClick={quotaWindows.length > 1 ? () => setQuotaOpen(true) : undefined}
+          />
+        )}
+        {quotaWindows.length > 1 && (
+          <QuotaDialog
+            open={quotaOpen}
+            onOpenChange={setQuotaOpen}
+            providerName={provider.name}
+            quotas={quotaWindows}
+          />
+        )}
 
         {/* ── Actions ────────────────────────────────────── */}
         <div className="flex items-center gap-1 mt-2.5 pt-2.5 border-t border-border/40">

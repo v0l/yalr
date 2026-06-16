@@ -133,9 +133,12 @@ pub trait Provider: Send + Sync {
     }
 
     /// Fetch the current usage quota for the provider.
-    /// Result is emitted as a `MetricsEvent::Quota` by the health check loop.
-    /// Returns `None` for providers that don't support quota tracking.
-    async fn fetch_quota(&self) -> Option<QuotaSnapshot> {
+    ///
+    /// Providers may enforce several independent windows at once (e.g. Anthropic
+    /// subscription `5h` + `7d`, or token + request limits), so this returns all
+    /// active windows. Result is emitted as a `MetricsEvent::Quota` by the health
+    /// check loop. Returns `None` for providers that don't track quota.
+    async fn fetch_quota(&self) -> Option<Vec<QuotaSnapshot>> {
         None
     }
 }

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { api, API_BASE_URL } from '../api/client'
-import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse, CurrencyAmount, MetricsUser } from '../types'
+import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse, CurrencyAmount, MetricsUser, QuotaSnapshot } from '../types'
 import { cn, formatBalance } from '@/lib/utils'
+import { worstQuota } from '@/lib/quota'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import {
   ActivityIcon, GaugeIcon, BarChart3Icon,
@@ -60,11 +61,15 @@ function fmt(e: WsProviderMetrics['event']): { label: string; value: string; kin
     return { label: 'BAL', value: formatBalance(b.amount, b.currency), kind: 'info' }
   }
   if (has(e, 'Quota')) {
-    const q = e.Quota as { used_pct?: number; remaining?: number; status?: string }
-    const v = typeof q.used_pct === 'number'
+    const all = (e.Quota ?? []) as QuotaSnapshot[]
+    const q = worstQuota(all)
+    if (!q) return { label: 'QUOTA', value: '—', kind: 'info' }
+    const usage = typeof q.used_pct === 'number'
       ? `${q.used_pct.toFixed(0)}% used`
       : (typeof q.remaining === 'number' ? `${q.remaining.toLocaleString()} left` : (q.status ?? '?'))
-    return { label: 'QUOTA', value: v, kind: q.status === 'rejected' ? 'err' : (q.status === 'allowed_warning' ? 'warn' : 'info') }
+    const v = q.window ? `${q.window} · ${usage}` : usage
+    const exhausted = q.status === 'rejected' || q.status === 'exceeded' || q.status === 'rate_limited' || (typeof q.used_pct === 'number' && q.used_pct >= 100)
+    return { label: 'QUOTA', value: v, kind: exhausted ? 'err' : (q.status === 'allowed_warning' ? 'warn' : 'info') }
   }
   return { label: '?', value: JSON.stringify(e), kind: 'info' }
 }

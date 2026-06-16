@@ -1,34 +1,26 @@
-import type { ProviderHealthEntry } from '../types'
+import type { ProviderHealthEntry, QuotaSnapshot } from '../types'
+import { quotaExhausted, quotaUsedPct, quotaWindowLabel, formatResetsIn, worstQuota } from '@/lib/quota'
 
 export interface QuotaDisplayProps {
   health?: ProviderHealthEntry
   className?: string
-}
-
-function formatResetsIn(resetsAt?: number): string | null {
-  if (!resetsAt) return null
-  const ms = resetsAt - Date.now()
-  if (ms <= 0) return 'now'
-  const mins = Math.round(ms / 60000)
-  if (mins < 60) return `${mins}m`
-  const hrs = Math.floor(mins / 60)
-  const rem = mins % 60
-  if (hrs < 24) return rem ? `${hrs}h ${rem}m` : `${hrs}h`
-  const days = Math.floor(hrs / 24)
-  return `${days}d`
+  /** Called when the indicator is clicked (e.g. to open the detail modal). */
+  onClick?: () => void
 }
 
 /**
  * Compact quota indicator for subscription providers (Claude Max, ChatGPT).
- * Shows a used-% bar, the consumption figure, and when the window resets.
+ * Shows the single most-consumed window — the first that will throttle.
+ * When multiple windows exist it becomes a button that opens the detail modal.
  */
-export function QuotaDisplay({ health, className }: QuotaDisplayProps) {
-  const q = health?.quota
+export function QuotaDisplay({ health, className, onClick }: QuotaDisplayProps) {
+  const all: QuotaSnapshot[] = health?.quotas ?? (health?.quota ? [health.quota] : [])
+  const q = worstQuota(all) ?? health?.quota
   if (!q) return null
 
-  const pct = typeof q.used_pct === 'number' ? Math.min(100, Math.max(0, q.used_pct)) : null
+  const pct = quotaUsedPct(q)
   const resetsIn = formatResetsIn(q.resets_at)
-  const exhausted = q.status === 'rejected' || (pct !== null && pct >= 100) || (typeof q.remaining === 'number' && q.remaining <= 0)
+  const exhausted = quotaExhausted(q)
   const warn = exhausted || (pct !== null && pct >= 90)
   const caution = q.status === 'allowed_warning' || (pct !== null && pct >= 75)
   const barColor = warn ? 'var(--destructive)' : caution ? 'var(--warning)' : 'var(--brand)'
@@ -38,11 +30,23 @@ export function QuotaDisplay({ health, className }: QuotaDisplayProps) {
     ? `${pct.toFixed(0)}% used`
     : (typeof q.remaining === 'number' ? `${q.remaining.toLocaleString()} left` : null)
 
+  const extra = all.length - 1
+  const clickable = !!onClick
+
+  const Wrapper = clickable ? 'button' : 'div'
+
   return (
-    <div className={`flex flex-col gap-1 ${className ?? ''}`}>
+    <Wrapper
+      type={clickable ? 'button' : undefined}
+      onClick={onClick}
+      className={`flex flex-col gap-1 text-left w-full ${clickable ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''} ${className ?? ''}`}
+      title={clickable ? 'View all quota windows' : undefined}
+    >
       <div className="flex items-center justify-between gap-2">
         <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
-          {exhausted ? 'QUOTA REACHED' : 'QUOTA'}{q.window ? ` · ${q.window}` : ''}
+          {exhausted ? 'QUOTA REACHED' : 'QUOTA'}
+          {q.window ? ` · ${quotaWindowLabel(q.window)}` : ''}
+          {extra > 0 ? ` +${extra}` : ''}
         </span>
         {usage && <span className={`font-mono text-[10px] tabular-nums ${textColor}`}>{usage}</span>}
       </div>
@@ -56,6 +60,6 @@ export function QuotaDisplay({ health, className }: QuotaDisplayProps) {
           {exhausted ? 'resets in' : 'resets'} {resetsIn}
         </span>
       )}
-    </div>
+    </Wrapper>
   )
 }

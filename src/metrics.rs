@@ -66,8 +66,8 @@ pub enum MetricsEvent {
     },
     /// Provider balance snapshot (account credit, upstream cost tracking)
     Balance(CurrencyAmount),
-    /// Provider usage-quota snapshot (subscription rate-limit consumption)
-    Quota(crate::providers::provider_trait::QuotaSnapshot),
+    /// Provider usage-quota snapshot (all enforced rate-limit windows)
+    Quota(Vec<crate::providers::provider_trait::QuotaSnapshot>),
 }
 
 /// Error details for failure events
@@ -278,9 +278,9 @@ impl MetricsEmitter {
         self.emit(provider.to_string(), String::new(), MetricsEvent::Balance(amount), user);
     }
 
-    /// Emit a usage-quota snapshot for a provider.
-    pub fn emit_quota(&self, provider: &str, quota: crate::providers::provider_trait::QuotaSnapshot, user: Option<MetricsUser>) {
-        self.emit(provider.to_string(), String::new(), MetricsEvent::Quota(quota), user);
+    /// Emit a usage-quota snapshot (all enforced windows) for a provider.
+    pub fn emit_quota(&self, provider: &str, quotas: Vec<crate::providers::provider_trait::QuotaSnapshot>, user: Option<MetricsUser>) {
+        self.emit(provider.to_string(), String::new(), MetricsEvent::Quota(quotas), user);
     }
 }
 
@@ -981,8 +981,8 @@ impl MetricsStore {
             })
     }
 
-    /// Get the most recent quota snapshot for a provider.
-    pub async fn get_quota(&self, provider: &str) -> Option<crate::providers::provider_trait::QuotaSnapshot> {
+    /// Get the most recent quota snapshot (all windows) for a provider.
+    pub async fn get_quota(&self, provider: &str) -> Option<Vec<crate::providers::provider_trait::QuotaSnapshot>> {
         let events = self.events.lock().unwrap();
         events
             .iter()
@@ -990,7 +990,7 @@ impl MetricsStore {
             .find_map(|e| {
                 if e.provider == provider {
                     match &e.event {
-                        MetricsEvent::Quota(quota) => Some(quota.clone()),
+                        MetricsEvent::Quota(quotas) => Some(quotas.clone()),
                         _ => None,
                     }
                 } else {
@@ -1039,25 +1039,24 @@ impl MetricsStore {
 /// has not yet reset. Returns `None` otherwise (no quota, not exhausted, or the
 /// reset time has already passed — i.e. the quota is considered recovered).
 fn latest_quota_issue_reset(provider_events: &[&ProviderMetrics], now_ms: i64) -> Option<i64> {
-    let quota = provider_events.iter().rev().find_map(|e| {
+    use crate::providers::quota::quota_exhausted;
+
+    let quotas = provider_events.iter().rev().find_map(|e| {
         if let MetricsEvent::Quota(q) = &e.event { Some(q) } else { None }
     })?;
 
-    let exhausted = quota.status.as_deref() == Some("rejected")
-        || quota.used_pct.is_some_and(|p| p >= 100.0)
-        || matches!((quota.remaining, quota.limit), (Some(r), Some(l)) if l > 0 && r <= 0);
-    if !exhausted {
-        return None;
-    }
-
-    // If we know the reset time and it has already passed, the quota has
-    // recovered even if the cached snapshot is stale.
-    match quota.resets_at {
-        Some(reset) if reset <= now_ms => None,
-        Some(reset) => Some(reset),
-        // Unknown reset time: treat as exhausted with no extra backoff.
-        None => Some(now_ms),
-    }
+    // Map each exhausted window to the moment it stops blocking. A window whose
+    // reset already passed has recovered and is dropped. The provider stays
+    // blocked until the latest such moment across all exhausted windows.
+    quotas
+        .iter()
+        .filter(|q| quota_exhausted(q))
+        .filter_map(|q| match q.resets_at {
+            Some(reset) if reset <= now_ms => None, // recovered
+            Some(reset) => Some(reset),
+            None => Some(now_ms), // exhausted, no reset info => no extra backoff
+        })
+        .max()
 }
 
 fn percentile<T: Copy + PartialOrd>(values: &[T], p: f32) -> Option<T> {
@@ -1159,15 +1158,15 @@ mod tests {
         assert_eq!(store.get_provider_health(provider_name).await, HealthState::Degraded);
     }
 
-    fn quota_snapshot(used_pct: Option<f32>, status: Option<&str>, resets_at: Option<i64>) -> crate::providers::provider_trait::QuotaSnapshot {
-        crate::providers::provider_trait::QuotaSnapshot {
+    fn quota_snapshot(used_pct: Option<f32>, status: Option<&str>, resets_at: Option<i64>) -> Vec<crate::providers::provider_trait::QuotaSnapshot> {
+        vec![crate::providers::provider_trait::QuotaSnapshot {
             remaining: None,
             limit: None,
             used_pct,
             resets_at,
             window: Some("unified".to_string()),
             status: status.map(|s| s.to_string()),
-        }
+        }]
     }
 
     fn now_epoch_ms() -> i64 {

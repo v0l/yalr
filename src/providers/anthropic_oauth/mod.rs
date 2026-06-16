@@ -17,7 +17,7 @@ use super::*;
 use crate::db::Database;
 use crate::oauth::{OAuthKind, OAuthSession};
 use crate::providers::provider_trait::QuotaSnapshot;
-use crate::providers::quota::anthropic_quota_from_headers;
+use crate::providers::quota::anthropic_quotas_from_headers;
 use wire::*;
 
 const BETA_HEADER: &str = "oauth-2025-04-20";
@@ -38,8 +38,8 @@ pub struct AnthropicOAuthProvider {
     base_url: String,
     http: reqwest::Client,
     session: Arc<OAuthSession>,
-    /// Last quota snapshot seen on a response, captured from rate-limit headers.
-    quota: Arc<RwLock<Option<QuotaSnapshot>>>,
+    /// Last quota windows seen on a response, captured from rate-limit headers.
+    quota: Arc<RwLock<Vec<QuotaSnapshot>>>,
 }
 
 impl AnthropicOAuthProvider {
@@ -59,7 +59,7 @@ impl AnthropicOAuthProvider {
             base_url: record.base_url.trim_end_matches('/').to_string(),
             http: reqwest::Client::new(),
             session: Arc::new(session),
-            quota: Arc::new(RwLock::new(None)),
+            quota: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -155,9 +155,10 @@ impl Provider for AnthropicOAuthProvider {
             .map_err(|e| ProviderError::Other(e.into()))?;
 
         let status = resp.status();
-        if let Some(q) = anthropic_quota_from_headers(resp.headers()) {
+        let quotas = anthropic_quotas_from_headers(resp.headers());
+        if !quotas.is_empty() {
             if let Ok(mut guard) = self.quota.write() {
-                *guard = Some(q);
+                *guard = quotas;
             }
         }
         if !status.is_success() {
@@ -243,9 +244,10 @@ impl Provider for AnthropicOAuthProvider {
                 Err(e) => { yield Err(ProviderError::Other(e.into())); return; }
             };
             let status = resp.status();
-            if let Some(q) = anthropic_quota_from_headers(resp.headers()) {
+            let quotas = anthropic_quotas_from_headers(resp.headers());
+            if !quotas.is_empty() {
                 if let Ok(mut guard) = quota_cache.write() {
-                    *guard = Some(q);
+                    *guard = quotas;
                 }
             }
             if !status.is_success() {
@@ -329,7 +331,11 @@ impl Provider for AnthropicOAuthProvider {
         }
     }
 
-    async fn fetch_quota(&self) -> Option<QuotaSnapshot> {
-        self.quota.read().ok().and_then(|g| g.clone())
+    async fn fetch_quota(&self) -> Option<Vec<QuotaSnapshot>> {
+        self.quota
+            .read()
+            .ok()
+            .map(|g| g.clone())
+            .filter(|q| !q.is_empty())
     }
 }
