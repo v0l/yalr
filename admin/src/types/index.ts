@@ -138,9 +138,16 @@ export interface MetricsSnapshotEntry {
   success_rate: number | null
 }
 
+export interface ProviderHealthSnapshot {
+  provider: string
+  balance?: CurrencyAmount
+  quota?: QuotaSnapshot
+}
+
 export interface MetricsSnapshot {
   timestamp_ms: number
   providers: MetricsSnapshotEntry[]
+  provider_health?: ProviderHealthSnapshot[]
 }
 
 export interface MetricsResponse {

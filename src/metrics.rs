@@ -9,6 +9,7 @@ use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
 use crate::router::ModelRuntimeInfo;
 use crate::providers::CurrencyAmount;
+use crate::providers::provider_trait::QuotaSnapshot;
 use crate::metrics_agg::ProviderAgg;
 pub use crate::metrics_agg::RoutingHealth;
 
@@ -389,6 +390,9 @@ pub type SharedMetricsStore = MetricsStore;
 pub struct MetricsSnapshot {
     pub timestamp_ms: u64,
     pub providers: Vec<ProviderMetricSnapshot>,
+    /// Per-provider health snapshots (balance, quota) sampled from aggregates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_health: Vec<ProviderHealthSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -403,6 +407,14 @@ pub struct ProviderMetricSnapshot {
     pub p90_input_tps: Option<f32>,
     pub avg_latency_ms: Option<f32>,
     pub success_rate: Option<f32>,
+}
+
+/// Per-provider health data sampled from O(1) aggregates (balance, quota).
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderHealthSnapshot {
+    pub provider: String,
+    pub balance: Option<CurrencyAmount>,
+    pub quota: Option<QuotaSnapshot>,
 }
 
 impl MetricsStore {
@@ -679,7 +691,28 @@ impl MetricsStore {
             }).collect()
         };
         
-        let snapshot = MetricsSnapshot { timestamp_ms: now, providers: provider_snapshots };
+        // Sample per-provider health (balance, quota) from O(1) aggregates.
+        let provider_health: Vec<ProviderHealthSnapshot> = {
+            let map = self.aggregates.read().unwrap();
+            map.iter().map(|(provider, agg)| {
+                let balance = agg.balance();
+                let quota = agg.quota().and_then(|qs| {
+                    // Pick the most-consumed window for graphing.
+                    qs.into_iter().reduce(|a, b| {
+                        let ap = a.used_pct.unwrap_or(0.0);
+                        let bp = b.used_pct.unwrap_or(0.0);
+                        if ap >= bp { a } else { b }
+                    })
+                });
+                ProviderHealthSnapshot {
+                    provider: provider.clone(),
+                    balance,
+                    quota,
+                }
+            }).collect()
+        };
+
+        let snapshot = MetricsSnapshot { timestamp_ms: now, providers: provider_snapshots, provider_health };
         let mut history = self.history.write().await;
         history.push_back(snapshot);
         while history.len() > self.max_history_snapshots {

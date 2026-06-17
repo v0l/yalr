@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { api, API_BASE_URL } from '../api/client'
-import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse, CurrencyAmount, MetricsUser, QuotaSnapshot } from '../types'
+import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse, CurrencyAmount, MetricsUser, QuotaSnapshot, ProviderHealthSnapshot } from '../types'
 import { cn, formatBalance } from '@/lib/utils'
-import { worstQuota } from '@/lib/quota'
+import { worstQuota, quotaUsedPct } from '@/lib/quota'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
-import {
-  ActivityIcon, GaugeIcon, BarChart3Icon,
+import { ActivityIcon, GaugeIcon, BarChart3Icon, DollarSignIcon, ShieldAlertIcon,
   UserIcon, KeyIcon
 } from 'lucide-react'
 
@@ -84,6 +83,25 @@ function fmtUser(u?: MetricsUser | null): string {
 }
 
 const MAXL = 200, MAXA = 500
+
+/** Normalize a CurrencyAmount to sats for consistent charting. */
+function normalizeBalance(b: CurrencyAmount): number {
+  switch (b.currency) {
+    case 'msats': return b.amount / 1000
+    case 'sats': return b.amount
+    case 'usd_micro': return b.amount / 1_000_000
+    default: return b.amount
+  }
+}
+
+/** Label for a CurrencyAmount. */
+function balanceUnit(b: CurrencyAmount): string {
+  switch (b.currency) {
+    case 'msats': case 'sats': return 'sats'
+    case 'usd_micro': return '$'
+    default: return ''
+  }
+}
 
 /* ═══════════════════════════════════════════════════════════════ */
 /*  Metrics Page                                                  */
@@ -260,6 +278,19 @@ export default function Metrics() {
         e.out = oN ? ot / oN : null
         e.inp = iN ? it / iN : null
       }
+
+      // Balance & quota from provider_health
+      const ph = snap.provider_health ?? []
+      if (selP) {
+        const h = ph.find(p => p.provider === selP)
+        if (h?.balance) e[`bal_${selP}`] = normalizeBalance(h.balance)
+        if (h?.quota) e[`quota_${selP}`] = quotaUsedPct(h.quota) ?? null
+      } else {
+        for (const h of ph) {
+          if (h.balance) e[`bal_${h.provider}`] = normalizeBalance(h.balance)
+          if (h.quota) e[`quota_${h.provider}`] = quotaUsedPct(h.quota) ?? null
+        }
+      }
       return e
     })
   }, [hist, selP, selM])
@@ -282,6 +313,30 @@ export default function Metrics() {
     })
     return out
   }, [chartData, selP])
+
+  const balanceLines = useMemo(() => {
+    const ks = new Set<string>()
+    for (const d of chartData) for (const k of Object.keys(d)) { if (k.startsWith('bal_')) ks.add(k) }
+    const clr = ['var(--brand)', 'var(--warning)', '#a855f7', '#ec4899', '#84cc16', '#f97316']
+    return Array.from(ks).map((k, i) => ({ key: k, name: k.slice(4), color: clr[i % clr.length] }))
+  }, [chartData])
+
+  const quotaLines = useMemo(() => {
+    const ks = new Set<string>()
+    for (const d of chartData) for (const k of Object.keys(d)) { if (k.startsWith('quota_')) ks.add(k) }
+    const clr = ['var(--brand)', 'var(--warning)', '#a855f7', '#ec4899', '#84cc16', '#f97316']
+    return Array.from(ks).map((k, i) => ({ key: k, name: k.slice(6), color: clr[i % clr.length] }))
+  }, [chartData])
+
+  const balUnit = useMemo(() => {
+    if (!hist) return 'sats'
+    for (const snap of hist) {
+      for (const h of (snap.provider_health ?? [])) {
+        if (h.balance) return balanceUnit(h.balance)
+      }
+    }
+    return 'sats'
+  }, [hist])
 
   const fmodels = useMemo(() => {
     if (!sdata) return []
@@ -393,7 +448,7 @@ export default function Metrics() {
 
       {/* Charts */}
       {hist && hist.length > 0 && (
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
           {/* TTFT Chart */}
           <div className="panel p-4">
             <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
@@ -468,6 +523,52 @@ export default function Metrics() {
               </ResponsiveContainer>
             )}
           </div>
+
+          {/* Balance Chart */}
+          {balanceLines.length > 0 && (
+            <div className="panel p-4">
+              <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
+                <DollarSignIcon className="size-3.5 text-brand" />
+                Balance ({balUnit})
+                <span className="ml-auto font-mono text-[11px] text-muted-foreground normal-case tracking-normal">{chartSubtitle}</span>
+              </h3>
+              <ResponsiveContainer width="100%" height={200}>
+                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
+                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
+                  <Tooltip contentStyle={ttStyle} />
+                  <Legend wrapperStyle={{ fontSize: '10px', fontFamily: '"JetBrains Mono", monospace' }} />
+                  {balanceLines.map(l => (
+                    <Line key={l.key} type="monotone" dataKey={l.key} name={l.name} stroke={l.color} strokeWidth={2} dot={false} connectNulls />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Quota Usage Chart */}
+          {quotaLines.length > 0 && (
+            <div className="panel p-4">
+              <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
+                <ShieldAlertIcon className="size-3.5 text-warning" />
+                Quota Usage %
+                <span className="ml-auto font-mono text-[11px] text-muted-foreground normal-case tracking-normal">{chartSubtitle}</span>
+              </h3>
+              <ResponsiveContainer width="100%" height={200}>
+                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
+                  <YAxis domain={[0, 100]} tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
+                  <Tooltip contentStyle={ttStyle} />
+                  <Legend wrapperStyle={{ fontSize: '10px', fontFamily: '"JetBrains Mono", monospace' }} />
+                  {quotaLines.map(l => (
+                    <Line key={l.key} type="monotone" dataKey={l.key} name={l.name} stroke={l.color} strokeWidth={2} dot={false} connectNulls />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </div>
       )}
 
