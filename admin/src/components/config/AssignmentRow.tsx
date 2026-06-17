@@ -82,7 +82,7 @@ export default function AssignmentRow(props: AssignmentRowProps) {
           loading={modelsLoading}
           disabled={busy}
           onOpen={ensureModels}
-          onChange={m => onPatch({ model: m || null })}
+          onChange={m => onPatch({ model: m || '' })}
           allowEmpty emptyLabel="no override" allowCustom
         />
       </td>

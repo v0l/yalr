@@ -686,10 +686,9 @@ impl Database {
 
     pub async fn update_routing_config_provider(&self, id: i64, updates: UpdateRoutingConfigProvider) -> Result<RoutingConfigProvider, sqlx::Error> {
         let mut query = String::from("UPDATE routing_config_providers SET updated_at = CURRENT_TIMESTAMP");
-        
-        if let Some(_model) = &updates.model {
-            query.push_str(", model = ?");
-        }
+
+        // Always update model – None means "clear to NULL" (no override).
+        query.push_str(", model = ?");
         if let Some(_weight) = &updates.weight {
             query.push_str(", weight = ?");
         }
@@ -700,17 +699,15 @@ impl Database {
         query.push_str(" WHERE id = ? RETURNING *");
 
         let mut query_builder = sqlx::query_as::<_, RoutingConfigProvider>(&query);
-        
-        if let Some(model) = updates.model {
-            query_builder = query_builder.bind(model);
-        }
+
+        query_builder = query_builder.bind(updates.model);
         if let Some(weight) = updates.weight {
             query_builder = query_builder.bind(weight);
         }
         if let Some(is_active) = updates.is_active {
             query_builder = query_builder.bind(is_active);
         }
-        
+
         query_builder.bind(id).fetch_one(&self.pool).await
     }
 
