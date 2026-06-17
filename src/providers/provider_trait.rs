@@ -6,7 +6,7 @@ use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use async_openai::types::models::Model;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
 use crate::metrics::ErrorType;
 use crate::router::ModelRuntimeInfo;
@@ -16,7 +16,7 @@ use crate::providers::StreamingChunk;
 /// All amounts use the smallest indivisible unit of the currency:
 /// - `Msats` and `Sats` for Bitcoin Lightning
 /// - `UsdMicro` for USD (millionths of a dollar — $1.00 = 1_000_000 µ$)
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "currency", content = "amount")]
 pub enum CurrencyAmount {
     #[serde(rename = "msats")]
@@ -58,7 +58,7 @@ impl CurrencyAmount {
 ///
 /// All fields are optional because different upstreams expose different subsets
 /// of rate-limit information (usually via response headers).
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QuotaSnapshot {
     /// Remaining units (requests or tokens) in the current window.
     #[serde(skip_serializing_if = "Option::is_none")]

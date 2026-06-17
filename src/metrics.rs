@@ -1,6 +1,6 @@
 // YALR (Yet another LLM router) - Metrics system
 // Event-based timeseries metrics with percentile support
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -380,13 +380,15 @@ pub struct MetricsStore {
     /// History snapshots for graphing (timestamp -> list of provider+model metric snapshots)
     history: Arc<RwLock<VecDeque<MetricsSnapshot>>>,
     max_history_snapshots: usize,
+    /// SQLite pool for persisting history snapshots across restarts
+    db: Arc<std::sync::Mutex<Option<sqlx::SqlitePool>>>,
 }
 
 /// Type alias for MetricsStore - now cloneable with internal Arc<Mutex>
 pub type SharedMetricsStore = MetricsStore;
 
 /// Snapshot of provider+model metrics at a point in time (for history/graphing)
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsSnapshot {
     pub timestamp_ms: u64,
     pub providers: Vec<ProviderMetricSnapshot>,
@@ -395,7 +397,7 @@ pub struct MetricsSnapshot {
     pub provider_health: Vec<ProviderHealthSnapshot>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderMetricSnapshot {
     pub provider: String,
     pub model: String,
@@ -410,7 +412,7 @@ pub struct ProviderMetricSnapshot {
 }
 
 /// Per-provider health data sampled from O(1) aggregates (balance, quota).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderHealthSnapshot {
     pub provider: String,
     pub balance: Option<CurrencyAmount>,
@@ -437,6 +439,64 @@ impl MetricsStore {
             health_config: health_config.unwrap_or_default(),
             history: Arc::new(RwLock::new(VecDeque::with_capacity(history_max))),
             max_history_snapshots: history_max,
+            db: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    /// Set the DB pool for persisting history snapshots.
+    /// Must be called before start_history_snapshots.
+    pub fn set_db_pool(&self, pool: sqlx::SqlitePool) {
+        *self.db.lock().unwrap() = Some(pool);
+    }
+
+    /// Load history snapshots from DB and populate the in-memory buffer.
+    /// Call after set_db_pool, before start_history_snapshots.
+    pub async fn load_history_from_db(&self) {
+        let pool = match self.db.lock().unwrap().as_ref() {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        let rows: Result<Vec<(i64, String)>, _> = sqlx::query_as::<_, (i64, String)>(
+            "SELECT timestamp_ms, snapshot_json FROM metrics_history ORDER BY timestamp_ms DESC LIMIT ?"
+        )
+        .bind(self.max_history_snapshots as i64)
+        .fetch_all(&pool)
+        .await;
+
+        match rows {
+            Ok(rows) => {
+                let mut snapshots: Vec<MetricsSnapshot> = rows
+                    .into_iter()
+                    .rev() // oldest first for VecDeque push_back order
+                    .filter_map(|(_, json)| serde_json::from_str(&json).ok())
+                    .collect();
+
+                // Prune any snapshots older than 24 hours
+                let cutoff = now_ms().saturating_sub(24 * 3600 * 1000);
+                snapshots.retain(|s| s.timestamp_ms >= cutoff);
+
+                // Also clean expired ones from DB
+                let _ = sqlx::query("DELETE FROM metrics_history WHERE timestamp_ms < ?")
+                    .bind(cutoff as i64)
+                    .execute(&pool)
+                    .await;
+
+                let mut history = self.history.write().await;
+                history.clear();
+                for s in snapshots {
+                    if history.len() < self.max_history_snapshots {
+                        history.push_back(s);
+                    }
+                }
+                tracing::info!(
+                    count = history.len(),
+                    "Loaded metrics history from database"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(err = %e, "Failed to load metrics history from database");
+            }
         }
     }
 
@@ -713,6 +773,26 @@ impl MetricsStore {
         };
 
         let snapshot = MetricsSnapshot { timestamp_ms: now, providers: provider_snapshots, provider_health };
+
+        // Persist to SQLite if pool is configured
+        let pool = self.db.lock().unwrap().clone();
+        if let Some(pool) = &pool {
+            match serde_json::to_string(&snapshot) {
+                Ok(json) => {
+                    let _ = sqlx::query(
+                        "INSERT OR REPLACE INTO metrics_history (timestamp_ms, snapshot_json) VALUES (?, ?)"
+                    )
+                    .bind(now as i64)
+                    .bind(&json)
+                    .execute(pool)
+                    .await;
+                }
+                Err(e) => {
+                    tracing::warn!(err = %e, "Failed to serialize metrics snapshot for DB");
+                }
+            }
+        }
+
         let mut history = self.history.write().await;
         history.push_back(snapshot);
         while history.len() > self.max_history_snapshots {

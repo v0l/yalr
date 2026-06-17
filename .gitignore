@@ -6,3 +6,4 @@ admin-dist
 /
 .pi-lens
 lnd-data-bob-temp/*
+.playwright-mcp/

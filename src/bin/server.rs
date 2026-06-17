@@ -20,10 +20,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metrics_store = std::sync::Arc::new(metrics::MetricsStore::new(10000));
     let emitter = metrics_store.emitter().clone();
     
-    metrics_store.start_history_snapshots(300); // 5-minute intervals
-    
     let config = config::AppConfig::load(metrics_store.clone()).await.expect("Failed to load config");
     config.load_providers().await.expect("Failed to load providers");
+
+    // Wire DB pool into metrics store for history persistence
+    metrics_store.set_db_pool(config.db.pool.clone());
+    metrics_store.load_history_from_db().await;
+    metrics_store.start_history_snapshots(300); // 5-minute intervals
 
     let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
