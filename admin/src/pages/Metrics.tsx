@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { api, API_BASE_URL } from '../api/client'
-import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse, CurrencyAmount, MetricsUser, QuotaSnapshot, ProviderHealthSnapshot } from '../types'
+import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse, CurrencyAmount, MetricsUser, QuotaSnapshot } from '../types'
 import { cn, formatBalance } from '@/lib/utils'
 import { worstQuota, quotaUsedPct } from '@/lib/quota'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
