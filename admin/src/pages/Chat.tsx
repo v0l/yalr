@@ -3,7 +3,7 @@ import { ThreadPrimitive, ComposerPrimitive, MessagePrimitive, ActionBarPrimitiv
 import { api } from '../api/client'
 import type { Model } from '../types'
 import { ArrowUpIcon } from 'lucide-react'
-import ModelCombobox from '../components/ModelCombobox'
+import ModelPicker from '../components/ModelPicker'
 
 const createChatModelAdapter = (modelId: string): ChatModelAdapter => {
   return {
@@ -192,7 +192,7 @@ export default function Chat() {
         <h1 className="font-display text-[28px] tracking-[0.04em] text-foreground mb-3 leading-none">CHAT</h1>
         <div className="flex items-center gap-3">
           <label className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground shrink-0">Model:</label>
-          <ModelCombobox
+          <ModelPicker
             value={selectedModel}
             models={models.map(m => m.id)}
             onChange={setSelectedModel}

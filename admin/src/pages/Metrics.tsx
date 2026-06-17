@@ -2,9 +2,12 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { api, API_BASE_URL } from '../api/client'
 import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse, CurrencyAmount } from '../types'
 import { cn } from '@/lib/utils'
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog'
 import { quotaUsedPct } from '@/lib/quota'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
-import { ActivityIcon, GaugeIcon, BarChart3Icon, DollarSignIcon, ShieldAlertIcon } from 'lucide-react'
+import { ActivityIcon, GaugeIcon, BarChart3Icon, DollarSignIcon, ShieldAlertIcon, XIcon } from 'lucide-react'
 import MetricsEventStream from './MetricsEventStream'
 import StatCard from '@/components/StatCard'
 import { has, pct, fmtNum, MAXL, MAXA } from './metricsHelpers'
@@ -33,6 +36,7 @@ export default function Metrics() {
   const [skipped, setSkipped] = useState(0)
   const [selP, setSelP] = useState<string | null>(null)
   const [selM, setSelM] = useState<string | null>(null)
+  const [modelDialogOpen, setModelDialogOpen] = useState(false)
   const [hist, setHist] = useState<MetricsSnapshot[] | null>(null)
   const [health, setHealth] = useState<HealthOverviewResponse | null>(null)
   const [loadingHist, setLoadingHist] = useState(false)
@@ -359,7 +363,7 @@ export default function Metrics() {
       {/* Summary Stats */}
       {plist.length > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatCard label="Providers" valueJsx value={
+          <StatCard label="Providers" value={
             <><span className="text-brand">{summaryStats.active}</span><span className="text-muted-foreground text-[20px]">/{summaryStats.total}</span></>
           } sub="active" color={plist.length === summaryStats.active ? 'green' : 'default'} />
           <StatCard label="Total Requests" value={fmtNum(summaryStats.totalReqs)} sub={`${fmtNum(summaryStats.totalOk)} ok · ${fmtNum(summaryStats.totalReqs - summaryStats.totalOk)} fail`}
@@ -425,12 +429,14 @@ export default function Metrics() {
                   )}
                   <Tooltip
                     contentStyle={ttStyle}
-                    labelFormatter={(label: string) => label}
-                    formatter={(v: number, _: string, entry: { dataKey?: string | number }) => {
-                      const line = balanceLines.find(l => l.key === entry.dataKey)
+                    labelFormatter={(label: unknown) => label as React.ReactNode}
+                    formatter={(v: unknown, _: unknown, entry: unknown) => {
+                      const dataKey = (entry as { dataKey?: string })?.dataKey
+                      const line = balanceLines.find(l => l.key === dataKey)
                       const cur = line?.currency === 'usd_micro' ? '$' : 'sats'
                       const prov = line?.name ?? ''
-                      return [`${v.toLocaleString('en-US', { maximumFractionDigits: 2 })} ${cur}`, prov]
+                      const n = Number(v ?? 0)
+                      return [`${n.toLocaleString('en-US', { maximumFractionDigits: 2 })} ${cur}`, prov]
                     }}
                   />
                   <Legend wrapperStyle={{ fontSize: '11px', fontFamily: '"JetBrains Mono", monospace', paddingTop: '12px' }} />
@@ -468,48 +474,82 @@ export default function Metrics() {
         </div>
       )}
 
-      {/* Bottom: model breakdown + event stream */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Model Breakdown */}
-        <div className="lg:col-span-1">
-          <div className="panel p-4">
-            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
-              <BarChart3Icon className="size-3.5 text-brand" /> Models
-              <span className="ml-auto font-mono text-[10px] text-muted-foreground tabular-nums">{allModels.length}</span>
-            </h3>
+      {/* Event Stream */}
+      <div className="space-y-4">
+        {/* Model filter bar */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setModelDialogOpen(true)}
+            className={cn(
+              'flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider px-2.5 py-1.5 border transition-colors',
+              selM ? 'text-brand border-brand/30 bg-brand/5' : 'text-muted-foreground border-border/50 hover:border-border'
+            )}
+          >
+            <BarChart3Icon className="size-3" />
+            MODELS
+            <span className="text-[9px] opacity-50">{allModels.length}</span>
+            {selM && <span className="text-[9px] text-brand ml-0.5">: {selM}</span>}
+          </button>
+          {selM && (
+            <button onClick={() => setSelM(null)} className="font-mono text-[10px] text-muted-foreground hover:text-foreground">
+              <XIcon className="size-3 inline mr-0.5" />
+              CLEAR
+            </button>
+          )}
+        </div>
+        <MetricsEventStream events={liveEvents} wsStatus={wsStatus} skipped={skipped} onClear={() => setLiveEvents([])} />
+      </div>
+
+      {/* Model Selector Dialog */}
+      <Dialog open={modelDialogOpen} onOpenChange={setModelDialogOpen}>
+        <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto p-0 gap-0">
+          <DialogHeader className="px-4 pt-4 pb-2 border-b border-border">
+            <DialogTitle className="font-display text-base tracking-wider text-foreground">SELECT MODEL</DialogTitle>
+          </DialogHeader>
+          <div className="px-4 py-3 space-y-1">
             {allModels.length === 0 ? (
               <p className="font-mono text-[12px] text-muted-foreground py-4 text-center">No model data yet</p>
             ) : (
-              <div className="space-y-1">
-                {allModels.map(m => {
-                  const sr = m.requests > 0 ? (m.successes / m.requests * 100) : null
-                  return (
-                    <button key={m.name} onClick={() => { setSelM(selM === m.name ? null : m.name); setSelP(null) }}
-                      className={cn('w-full text-left p-2 border transition-colors', selM === m.name ? 'border-brand/40 bg-brand/5' : 'border-border/50 hover:border-border bg-surface')}>
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono text-[12px] font-medium text-foreground truncate">{m.name}</span>
-                        {sr !== null && <span className={cn('font-mono text-[11px] tabular-nums ml-2 shrink-0', sr >= 95 ? 'text-brand' : sr >= 80 ? 'text-warning' : 'text-destructive')}>{sr.toFixed(1)}%</span>}
-                      </div>
-                      <div className="text-muted-foreground text-[10px] font-mono mt-0.5">{m.requests} reqs</div>
-                    </button>
-                  )
-                })}
-              </div>
+              allModels.map(m => {
+                const sr = m.requests > 0 ? (m.successes / m.requests * 100) : null
+                return (
+                  <button
+                    key={m.name}
+                    onClick={() => { setSelM(selM === m.name ? null : m.name); setSelP(null); setModelDialogOpen(false) }}
+                    className={cn(
+                      'w-full text-left p-3 border transition-colors',
+                      selM === m.name ? 'border-brand/40 bg-brand/5' : 'border-border/50 hover:border-border bg-surface'
+                    )}
+                  >
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className="font-mono text-[13px] font-semibold text-foreground">{m.name}</span>
+                      {sr !== null && (
+                        <span className={cn('font-mono text-[11px] tabular-nums ml-2 shrink-0', sr >= 95 ? 'text-brand' : sr >= 80 ? 'text-warning' : 'text-destructive')}>{sr.toFixed(1)}%</span>
+                      )}
+                    </div>
+                    <div className="text-muted-foreground text-[10px] font-mono">{m.requests} reqs · {m.successes} ok · {m.failures} fail</div>
+                  </button>
+                )
+              })
             )}
+            {/* Provider-specific models when a provider is selected */}
             {sdata && fmodels.length > 0 && (
               <>
-                <div className="section-header mt-4">{sdata.name} Models</div>
+                <div className="section-header mt-4">{sdata.name} MODELS</div>
                 {fmodels.map(m => {
                   const pt = pct(m.ttftVals, .9); const po = pct(m.outTpsVals, .9)
                   const is = selP === sdata.name && selM === m.name
                   return (
-                    <button key={`${sdata.name}-${m.name}`} onClick={() => { setSelP(sdata.name); setSelM(is ? null : m.name) }}
-                      className={cn('w-full text-left p-2 border transition-colors', is ? 'border-brand/40 bg-brand/5' : 'border-border/50 hover:border-border bg-surface')}>
-                      <div className="font-mono text-[12px] font-medium mb-1 text-foreground">{m.name}</div>
-                      <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[11px] font-mono">
-                        <span className="text-muted-foreground">P90 TTFT</span><span className="tabular-nums text-right">{pt !== null ? `${fmtNum(pt)}ms` : '—'}</span>
-                        <span className="text-muted-foreground">P90 TPS</span><span className="tabular-nums text-right">{po !== null ? po.toFixed(1) : '—'}</span>
-                        <span className="text-muted-foreground">REQS</span><span className="tabular-nums text-right">{m.requests}</span>
+                    <button
+                      key={`${sdata.name}-${m.name}`}
+                      onClick={() => { setSelP(sdata.name); setSelM(is ? null : m.name); setModelDialogOpen(false) }}
+                      className={cn('w-full text-left p-3 border transition-colors', is ? 'border-brand/40 bg-brand/5' : 'border-border/50 hover:border-border bg-surface')}
+                    >
+                      <div className="font-mono text-[13px] font-semibold mb-0.5 text-foreground">{m.name}</div>
+                      <div className="flex gap-4 text-[11px] font-mono text-muted-foreground">
+                        <span>P90 TTFT <span className="text-foreground tabular-nums ml-1">{pt !== null ? `${fmtNum(pt)}ms` : '—'}</span></span>
+                        <span>P90 TPS <span className="text-foreground tabular-nums ml-1">{po !== null ? po.toFixed(1) : '—'}</span></span>
+                        <span>REQS <span className="text-foreground tabular-nums ml-1">{m.requests}</span></span>
                       </div>
                     </button>
                   )
@@ -517,11 +557,13 @@ export default function Metrics() {
               </>
             )}
           </div>
-        </div>
-
-        {/* Event Stream */}
-        <MetricsEventStream events={liveEvents} wsStatus={wsStatus} skipped={skipped} onClear={() => setLiveEvents([])} />
-      </div>
+          <div className="px-4 py-2 border-t border-border flex justify-end">
+            <button onClick={() => setModelDialogOpen(false)} className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground px-2 py-1">
+              CLOSE
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
