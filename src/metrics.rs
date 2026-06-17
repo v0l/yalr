@@ -786,6 +786,16 @@ impl MetricsStore {
                     .bind(&json)
                     .execute(pool)
                     .await;
+
+                    // Prune rows older than 24h and cap to max_history_snapshots
+                    let cutoff = now.saturating_sub(24 * 3600 * 1000);
+                    let _ = sqlx::query(
+                        "DELETE FROM metrics_history WHERE timestamp_ms < ? OR timestamp_ms NOT IN (SELECT timestamp_ms FROM metrics_history ORDER BY timestamp_ms DESC LIMIT ?)"
+                    )
+                    .bind(cutoff as i64)
+                    .bind(self.max_history_snapshots as i64)
+                    .execute(pool)
+                    .await;
                 }
                 Err(e) => {
                     tracing::warn!(err = %e, "Failed to serialize metrics snapshot for DB");
