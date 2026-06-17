@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import AssignmentRow, { type AssignmentPatch } from './AssignmentRow'
-import ModelSelect from './ModelSelect'
+import ModelPicker from '@/components/ModelPicker'
 import { useModelCache } from './modelCache'
 
 interface AssignmentsPanelProps {
@@ -178,14 +178,16 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
             </div>
             <div className="flex flex-col gap-1">
               <label className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">Model</label>
-              <ModelSelect
+              <ModelPicker
                 className="w-44"
+                triggerSize="sm"
                 value={draft.model}
                 models={get(draft.slug).models}
                 loading={get(draft.slug).loading}
                 disabled={draft.provider_id === 0}
                 onOpen={() => draft.slug && ensure(draft.slug)}
                 onChange={m => setDraft(d => ({ ...d, model: m }))}
+                allowEmpty emptyLabel="no override" allowCustom
               />
             </div>
             <div className="flex flex-col gap-1">

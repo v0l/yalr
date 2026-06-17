@@ -4,8 +4,8 @@ import type { RoutingConfigProvider } from '../../types'
 import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
 import { cn } from '@/lib/utils'
-import ModelSelect from './ModelSelect'
-import type { ProviderModel } from './modelCache'
+import ModelPicker from '@/components/ModelPicker'
+import type { ModelEntry } from '@/components/ModelPicker'
 
 export interface AssignmentPatch { model?: string | null; weight?: number; is_active?: boolean }
 
@@ -14,7 +14,7 @@ interface AssignmentRowProps {
   index: number
   isPriority: boolean
   busy: boolean
-  models: ProviderModel[]
+  models: ModelEntry[]
   modelsLoading: boolean
   ensureModels: () => void
   onPatch: (patch: AssignmentPatch) => void
@@ -75,13 +75,15 @@ export default function AssignmentRow(props: AssignmentRowProps) {
         </div>
       </td>
       <td className="px-2 py-1.5 w-[34%]">
-        <ModelSelect
+        <ModelPicker
+          triggerSize="sm"
           value={a.model || ''}
           models={models}
           loading={modelsLoading}
           disabled={busy}
           onOpen={ensureModels}
           onChange={m => onPatch({ model: m || null })}
+          allowEmpty emptyLabel="no override" allowCustom
         />
       </td>
       <td className="px-2 py-1.5 w-20">
