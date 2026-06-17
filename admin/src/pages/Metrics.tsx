@@ -359,6 +359,8 @@ export default function Metrics() {
     ? (selM ? `${selP} / ${selM}` : selP)
     : selM ? `${selM} (all providers)` : 'ALL PROVIDERS'
 
+  const chartCols = 3 + (balanceLines.length > 0 ? 1 : 0) + (quotaLines.length > 0 ? 1 : 0)
+
   const ttStyle = { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '4px', fontSize: '11px', fontFamily: '"JetBrains Mono", monospace' }
 
   /* ── Render ──────────────────────────────────────────────────── */
@@ -448,7 +450,7 @@ export default function Metrics() {
 
       {/* Charts */}
       {hist && hist.length > 0 && (
-        <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
+        <div className={`grid grid-cols-1 ${chartCols === 3 ? 'xl:grid-cols-3' : chartCols === 4 ? 'xl:grid-cols-4' : 'xl:grid-cols-5'} gap-4`}>
           {/* TTFT Chart */}
           <div className="panel p-4">
             <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
