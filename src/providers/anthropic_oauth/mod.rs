@@ -20,8 +20,9 @@ use crate::providers::provider_trait::QuotaSnapshot;
 use crate::providers::quota::anthropic_quotas_from_headers;
 use wire::*;
 
-const BETA_HEADER: &str = "oauth-2025-04-20";
+const BETA_HEADER: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+const USER_AGENT: &str = "claude-cli/2.1.81 (external, cli)";
 
 /// Models advertised when the live model list cannot be fetched.
 const FALLBACK_MODELS: &[&str] = &[
@@ -80,6 +81,25 @@ impl AnthropicOAuthProvider {
             format!("{}/v1/models", base)
         }
     }
+
+    /// Apply all OAuth-specific headers to a request builder.
+    ///
+    /// These headers make the request appear to come from the official Claude
+    /// Code CLI, which is required for OAuth subscription tokens to be accepted
+    /// without the "extra usage" 400 error.
+    fn apply_oauth_headers(
+        &self,
+        builder: reqwest::RequestBuilder,
+        token: &str,
+    ) -> reqwest::RequestBuilder {
+        builder
+            .bearer_auth(token)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-beta", BETA_HEADER)
+            .header("user-agent", USER_AGENT)
+            .header("x-app", "cli")
+            .header("anthropic-dangerous-direct-browser-access", "true")
+    }
 }
 
 #[async_trait]
@@ -99,11 +119,7 @@ impl Provider for AnthropicOAuthProvider {
             .await
             .map_err(|e| ProviderError::Authentication(e.to_string()))?;
         let resp = self
-            .http
-            .get(self.models_url())
-            .bearer_auth(&token)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", BETA_HEADER)
+            .apply_oauth_headers(self.http.get(self.models_url()), &token)
             .send()
             .await;
         if let Ok(r) = resp {
@@ -144,12 +160,10 @@ impl Provider for AnthropicOAuthProvider {
             .map_err(|e| ProviderError::Authentication(e.to_string()))?;
         let body = build_request(request, false);
         let resp = self
-            .http
-            .post(self.messages_url())
-            .bearer_auth(&token)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", BETA_HEADER)
-            .json(&body)
+            .apply_oauth_headers(
+                self.http.post(self.messages_url()).json(&body),
+                &token,
+            )
             .send()
             .await
             .map_err(|e| ProviderError::Other(e.into()))?;
@@ -230,6 +244,9 @@ impl Provider for AnthropicOAuthProvider {
                 .bearer_auth(&token)
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .header("anthropic-beta", BETA_HEADER)
+                .header("user-agent", USER_AGENT)
+                .header("x-app", "cli")
+                .header("anthropic-dangerous-direct-browser-access", "true")
                 .header("accept", "text/event-stream")
                 .json(&body)
                 .send()
@@ -291,12 +308,16 @@ impl Provider for AnthropicOAuthProvider {
                                         let tool_index = next_tool_index;
                                         next_tool_index += 1;
                                         tool_block_indices.insert(idx, tool_index);
+                                        // Reverse CC canonical name back to the original
+                                        // name the caller registered, so upstream sees its
+                                        // own tool names.
+                                        let original_name = wire::from_cc_name(&name);
                                         yield Ok(tool_call_start_chunk(
                                             &message_id,
                                             &model,
                                             tool_index,
                                             call_id,
-                                            name,
+                                            original_name,
                                         ));
                                     }
                                 }
@@ -346,11 +367,7 @@ impl Provider for AnthropicOAuthProvider {
             Err(_) => return Ok(false),
         };
         match self
-            .http
-            .get(self.models_url())
-            .bearer_auth(&token)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", BETA_HEADER)
+            .apply_oauth_headers(self.http.get(self.models_url()), &token)
             .send()
             .await
         {

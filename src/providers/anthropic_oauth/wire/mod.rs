@@ -6,12 +6,16 @@
 //! - [`chunks`]: Anthropic response/stream -> OpenAI chat output.
 
 mod billing;
+mod cc_names;
 mod chunks;
 mod convert;
+mod shaping;
 
 pub use billing::*;
+pub use cc_names::{from_cc_name, remap_tool_defs, remap_tool_use_blocks, strip_cc_names};
 pub use chunks::*;
 pub use convert::*;
+pub use shaping::{shape_system_texts, split_assistant_tool_use_messages};
 
 use serde::{Deserialize, Serialize};
 
@@ -33,7 +37,7 @@ pub enum MessageContent {
 }
 
 /// Typed content blocks for an outgoing Anthropic message.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum RequestContentBlock {
     #[serde(rename = "text")]

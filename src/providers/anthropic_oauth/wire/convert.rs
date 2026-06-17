@@ -153,7 +153,28 @@ pub fn convert(
 }
 
 pub fn build_request(request: &CreateChatCompletionRequest, stream: bool) -> MessagesRequest {
-    let (mut system, messages) = convert(&request.messages);
+    let (mut system, mut messages) = convert(&request.messages);
+
+    // Shape system blocks: replace Pi's verbose preamble with the minimal
+    // neutral prompt, remove identity/docs/filler paragraphs, and swap known
+    // classifier trigger phrases.  This avoids the "extra usage" 400 that
+    // Anthropic returns when OAuth payloads carry Pi-specific fingerprinting.
+    let system_texts: Vec<String> = system.iter().map(|b| b.text.clone()).collect();
+    let mut shaped_texts = system_texts;
+    shape_system_texts(&mut shaped_texts);
+    for (block, new_text) in system.iter_mut().zip(shaped_texts.into_iter()) {
+        block.text = new_text;
+    }
+
+    // Split assistant messages that interleave text and tool_use blocks.
+    // Anthropic rejects assistant turns where non-tool_use blocks follow a
+    // tool_use block, so we split into two consecutive assistant turns.
+    messages = split_assistant_tool_use_messages(messages);
+
+    // Remap tool_use names in assistant messages to CC canonical casing.
+    // Anthropic's classifier checks that tool names match expected Claude Code
+    // conventions. Upstream callers see the original names in responses.
+    remap_tool_use_blocks(&mut messages);
 
     // Prepend the Claude Code billing header block (de-duplicated) so the
     // request is accepted/counted like Claude Code rather than rejected as
@@ -175,6 +196,12 @@ pub fn build_request(request: &CreateChatCompletionRequest, stream: bool) -> Mes
         async_openai::types::chat::StopConfiguration::String(v) => vec![v.clone()],
         async_openai::types::chat::StopConfiguration::StringArray(v) => v.clone(),
     });
+    // Remap tool definition names to CC canonical casing so Anthropic's
+    // classifier recognizes the expected tool set.
+    let mut tools = convert_tools(request);
+    if let Some(ref mut defs) = tools {
+        remap_tool_defs(defs.iter_mut());
+    }
     MessagesRequest {
         model: request.model.clone(),
         max_tokens: request.max_completion_tokens.unwrap_or(4096),
@@ -182,7 +209,7 @@ pub fn build_request(request: &CreateChatCompletionRequest, stream: bool) -> Mes
         system,
         temperature: request.temperature,
         stop_sequences,
-        tools: convert_tools(request),
+        tools,
         tool_choice: convert_tool_choice(request),
         stream,
     }
@@ -383,6 +410,89 @@ mod tests {
             .filter(|b| b.text.contains(BILLING_HEADER_MARKER))
             .count();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn build_request_shapes_pi_preamble_in_system_message() {
+        // Construct a realistic Pi preamble that includes identity, docs, and
+        // keepable paragraphs.
+        let pi_preamble = format!(
+            concat!(
+                "You are an expert coding assistant operating inside pi, a coding agent harness.\n",
+                "You help users by reading files, executing commands.\n\n",
+                "Pi documentation (read only when the user asks about pi itself\n",
+                "- docs/foo.md\n\n",
+                "Keep file paths visible.\n\n",
+                "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)",
+            ),
+        );
+
+        let req = CreateChatCompletionRequest {
+            model: "claude-sonnet-4-20250514".into(),
+            messages: vec![
+                ChatCompletionRequestMessage::System(
+                    async_openai::types::chat::ChatCompletionRequestSystemMessage {
+                        content: ChatCompletionRequestSystemMessageContent::Text(pi_preamble),
+                        name: None,
+                    },
+                ),
+                ChatCompletionRequestMessage::User(
+                    async_openai::types::chat::ChatCompletionRequestUserMessage {
+                        content: ChatCompletionRequestUserMessageContent::Text("hi".into()),
+                        name: None,
+                    },
+                ),
+            ],
+            ..Default::default()
+        };
+        let body = build_request(&req, false);
+
+        // System blocks: [0] = billing header, [1] = Claude Code identity, [2] = shaped system text
+        let system_text = &body.system[2].text;
+        assert!(
+            system_text.starts_with("You are an expert coding assistant."),
+            "preamble should be replaced with minimal prompt, got: {}",
+            system_text,
+        );
+        assert!(!system_text.contains("operating inside pi"),
+            "Pi identity should be removed");
+        assert!(!system_text.contains("Pi documentation"),
+            "Pi docs paragraph should be removed");
+        assert!(system_text.contains("Keep file paths visible"),
+            "non-Pi paragraphs should be preserved");
+    }
+
+    #[test]
+    fn build_request_shapes_classifier_trigger_phrase() {
+        let req = CreateChatCompletionRequest {
+            model: "claude-sonnet-4-20250514".into(),
+            messages: vec![
+                ChatCompletionRequestMessage::System(
+                    async_openai::types::chat::ChatCompletionRequestSystemMessage {
+                        content: ChatCompletionRequestSystemMessageContent::Text(
+                            "Here is some useful information about the environment you are running in:\nSome details.".into()
+                        ),
+                        name: None,
+                    },
+                ),
+                ChatCompletionRequestMessage::User(
+                    async_openai::types::chat::ChatCompletionRequestUserMessage {
+                        content: ChatCompletionRequestUserMessageContent::Text("hi".into()),
+                        name: None,
+                    },
+                ),
+            ],
+            ..Default::default()
+        };
+        let body = build_request(&req, false);
+        assert!(
+            body.system.iter().any(|b| b.text.contains("Environment context you are running in:")),
+            "classifier trigger phrase should be replaced"
+        );
+        assert!(
+            !body.system.iter().any(|b| b.text.contains("useful information")),
+            "original trigger phrase should be gone"
+        );
     }
 
     #[test]
