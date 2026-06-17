@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { api, API_BASE_URL } from '../api/client'
-import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse, CurrencyAmount, MetricsUser, QuotaSnapshot } from '../types'
-import { cn, formatBalance } from '@/lib/utils'
-import { worstQuota, quotaUsedPct } from '@/lib/quota'
+import type { WsProviderMetrics, MetricsResponse, MetricsSnapshot, HealthOverviewResponse, CurrencyAmount } from '../types'
+import { cn } from '@/lib/utils'
+import { quotaUsedPct } from '@/lib/quota'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
-import { ActivityIcon, GaugeIcon, BarChart3Icon, DollarSignIcon, ShieldAlertIcon,
-  UserIcon, KeyIcon
-} from 'lucide-react'
+import { ActivityIcon, GaugeIcon, BarChart3Icon, DollarSignIcon, ShieldAlertIcon } from 'lucide-react'
+import MetricsEventStream from './MetricsEventStream'
+import StatCard from '@/components/StatCard'
+import { has, pct, fmtNum, MAXL, MAXA } from './metricsHelpers'
 
 /* ── Aggregation types ─────────────────────────────────────────── */
 
@@ -19,88 +20,6 @@ interface AggProvider {
 interface ModelStats {
   name: string; requests: number; successes: number; failures: number
   ttftVals: number[]; latVals: number[]; outTpsVals: number[]; lastEvent: number
-}
-
-/* ── Helpers ────────────────────────────────────────────────────── */
-
-function fmtNum(n: number): string {
-  return n.toLocaleString('en-US')
-}
-
-function pct(v: number[], p: number): number | null {
-  if (v.length === 0) return null
-  const s = [...v].sort((a, b) => a - b)
-  return s[Math.round(p * (s.length - 1))]
-}
-
-function has<T extends string>(o: unknown, k: T): o is Record<T, unknown> {
-  return typeof o === 'object' && o !== null && k in o
-}
-
-type EK = 'ok' | 'warn' | 'err' | 'info'
-
-function fmt(e: WsProviderMetrics['event']): { label: string; value: string; kind: EK } {
-  if (e === 'Success') return { label: '✓', value: 'OK', kind: 'ok' }
-  if (has(e, 'TTFT')) return { label: 'TTFT', value: `${fmtNum(e.TTFT)}ms`, kind: 'info' }
-  if (has(e, 'OutputTokensPerSecond')) return { label: 'O/s', value: (e.OutputTokensPerSecond as number).toFixed(1), kind: 'info' }
-  if (has(e, 'InputTokensPerSecond')) return { label: 'I/s', value: (e.InputTokensPerSecond as number).toFixed(1), kind: 'info' }
-  if (has(e, 'TotalLatency')) return { label: 'LAT', value: `${fmtNum(e.TotalLatency)}ms`, kind: 'info' }
-  if (has(e, 'InputTokens')) return { label: 'IN', value: fmtNum(e.InputTokens), kind: 'info' }
-  if (has(e, 'OutputTokens')) return { label: 'OUT', value: fmtNum(e.OutputTokens), kind: 'info' }
-  if (has(e, 'Failure')) {
-    const f = e.Failure as { error_message: string }
-    return { label: 'FAIL', value: f.error_message, kind: 'err' }
-  }
-  if (has(e, 'ProviderLoad')) {
-    const l = e.ProviderLoad as { in_flight: number; max_concurrency: number | null }
-    return { label: 'LOAD', value: `${l.in_flight}${l.max_concurrency ? `/${l.max_concurrency}` : ''}`, kind: l.in_flight > 0 ? 'warn' : 'ok' }
-  }
-  if (has(e, 'Balance')) {
-    const b = e.Balance as CurrencyAmount
-    return { label: 'BAL', value: formatBalance(b.amount, b.currency), kind: 'info' }
-  }
-  if (has(e, 'Quota')) {
-    const all = (e.Quota ?? []) as QuotaSnapshot[]
-    const q = worstQuota(all)
-    if (!q) return { label: 'QUOTA', value: '—', kind: 'info' }
-    const usage = typeof q.used_pct === 'number'
-      ? `${q.used_pct.toFixed(0)}% used`
-      : (typeof q.remaining === 'number' ? `${q.remaining.toLocaleString()} left` : (q.status ?? '?'))
-    const v = q.window ? `${q.window} · ${usage}` : usage
-    const exhausted = q.status === 'rejected' || q.status === 'exceeded' || q.status === 'rate_limited' || (typeof q.used_pct === 'number' && q.used_pct >= 100)
-    return { label: 'QUOTA', value: v, kind: exhausted ? 'err' : (q.status === 'allowed_warning' ? 'warn' : 'info') }
-  }
-  return { label: '?', value: JSON.stringify(e), kind: 'info' }
-}
-
-function fmtUser(u?: MetricsUser | null): string {
-  if (!u) return ''
-  const parts: string[] = []
-  if (u.name) parts.push(u.name)
-  if (u.api_key_name) parts.push(`🔑 ${u.api_key_name}`)
-  if (parts.length === 0 && u.id) parts.push(`ID:${u.id}`)
-  return parts.join(' · ')
-}
-
-const MAXL = 200, MAXA = 500
-
-/** Normalize a CurrencyAmount to sats for consistent charting. */
-function normalizeBalance(b: CurrencyAmount): number {
-  switch (b.currency) {
-    case 'msats': return b.amount / 1000
-    case 'sats': return b.amount
-    case 'usd_micro': return b.amount / 1_000_000
-    default: return b.amount
-  }
-}
-
-/** Label for a CurrencyAmount. */
-function balanceUnit(b: CurrencyAmount): string {
-  switch (b.currency) {
-    case 'msats': case 'sats': return 'sats'
-    case 'usd_micro': return '$'
-    default: return ''
-  }
 }
 
 /* ═══════════════════════════════════════════════════════════════ */
@@ -117,7 +36,7 @@ export default function Metrics() {
   const [hist, setHist] = useState<MetricsSnapshot[] | null>(null)
   const [health, setHealth] = useState<HealthOverviewResponse | null>(null)
   const [loadingHist, setLoadingHist] = useState(false)
-  const endRef = useRef<HTMLDivElement>(null)
+  const [metricTotals, setMetricTotals] = useState<{ totalReqs: number; totalOk: number; totalFail: number } | null>(null)
   const reconnectT = useRef<ReturnType<typeof setTimeout> | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
 
@@ -160,6 +79,7 @@ export default function Metrics() {
       try {
         const [d, h] = await Promise.all([api.getMetrics(), api.getHealthOverview().catch(() => null)]) as [MetricsResponse, HealthOverviewResponse | null]
         if (h) setHealth(h)
+        setMetricTotals({ totalReqs: d.total_requests, totalOk: d.total_successes, totalFail: d.total_failures })
         const map = new Map<string, AggProvider>()
         for (const pr of d.providers) {
           if (pr.provider) map.set(pr.provider, {
@@ -244,28 +164,27 @@ export default function Metrics() {
   const plist = Array.from(providers.values()).sort((a, b) => a.name.localeCompare(b.name))
   const sdata = selP ? providers.get(selP) : null
 
+  /** Display amount in the currency's natural unit. */
+  function balanceDisplay(b: CurrencyAmount): number {
+    switch (b.currency) { case 'msats': return b.amount / 1000; case 'sats': return b.amount; case 'usd_micro': return b.amount / 1_000_000; default: return b.amount }
+  }
+
   const chartData = useMemo(() => {
     if (!hist) return []
     return hist.map(snap => {
-      const e: Record<string, unknown> = {
-        time: new Date(snap.timestamp_ms).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-      }
+      const e: Record<string, unknown> = { time: new Date(snap.timestamp_ms).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) }
       if (selP) {
         for (const p of snap.providers) {
           if (p.provider !== selP) continue
           if (selM && p.model !== selM) continue
           const k = `${p.provider}/${p.model}`
-          e[`t_${k}`] = p.p90_ttft_ms ?? null
-          e[`o_${k}`] = p.p90_output_tps ?? null
-          e[`i_${k}`] = p.p90_input_tps ?? null
+          e[`t_${k}`] = p.p90_ttft_ms ?? null; e[`o_${k}`] = p.p90_output_tps ?? null; e[`i_${k}`] = p.p90_input_tps ?? null
         }
       } else if (selM) {
         for (const p of snap.providers) {
           if (p.model !== selM) continue
           const k = `${p.provider}/${p.model}`
-          e[`t_${k}`] = p.p90_ttft_ms ?? null
-          e[`o_${k}`] = p.p90_output_tps ?? null
-          e[`i_${k}`] = p.p90_input_tps ?? null
+          e[`t_${k}`] = p.p90_ttft_ms ?? null; e[`o_${k}`] = p.p90_output_tps ?? null; e[`i_${k}`] = p.p90_input_tps ?? null
         }
       } else {
         let tt = 0, tN = 0, ot = 0, oN = 0, it = 0, iN = 0
@@ -274,20 +193,16 @@ export default function Metrics() {
           if (p.p90_output_tps != null) { ot += p.p90_output_tps; oN++ }
           if (p.p90_input_tps != null) { it += p.p90_input_tps; iN++ }
         }
-        e.ttft = tN ? tt / tN : null
-        e.out = oN ? ot / oN : null
-        e.inp = iN ? it / iN : null
+        e.ttft = tN ? tt / tN : null; e.out = oN ? ot / oN : null; e.inp = iN ? it / iN : null
       }
-
-      // Balance & quota from provider_health
       const ph = snap.provider_health ?? []
       if (selP) {
         const h = ph.find(p => p.provider === selP)
-        if (h?.balance) e[`bal_${selP}`] = normalizeBalance(h.balance)
+        if (h?.balance) { e[`bal_${selP}`] = balanceDisplay(h.balance); e[`bcur_${selP}`] = h.balance.currency }
         if (h?.quota) e[`quota_${selP}`] = quotaUsedPct(h.quota) ?? null
       } else {
         for (const h of ph) {
-          if (h.balance) e[`bal_${h.provider}`] = normalizeBalance(h.balance)
+          if (h.balance) { e[`bal_${h.provider}`] = balanceDisplay(h.balance); e[`bcur_${h.provider}`] = h.balance.currency }
           if (h.quota) e[`quota_${h.provider}`] = quotaUsedPct(h.quota) ?? null
         }
       }
@@ -305,21 +220,30 @@ export default function Metrics() {
       { key: 'out', name: 'Output TPS', color: clr[1] },
       { key: 'inp', name: 'Input TPS', color: clr[2] },
     ]
-    const out: { key: string; name: string; color: string }[] = []
-    all.forEach((k, i) => {
+    return all.map((k, i) => {
       const lp = k.slice(2).replace('/', ' / ')
       const lbl = k.startsWith('t_') ? `TTFT ${lp}` : k.startsWith('o_') ? `Out TPS ${lp}` : `In TPS ${lp}`
-      out.push({ key: k, name: lbl, color: clr[i % clr.length] })
+      return { key: k, name: lbl, color: clr[i % clr.length] }
     })
-    return out
   }, [chartData, selP])
 
   const balanceLines = useMemo(() => {
-    const ks = new Set<string>()
-    for (const d of chartData) for (const k of Object.keys(d)) { if (k.startsWith('bal_')) ks.add(k) }
+    const m = new Map<string, { key: string; name: string; color: string; currency: string }>()
+    for (const d of chartData) for (const k of Object.keys(d)) {
+      if (k.startsWith('bcur_')) m.set(k, { key: k, name: '', color: '', currency: d[k] as string })
+    }
     const clr = ['var(--brand)', 'var(--warning)', '#a855f7', '#ec4899', '#84cc16', '#f97316']
-    return Array.from(ks).map((k, i) => ({ key: k, name: k.slice(4), color: clr[i % clr.length] }))
+    const sorted = Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+    return sorted.map(([k, v], i) => {
+      const prov = k.slice(5)
+      const balK = `bal_${prov}`
+      return { key: balK, name: prov, color: clr[i % clr.length], currency: v.currency }
+    })
   }, [chartData])
+
+  /** Which balance lines go on right (USD) vs left (sats) axis. */
+  const balanceLeft = useMemo(() => balanceLines.filter(l => l.currency !== 'usd_micro'), [balanceLines])
+  const balanceRight = useMemo(() => balanceLines.filter(l => l.currency === 'usd_micro'), [balanceLines])
 
   const quotaLines = useMemo(() => {
     const ks = new Set<string>()
@@ -327,16 +251,6 @@ export default function Metrics() {
     const clr = ['var(--brand)', 'var(--warning)', '#a855f7', '#ec4899', '#84cc16', '#f97316']
     return Array.from(ks).map((k, i) => ({ key: k, name: k.slice(6), color: clr[i % clr.length] }))
   }, [chartData])
-
-  const balUnit = useMemo(() => {
-    if (!hist) return 'sats'
-    for (const snap of hist) {
-      for (const h of (snap.provider_health ?? [])) {
-        if (h.balance) return balanceUnit(h.balance)
-      }
-    }
-    return 'sats'
-  }, [hist])
 
   const fmodels = useMemo(() => {
     if (!sdata) return []
@@ -355,13 +269,19 @@ export default function Metrics() {
     return Array.from(map.entries()).map(([name, s]) => ({ name, ...s })).sort((a, b) => a.name.localeCompare(b.name))
   }, [plist])
 
-  const chartSubtitle = selP
-    ? (selM ? `${selP} / ${selM}` : selP)
-    : selM ? `${selM} (all providers)` : 'ALL PROVIDERS'
+  const chartSubtitle = selP ? (selM ? `${selP} / ${selM}` : selP) : selM ? `${selM} (all providers)` : 'ALL PROVIDERS'
 
-  const chartCols = 3 + (balanceLines.length > 0 ? 1 : 0) + (quotaLines.length > 0 ? 1 : 0)
+  const summaryStats = useMemo(() => {
+    const totalReqs = metricTotals?.totalReqs ?? plist.reduce((s, p) => s + p.totalRequests, 0)
+    const totalOk = metricTotals?.totalOk ?? plist.reduce((s, p) => s + p.successes, 0)
+    const sr = totalReqs > 0 ? (totalOk / totalReqs * 100) : null
+    const allTTFT = plist.flatMap(p => p.ttftVals)
+    const p90ttft = pct(allTTFT, 0.9)
+    const active = plist.filter(p => p.inFlight > 0 || (Date.now() - p.lastEvent < 60000)).length
+    return { totalReqs, totalOk, sr, p90ttft, active, total: plist.length }
+  }, [plist, metricTotals])
 
-  const ttStyle = { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '4px', fontSize: '11px', fontFamily: '"JetBrains Mono", monospace' }
+  const ttStyle = { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '2px', fontSize: '12px', fontFamily: '"JetBrains Mono", monospace', padding: '8px 12px' }
 
   /* ── Render ──────────────────────────────────────────────────── */
   return (
@@ -408,33 +328,21 @@ export default function Metrics() {
               <button
                 key={p.name}
                 onClick={() => { setSelP(is ? null : p.name); setSelM(null) }}
-                className={cn(
-                  'text-left p-3 border transition-colors cursor-pointer font-mono',
-                  is ? 'border-brand/50 bg-brand/5' : 'panel hover:border-brand/20'
-                )}
+                className={cn('text-left p-3 border transition-colors cursor-pointer font-mono', is ? 'border-brand/50 bg-brand/5' : 'panel hover:border-brand/20')}
               >
                 <div className="flex items-center justify-between mb-2 gap-1.5">
                   <span className="text-[13px] font-semibold truncate min-w-0">{p.name}</span>
                   <div className="flex items-center gap-1.5 shrink-0">
                     {h?.rate_limited && <span className="text-[9px] uppercase text-warning font-medium tracking-wider">RL</span>}
                     {h?.backoff_ms ? h.backoff_ms > 0 && <span className="text-[10px] text-muted-foreground tabular-nums">{h.backoff_ms >= 1000 ? `${(h.backoff_ms / 1000).toFixed(1)}s` : `${h.backoff_ms}ms`}</span> : null}
-                    {h && (
-                      <span className={cn(
-                        'w-1.5 h-1.5 rounded-full shrink-0',
-                        h.health_state === 'healthy' && 'bg-brand',
-                        h.health_state === 'degraded' && 'bg-warning',
-                        h.health_state === 'unhealthy' && 'bg-destructive'
-                      )} title={h.health_state} />
-                    )}
+                    {h && <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', h.health_state === 'healthy' && 'bg-brand', h.health_state === 'degraded' && 'bg-warning', h.health_state === 'unhealthy' && 'bg-destructive')} title={h.health_state} />}
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px]">
                   <span className="text-muted-foreground">LOAD</span>
                   <span className="tabular-nums text-right">{p.inFlight}{p.maxConcurrency ? <span className="text-muted-foreground">/{p.maxConcurrency}</span> : ''}</span>
                   <span className="text-muted-foreground">SUCCESS</span>
-                  <span className={cn('tabular-nums text-right', sr !== null ? (sr >= 95 ? 'text-brand' : sr >= 80 ? 'text-warning' : 'text-destructive') : 'text-muted-foreground')}>
-                    {sr !== null ? `${sr.toFixed(1)}%` : '—'}
-                  </span>
+                  <span className={cn('tabular-nums text-right', sr !== null ? (sr >= 95 ? 'text-brand' : sr >= 80 ? 'text-warning' : 'text-destructive') : 'text-muted-foreground')}>{sr !== null ? `${sr.toFixed(1)}%` : '—'}</span>
                   <span className="text-muted-foreground">P90 TTFT</span>
                   <span className="tabular-nums text-right">{tt !== null ? `${fmtNum(tt)}ms` : '—'}</span>
                   <span className="text-muted-foreground">P90 TPS</span>
@@ -448,124 +356,110 @@ export default function Metrics() {
         </div>
       )}
 
+      {/* Summary Stats */}
+      {plist.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <StatCard label="Providers" valueJsx value={
+            <><span className="text-brand">{summaryStats.active}</span><span className="text-muted-foreground text-[20px]">/{summaryStats.total}</span></>
+          } sub="active" color={plist.length === summaryStats.active ? 'green' : 'default'} />
+          <StatCard label="Total Requests" value={fmtNum(summaryStats.totalReqs)} sub={`${fmtNum(summaryStats.totalOk)} ok · ${fmtNum(summaryStats.totalReqs - summaryStats.totalOk)} fail`}
+            subGood={summaryStats.totalReqs > 0 && (summaryStats.totalReqs - summaryStats.totalOk) === 0}
+            subError={(summaryStats.totalReqs - summaryStats.totalOk) > 0} />
+          <StatCard label="Success Rate" value={summaryStats.sr !== null ? `${summaryStats.sr.toFixed(1)}%` : '—'}
+            sub={summaryStats.sr !== null ? (summaryStats.sr >= 99 ? 'EXCELLENT' : summaryStats.sr >= 95 ? 'GOOD' : 'DEGRADED') : undefined}
+            subGood={summaryStats.sr !== null && summaryStats.sr >= 99}
+            subError={summaryStats.sr !== null && summaryStats.sr < 95}
+            color={summaryStats.sr === null ? 'default' : summaryStats.sr >= 99 ? 'green' : summaryStats.sr >= 95 ? 'amber' : 'red'} />
+          <StatCard label="P90 TTFT" value={summaryStats.p90ttft !== null ? `${fmtNum(summaryStats.p90ttft)}ms` : '—'} sub="all providers" />
+        </div>
+      )}
+
       {/* Charts */}
       {hist && hist.length > 0 && (
-        <div className={`grid grid-cols-1 ${chartCols === 3 ? 'xl:grid-cols-3' : chartCols === 4 ? 'xl:grid-cols-4' : 'xl:grid-cols-5'} gap-4`}>
-          {/* TTFT Chart */}
-          <div className="panel p-4">
-            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
-              <ActivityIcon className="size-3.5 text-brand" />
-              P90 TTFT
-              <span className="ml-auto font-mono text-[11px] text-muted-foreground normal-case tracking-normal">{chartSubtitle}</span>
-            </h3>
-            {loadingHist ? (
-              <div className="h-48 flex items-center justify-center font-mono text-[13px] text-muted-foreground">Loading...</div>
-            ) : (
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
-                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
-                  <Tooltip contentStyle={ttStyle} />
-                  <Legend wrapperStyle={{ fontSize: '10px', fontFamily: '"JetBrains Mono", monospace' }} />
-                  {lines.filter(l => l.key.startsWith('t_') || l.key === 'ttft').map(l => (
-                    <Line key={l.key} type="monotone" dataKey={l.key} name={l.name} stroke={l.color} strokeWidth={2} dot={false} connectNulls />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-
-          {/* Output TPS Chart */}
-          <div className="panel p-4">
-            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
-              <GaugeIcon className="size-3.5 text-brand" />
-              P90 Output TPS
-              <span className="ml-auto font-mono text-[11px] text-muted-foreground normal-case tracking-normal">{chartSubtitle}</span>
-            </h3>
-            {loadingHist ? (
-              <div className="h-48 flex items-center justify-center font-mono text-[13px] text-muted-foreground">Loading...</div>
-            ) : (
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
-                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
-                  <Tooltip contentStyle={ttStyle} />
-                  <Legend wrapperStyle={{ fontSize: '10px', fontFamily: '"JetBrains Mono", monospace' }} />
-                  {lines.filter(l => l.key.startsWith('o_') || l.key === 'out').map(l => (
-                    <Line key={l.key} type="monotone" dataKey={l.key} name={l.name.replace(/^(Out TPS |P90 Out TPS )/, '')} stroke={l.color} strokeWidth={2} dot={false} connectNulls />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-
-          {/* Input TPS Chart */}
-          <div className="panel p-4">
-            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
-              <GaugeIcon className="size-3.5 text-warning" />
-              P90 Input TPS
-              <span className="ml-auto font-mono text-[11px] text-muted-foreground normal-case tracking-normal">{chartSubtitle}</span>
-            </h3>
-            {loadingHist ? (
-              <div className="h-48 flex items-center justify-center font-mono text-[13px] text-muted-foreground">Loading...</div>
-            ) : (
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
-                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
-                  <Tooltip contentStyle={ttStyle} />
-                  <Legend wrapperStyle={{ fontSize: '10px', fontFamily: '"JetBrains Mono", monospace' }} />
-                  {lines.filter(l => l.key.startsWith('i_') || l.key === 'inp').map(l => (
-                    <Line key={l.key} type="monotone" dataKey={l.key} name={l.name.replace(/^(In TPS |P90 In TPS )/, '')} stroke={l.color} strokeWidth={2} dot={false} connectNulls />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-
-          {/* Balance Chart */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {[
+            { key: 'ttft', icon: <ActivityIcon className="size-4 text-brand" />, label: 'P90 TTFT', filter: (l: typeof lines[0]) => l.key.startsWith('t_') || l.key === 'ttft' },
+            { key: 'out', icon: <GaugeIcon className="size-4 text-brand" />, label: 'P90 Output TPS', filter: (l: typeof lines[0]) => l.key.startsWith('o_') || l.key === 'out', rename: (n: string) => n.replace(/^(Out TPS |P90 Out TPS )/, '') },
+            { key: 'inp', icon: <GaugeIcon className="size-4 text-warning" />, label: 'P90 Input TPS', filter: (l: typeof lines[0]) => l.key.startsWith('i_') || l.key === 'inp', rename: (n: string) => n.replace(/^(In TPS |P90 In TPS )/, '') },
+          ].map(ch => (
+            <div key={ch.key} className="panel p-5">
+              <div className="flex items-center gap-2 mb-4">
+                {ch.icon}
+                <h3 className="font-mono text-[13px] uppercase tracking-[0.1em] text-foreground">{ch.label}</h3>
+                <span className="ml-auto font-mono text-[11px] text-muted-foreground">{chartSubtitle}</span>
+              </div>
+              {loadingHist ? (
+                <div className="flex items-center justify-center font-mono text-[13px] text-muted-foreground" style={{ height: 340 }}><span className="animate-pulse">LOADING...</span></div>
+              ) : (
+                <ResponsiveContainer width="100%" height={340}>
+                  <LineChart data={chartData} margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.4} />
+                    <XAxis dataKey="time" tick={{ fontSize: 11, fontFamily: '"JetBrains Mono", monospace', fill: 'var(--muted-foreground)' }} stroke="var(--border)" />
+                    <YAxis tick={{ fontSize: 11, fontFamily: '"JetBrains Mono", monospace', fill: 'var(--muted-foreground)' }} stroke="var(--border)" width={60} />
+                    <Tooltip contentStyle={ttStyle} />
+                    <Legend wrapperStyle={{ fontSize: '11px', fontFamily: '"JetBrains Mono", monospace', paddingTop: '12px' }} />
+                    {lines.filter(ch.filter).map(l => (
+                      <Line key={l.key} type="monotone" dataKey={l.key} name={ch.rename ? ch.rename(l.name) : l.name} stroke={l.color} strokeWidth={2} dot={false} connectNulls animationDuration={800} />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          ))}
           {balanceLines.length > 0 && (
-            <div className="panel p-4">
-              <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
-                <DollarSignIcon className="size-3.5 text-brand" />
-                Balance ({balUnit})
-                <span className="ml-auto font-mono text-[11px] text-muted-foreground normal-case tracking-normal">{chartSubtitle}</span>
-              </h3>
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
-                  <YAxis tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
-                  <Tooltip contentStyle={ttStyle} />
-                  <Legend wrapperStyle={{ fontSize: '10px', fontFamily: '"JetBrains Mono", monospace' }} />
-                  {balanceLines.map(l => (
-                    <Line key={l.key} type="monotone" dataKey={l.key} name={l.name} stroke={l.color} strokeWidth={2} dot={false} connectNulls />
+            <div className="panel p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <DollarSignIcon className="size-4 text-brand" />
+                <h3 className="font-mono text-[13px] uppercase tracking-[0.1em] text-foreground">Balance</h3>
+                <span className="ml-auto font-mono text-[11px] text-muted-foreground">{chartSubtitle}</span>
+              </div>
+              <ResponsiveContainer width="100%" height={340}>
+                <LineChart data={chartData} margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.4} />
+                  <XAxis dataKey="time" tick={{ fontSize: 11, fontFamily: '"JetBrains Mono", monospace', fill: 'var(--muted-foreground)' }} stroke="var(--border)" />
+                  {balanceLeft.length > 0 && (
+                    <YAxis yAxisId="left" tick={{ fontSize: 11, fontFamily: '"JetBrains Mono", monospace', fill: 'var(--muted-foreground)' }} stroke="var(--border)" width={60} label={{ value: 'sats', angle: -90, position: 'insideLeft', offset: -2, style: { fontSize: 10, fontFamily: '"JetBrains Mono", monospace', fill: 'var(--muted-foreground)' } }} />
+                  )}
+                  {balanceRight.length > 0 && (
+                    <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fontFamily: '"JetBrains Mono", monospace', fill: 'var(--muted-foreground)' }} stroke="var(--border)" width={60} label={{ value: '$', angle: 90, position: 'insideRight', offset: -2, style: { fontSize: 10, fontFamily: '"JetBrains Mono", monospace', fill: 'var(--muted-foreground)' } }} />
+                  )}
+                  <Tooltip
+                    contentStyle={ttStyle}
+                    labelFormatter={(label: string) => label}
+                    formatter={(v: number, _: string, entry: { dataKey?: string | number }) => {
+                      const line = balanceLines.find(l => l.key === entry.dataKey)
+                      const cur = line?.currency === 'usd_micro' ? '$' : 'sats'
+                      const prov = line?.name ?? ''
+                      return [`${v.toLocaleString('en-US', { maximumFractionDigits: 2 })} ${cur}`, prov]
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: '11px', fontFamily: '"JetBrains Mono", monospace', paddingTop: '12px' }} />
+                  {balanceLeft.map(l => (
+                    <Line key={l.key} yAxisId="left" type="monotone" dataKey={l.key} name={l.name} stroke={l.color} strokeWidth={2} dot={false} connectNulls animationDuration={800} />
+                  ))}
+                  {balanceRight.map(l => (
+                    <Line key={l.key} yAxisId="right" type="monotone" dataKey={l.key} name={l.name} stroke={l.color} strokeWidth={2} dot={false} connectNulls animationDuration={800} strokeDasharray="6 3" />
                   ))}
                 </LineChart>
               </ResponsiveContainer>
             </div>
           )}
-
-          {/* Quota Usage Chart */}
           {quotaLines.length > 0 && (
-            <div className="panel p-4">
-              <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
-                <ShieldAlertIcon className="size-3.5 text-warning" />
-                Quota Usage %
-                <span className="ml-auto font-mono text-[11px] text-muted-foreground normal-case tracking-normal">{chartSubtitle}</span>
-              </h3>
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="time" tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
-                  <YAxis domain={[0, 100]} tick={{ fontSize: 10, fontFamily: '"JetBrains Mono", monospace' }} stroke="currentColor" />
+            <div className="panel p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <ShieldAlertIcon className="size-4 text-warning" />
+                <h3 className="font-mono text-[13px] uppercase tracking-[0.1em] text-foreground">Quota Usage %</h3>
+                <span className="ml-auto font-mono text-[11px] text-muted-foreground">{chartSubtitle}</span>
+              </div>
+              <ResponsiveContainer width="100%" height={340}>
+                <LineChart data={chartData} margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.4} />
+                  <XAxis dataKey="time" tick={{ fontSize: 11, fontFamily: '"JetBrains Mono", monospace', fill: 'var(--muted-foreground)' }} stroke="var(--border)" />
+                  <YAxis domain={[0, 100]} tick={{ fontSize: 11, fontFamily: '"JetBrains Mono", monospace', fill: 'var(--muted-foreground)' }} stroke="var(--border)" width={60} />
                   <Tooltip contentStyle={ttStyle} />
-                  <Legend wrapperStyle={{ fontSize: '10px', fontFamily: '"JetBrains Mono", monospace' }} />
+                  <Legend wrapperStyle={{ fontSize: '11px', fontFamily: '"JetBrains Mono", monospace', paddingTop: '12px' }} />
                   {quotaLines.map(l => (
-                    <Line key={l.key} type="monotone" dataKey={l.key} name={l.name} stroke={l.color} strokeWidth={2} dot={false} connectNulls />
+                    <Line key={l.key} type="monotone" dataKey={l.key} name={l.name} stroke={l.color} strokeWidth={2} dot={false} connectNulls animationDuration={800} />
                   ))}
                 </LineChart>
               </ResponsiveContainer>
@@ -574,11 +468,10 @@ export default function Metrics() {
         </div>
       )}
 
-      {/* Bottom panels: model breakdown + event stream */}
+      {/* Bottom: model breakdown + event stream */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Left: Model Breakdown */}
-        <div className="lg:col-span-1 space-y-4">
-          {/* Model Breakdown */}
+        {/* Model Breakdown */}
+        <div className="lg:col-span-1">
           <div className="panel p-4">
             <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
               <BarChart3Icon className="size-3.5 text-brand" /> Models
@@ -591,21 +484,11 @@ export default function Metrics() {
                 {allModels.map(m => {
                   const sr = m.requests > 0 ? (m.successes / m.requests * 100) : null
                   return (
-                    <button
-                      key={m.name}
-                      onClick={() => { setSelM(selM === m.name ? null : m.name); setSelP(null) }}
-                      className={cn(
-                        'w-full text-left p-2 border transition-colors',
-                        selM === m.name ? 'border-brand/40 bg-brand/5' : 'border-border/50 hover:border-border bg-surface'
-                      )}
-                    >
+                    <button key={m.name} onClick={() => { setSelM(selM === m.name ? null : m.name); setSelP(null) }}
+                      className={cn('w-full text-left p-2 border transition-colors', selM === m.name ? 'border-brand/40 bg-brand/5' : 'border-border/50 hover:border-border bg-surface')}>
                       <div className="flex items-center justify-between">
                         <span className="font-mono text-[12px] font-medium text-foreground truncate">{m.name}</span>
-                        {sr !== null && (
-                          <span className={cn('font-mono text-[11px] tabular-nums ml-2 shrink-0', sr >= 95 ? 'text-brand' : sr >= 80 ? 'text-warning' : 'text-destructive')}>
-                            {sr.toFixed(1)}%
-                          </span>
-                        )}
+                        {sr !== null && <span className={cn('font-mono text-[11px] tabular-nums ml-2 shrink-0', sr >= 95 ? 'text-brand' : sr >= 80 ? 'text-warning' : 'text-destructive')}>{sr.toFixed(1)}%</span>}
                       </div>
                       <div className="text-muted-foreground text-[10px] font-mono mt-0.5">{m.requests} reqs</div>
                     </button>
@@ -617,26 +500,16 @@ export default function Metrics() {
               <>
                 <div className="section-header mt-4">{sdata.name} Models</div>
                 {fmodels.map(m => {
-                  const pt = pct(m.ttftVals, .9)
-                  const po = pct(m.outTpsVals, .9)
+                  const pt = pct(m.ttftVals, .9); const po = pct(m.outTpsVals, .9)
                   const is = selP === sdata.name && selM === m.name
                   return (
-                    <button
-                      key={`${sdata.name}-${m.name}`}
-                      onClick={() => { setSelP(sdata.name); setSelM(is ? null : m.name) }}
-                      className={cn(
-                        'w-full text-left p-2 border transition-colors',
-                        is ? 'border-brand/40 bg-brand/5' : 'border-border/50 hover:border-border bg-surface'
-                      )}
-                    >
+                    <button key={`${sdata.name}-${m.name}`} onClick={() => { setSelP(sdata.name); setSelM(is ? null : m.name) }}
+                      className={cn('w-full text-left p-2 border transition-colors', is ? 'border-brand/40 bg-brand/5' : 'border-border/50 hover:border-border bg-surface')}>
                       <div className="font-mono text-[12px] font-medium mb-1 text-foreground">{m.name}</div>
                       <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[11px] font-mono">
-                        <span className="text-muted-foreground">P90 TTFT</span>
-                        <span className="tabular-nums text-right">{pt !== null ? `${fmtNum(pt)}ms` : '—'}</span>
-                        <span className="text-muted-foreground">P90 TPS</span>
-                        <span className="tabular-nums text-right">{po !== null ? po.toFixed(1) : '—'}</span>
-                        <span className="text-muted-foreground">REQS</span>
-                        <span className="tabular-nums text-right">{m.requests}</span>
+                        <span className="text-muted-foreground">P90 TTFT</span><span className="tabular-nums text-right">{pt !== null ? `${fmtNum(pt)}ms` : '—'}</span>
+                        <span className="text-muted-foreground">P90 TPS</span><span className="tabular-nums text-right">{po !== null ? po.toFixed(1) : '—'}</span>
+                        <span className="text-muted-foreground">REQS</span><span className="tabular-nums text-right">{m.requests}</span>
                       </div>
                     </button>
                   )
@@ -646,69 +519,8 @@ export default function Metrics() {
           </div>
         </div>
 
-        {/* Right: Event Stream */}
-        <div className="lg:col-span-2">
-          <div className="panel p-4">
-            <h3 className="font-mono text-[12px] uppercase tracking-[0.1em] text-muted-foreground mb-3 flex items-center gap-2">
-              <ActivityIcon className="size-3.5 text-brand" /> Live Event Stream
-              <span className="ml-auto font-mono text-[11px] text-muted-foreground normal-case tracking-normal">({liveEvents.length})</span>
-            </h3>
-            <div className="space-y-0 max-h-[450px] overflow-y-auto font-mono text-[11px]">
-              <div className="flex items-center gap-2 px-1.5 py-1 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground sticky top-0 bg-surface">
-                <span className="shrink-0 w-[82px] text-right pr-2">TIME</span>
-                <span className="shrink-0 w-36">PROVIDER</span>
-                <span className="shrink-0 w-28">MODEL</span>
-                <span className="shrink-0 w-12">EVENT</span>
-                <span className="flex-1 min-w-0">VALUE</span>
-                <span className="shrink-0 w-28">USER</span>
-              </div>
-              {liveEvents.length === 0 ? (
-                <p className="text-muted-foreground py-12 text-center">{wsStatus === 'connected' ? 'WAITING FOR EVENTS...' : 'NOT CONNECTED'}</p>
-              ) : (
-                liveEvents.map((ev, i) => {
-                  const { label, value, kind } = fmt(ev.event)
-                  const d = new Date(ev.timestamp_ms)
-                  const t = d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                  const ms = String(d.getMilliseconds()).padStart(3, '0')
-                  const kc = kind === 'ok'
-                    ? 'text-brand'
-                    : kind === 'err'
-                      ? 'text-destructive'
-                      : kind === 'warn'
-                        ? 'text-warning'
-                        : 'text-muted-foreground'
-                  const userText = fmtUser(ev.user)
-                  return (
-                    <div
-                      key={`${ev.timestamp_ms}-${i}`}
-                      className={cn(
-                        'flex items-center gap-2 px-1.5 py-0.5 border-b border-border/50',
-                        i === 0 && 'bg-brand/5'
-                      )}
-                    >
-                      <span className="text-muted-foreground shrink-0 w-[82px] tabular-nums text-right pr-2">{t}.{ms}</span>
-                      <span className="font-medium shrink-0 w-36 truncate" title={ev.provider}>{ev.provider}</span>
-                      <span className="text-muted-foreground shrink-0 w-28 truncate" title={ev.model ?? ''}>{ev.model ?? ''}</span>
-                      <span className={cn('shrink-0 w-12 text-[10px] px-1 py-0 border font-mono uppercase tracking-wider text-center', kc)} style={{ borderColor: 'currentColor' }}>
-                        {label}
-                      </span>
-                      <span
-                        className={cn('truncate flex-1 min-w-0', kind === 'err' && 'cursor-copy hover:underline')}
-                        title={kind === 'err' ? `Click to copy: ${value}` : value}
-                        onClick={() => { if (kind === 'err') navigator.clipboard.writeText(value) }}
-                      >{value}</span>
-                      <span className="shrink-0 w-32 text-[10px] text-muted-foreground truncate flex items-center gap-1" title={userText}>
-                        {userText && userText.includes('🔑') ? <KeyIcon className="size-2.5 shrink-0" /> : userText ? <UserIcon className="size-2.5 shrink-0" /> : null}
-                        {userText}
-                      </span>
-                    </div>
-                  )
-                })
-              )}
-              <div ref={endRef} />
-            </div>
-          </div>
-        </div>
+        {/* Event Stream */}
+        <MetricsEventStream events={liveEvents} wsStatus={wsStatus} skipped={skipped} onClear={() => setLiveEvents([])} />
       </div>
     </div>
   )
