@@ -111,6 +111,7 @@ export default function ModelPicker({
           </div>
 
           <div className="max-h-[60vh] overflow-y-auto py-1">
+            {/* No-override option (config page: clear model restriction) */}
             {allowEmpty && (
               <button
                 type="button"
@@ -124,21 +125,7 @@ export default function ModelPicker({
                 {!value && <span className="text-[10px] text-brand font-mono uppercase tracking-wider shrink-0 ml-2">ACTIVE</span>}
               </button>
             )}
-            {filtered.map(m => (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => select(m.id)}
-                className={cn(
-                  'w-full text-left px-4 py-2.5 font-mono text-[13px] text-foreground hover:bg-surface border-b border-border/30 transition-colors flex items-center justify-between',
-                  m.id === value && 'bg-brand/5 border-l-2 border-l-brand'
-                )}
-              >
-                <span className="truncate">{m.id}</span>
-                {m.id === value && <span className="text-[10px] text-brand font-mono uppercase tracking-wider shrink-0 ml-2">ACTIVE</span>}
-              </button>
-            ))}
-            {/* Custom model entry */}
+            {/* Custom model entry — always at top */}
             {allowCustom && (
               <button
                 type="button"
@@ -168,6 +155,21 @@ export default function ModelPicker({
                 </div>
               </div>
             )}
+            {/* Alphabetically sorted model list */}
+            {filtered.map(m => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => select(m.id)}
+                className={cn(
+                  'w-full text-left px-4 py-2.5 font-mono text-[13px] text-foreground hover:bg-surface border-b border-border/30 transition-colors flex items-center justify-between',
+                  m.id === value && 'bg-brand/5 border-l-2 border-l-brand'
+                )}
+              >
+                <span className="truncate">{m.id}</span>
+                {m.id === value && <span className="text-[10px] text-brand font-mono uppercase tracking-wider shrink-0 ml-2">ACTIVE</span>}
+              </button>
+            ))}
             {filtered.length === 0 && !query.trim() && (
               <div className="px-4 py-8 text-center font-mono text-[12px] text-muted-foreground">no models available</div>
             )}
