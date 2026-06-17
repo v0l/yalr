@@ -109,6 +109,42 @@ React 19 + TypeScript 6 + Vite 8 SPA served at `/admin`. Features:
 - **Payments**: 4-tab layout — Balances overview, Model Pricing CRUD, Transaction history, Invoice list. Admin credit/debit adjustments
 - **Chat**: assistant-ui based chat interface with SSE streaming, model selector, message copying
 
+### Screenshots
+
+<p align="center">
+  <strong>Dark Mode</strong> &nbsp;|&nbsp; <strong>Light Mode</strong>
+</p>
+
+#### Dashboard
+
+<img src="docs/screenshots/dashboard-dark.png" alt="Dashboard Dark" width="49%" />
+<img src="docs/screenshots/dashboard-light.png" alt="Dashboard Light" width="49%" />
+
+#### Metrics
+
+<img src="docs/screenshots/metrics-dark.png" alt="Metrics Dark" width="49%" />
+<img src="docs/screenshots/metrics-light.png" alt="Metrics Light" width="49%" />
+
+#### Config
+
+<img src="docs/screenshots/config-dark.png" alt="Config Dark" width="49%" />
+<img src="docs/screenshots/config-light.png" alt="Config Light" width="49%" />
+
+#### Users
+
+<img src="docs/screenshots/users-dark.png" alt="Users Dark" width="49%" />
+<img src="docs/screenshots/users-light.png" alt="Users Light" width="49%" />
+
+#### Payments
+
+<img src="docs/screenshots/payments-dark.png" alt="Payments Dark" width="49%" />
+<img src="docs/screenshots/payments-light.png" alt="Payments Light" width="49%" />
+
+#### Chat
+
+<img src="docs/screenshots/chat-dark.png" alt="Chat Dark" width="49%" />
+<img src="docs/screenshots/chat-light.png" alt="Chat Light" width="49%" />
+
 See [AGENTS.md](AGENTS.md) for full design philosophy, theme system rules, and implementation conventions.
 
 ### REST API
