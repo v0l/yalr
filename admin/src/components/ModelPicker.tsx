@@ -43,7 +43,9 @@ export default function ModelPicker({
   const [customOpen, setCustomOpen] = useState(false)
   const [customText, setCustomText] = useState('')
 
-  const entries = useMemo(() => models.map(toEntry), [models])
+  const entries = useMemo(() =>
+    models.map(toEntry).sort((a, b) => a.id.localeCompare(b.id)),
+  [models])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
