@@ -78,6 +78,9 @@ pub enum MetricsEvent {
     /// Input tokens served from the provider's prompt cache (subset of
     /// `InputTokens`). Only emitted on a cache hit.
     CachedInputTokens(u32),
+    /// Input tokens written to the provider's prompt cache this request (the
+    /// cache being populated). Only emitted when a cache write occurs.
+    CacheWriteInputTokens(u32),
     /// Output tokens used
     OutputTokens(u32),
     /// Request success
@@ -233,6 +236,10 @@ impl MetricsEmitter {
 
     pub fn emit_cached_input_tokens(&self, provider: &str, model: &str, value: u32, user: Option<MetricsUser>) {
         self.emit(provider.to_string(), model.to_string(), MetricsEvent::CachedInputTokens(value), user);
+    }
+
+    pub fn emit_cache_write_input_tokens(&self, provider: &str, model: &str, value: u32, user: Option<MetricsUser>) {
+        self.emit(provider.to_string(), model.to_string(), MetricsEvent::CacheWriteInputTokens(value), user);
     }
 
     pub fn emit_output_tokens(&self, provider: &str, model: &str, value: u32, user: Option<MetricsUser>) {

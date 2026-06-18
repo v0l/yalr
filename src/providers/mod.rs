@@ -142,6 +142,12 @@ pub use async_openai::types::models::Model;
 
 pub use provider_trait::*;
 
+/// `extra_fields` key used to carry the prompt-cache *write* (creation) token
+/// count out of a provider's streaming usage chunk. OpenAI's `CompletionUsage`
+/// has no cache-write field, so providers stash it here and the router consumes
+/// and strips it before the chunk reaches the client.
+pub const CACHE_WRITE_TOKENS_FIELD: &str = "cache_creation_input_tokens";
+
 /// Custom stream response type that preserves additional fields like reasoning_content
 /// from models that support thinking/reasoning content (e.g., Qwen3.5).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -142,11 +142,13 @@ pub fn convert(
     let mut system = vec![SystemBlock {
         block_type: "text",
         text: CLAUDE_CODE_SYSTEM.to_string(),
+        cache_control: None,
     }];
     if !system_text.is_empty() {
         system.push(SystemBlock {
             block_type: "text",
             text: system_text,
+            cache_control: None,
         });
     }
     (system, out)
@@ -187,8 +189,21 @@ pub fn build_request(request: &CreateChatCompletionRequest, stream: bool) -> Mes
                 SystemBlock {
                     block_type: "text",
                     text,
+                    cache_control: None,
                 },
             );
+        }
+    }
+
+    // Inject a prompt-cache breakpoint on the last system block. Anthropic
+    // renders tools -> system -> messages, so this caches the tool definitions
+    // and the (large, stable) Claude Code system prompt together. Within a
+    // conversation the billing header is derived from the first user message and
+    // therefore stays constant, so turns 2+ read this prefix from cache. Gated
+    // by the shared `anthropic.prompt_cache` config toggle.
+    if crate::providers::anthropic::prompt_cache_enabled() {
+        if let Some(last) = system.last_mut() {
+            last.cache_control = Some(CacheControl::ephemeral());
         }
     }
 
@@ -493,6 +508,43 @@ mod tests {
             !body.system.iter().any(|b| b.text.contains("useful information")),
             "original trigger phrase should be gone"
         );
+    }
+
+    #[test]
+    fn build_request_marks_system_prefix_for_caching() {
+        let _guard = crate::providers::anthropic::CACHE_TOGGLE_TEST_LOCK.lock().unwrap();
+        crate::providers::anthropic::set_prompt_cache_enabled(true);
+        let req = CreateChatCompletionRequest {
+            model: "claude-sonnet-4-20250514".into(),
+            messages: vec![ChatCompletionRequestMessage::User(
+                async_openai::types::chat::ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Text("hi there".into()),
+                    name: None,
+                },
+            )],
+            ..Default::default()
+        };
+        let body = build_request(&req, false);
+        // Exactly one breakpoint, on the final system block, so tools + the whole
+        // system prompt are cached as a single prefix (Anthropic allows 4 max).
+        let marked: Vec<usize> = body
+            .system
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.cache_control.is_some())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(marked, vec![body.system.len() - 1]);
+        assert_eq!(
+            body.system.last().unwrap().cache_control.as_ref().unwrap().cache_type,
+            "ephemeral"
+        );
+
+        // Disabled: no system block is marked.
+        crate::providers::anthropic::set_prompt_cache_enabled(false);
+        let body = build_request(&req, false);
+        assert!(body.system.iter().all(|b| b.cache_control.is_none()));
+        crate::providers::anthropic::set_prompt_cache_enabled(true);
     }
 
     #[test]

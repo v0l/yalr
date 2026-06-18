@@ -183,12 +183,14 @@ pub(super) fn chat_completions_stream(
                         // with the output count on this `message_delta`, then map
                         // through the shared usage converter so cache tokens land
                         // in `prompt_tokens_details.cached_tokens`.
+                        let mut cache_write_tokens = 0u32;
                         let usage_info = usage.map(|delta_usage| {
                             let mut merged = start_usage.clone().unwrap_or_default();
                             merged.output_tokens = delta_usage.output_tokens;
                             if delta_usage.input_tokens.is_some() {
                                 merged.input_tokens = delta_usage.input_tokens;
                             }
+                            cache_write_tokens = merged.cache_creation_input_tokens.unwrap_or(0);
                             super::response::anthropic_usage_to_openai(&merged)
                         });
 
@@ -196,6 +198,16 @@ pub(super) fn chat_completions_stream(
                             .duration_since(UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs() as u32;
+
+                        // Carry the cache-write count out-of-band; OpenAI usage has
+                        // no field for it. The router consumes and strips this.
+                        let mut extra_fields = std::collections::HashMap::new();
+                        if cache_write_tokens > 0 {
+                            extra_fields.insert(
+                                CACHE_WRITE_TOKENS_FIELD.to_string(),
+                                serde_json::json!(cache_write_tokens),
+                            );
+                        }
 
                         let chunk = StreamingChunk {
                             id: message_id.clone(),
@@ -219,7 +231,7 @@ pub(super) fn chat_completions_stream(
                             #[allow(deprecated)]
                             system_fingerprint: None,
                             usage: usage_info,
-                            extra_fields: Default::default(),
+                            extra_fields,
                         };
                         yield Ok(chunk);
                     }

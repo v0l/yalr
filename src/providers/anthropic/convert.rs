@@ -219,10 +219,16 @@ pub fn set_prompt_cache_enabled(enabled: bool) {
     PROMPT_CACHE_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Whether to inject Anthropic prompt-cache breakpoints.
-fn prompt_cache_enabled() -> bool {
+/// Whether to inject Anthropic prompt-cache breakpoints. Shared by the native
+/// and OAuth Anthropic providers so both honour the single config toggle.
+pub fn prompt_cache_enabled() -> bool {
     PROMPT_CACHE_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
+
+/// Serializes tests that mutate the process-global cache toggle so they don't
+/// race each other (across both the native and OAuth provider test modules).
+#[cfg(test)]
+pub static CACHE_TOGGLE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Attach an ephemeral cache breakpoint to a message content block.
 fn set_cache_breakpoint(block: &mut async_anthropic::types::MessageContent) {
@@ -481,6 +487,7 @@ mod tests {
     // with anything else that reads it — keep all assertions in one test.
     #[tokio::test]
     async fn test_system_prompt_cache_breakpoint_toggle() {
+        let _guard = CACHE_TOGGLE_TEST_LOCK.lock().unwrap();
         let request = CreateChatCompletionRequest {
             model: "claude-3-5-sonnet-20241022".to_string(),
             messages: vec![],

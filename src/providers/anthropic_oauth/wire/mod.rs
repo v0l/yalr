@@ -21,11 +21,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::providers::*;
 
+/// Anthropic prompt-cache breakpoint (`{"type":"ephemeral"}`). Attaching it to a
+/// system block tells Anthropic to cache everything up to and including that
+/// block, so the stable prefix (tools + system prompt) is reused on later
+/// requests in the same conversation.
+#[derive(Debug, Clone, Serialize)]
+pub struct CacheControl {
+    #[serde(rename = "type")]
+    pub cache_type: &'static str,
+}
+
+impl CacheControl {
+    pub fn ephemeral() -> Self {
+        Self { cache_type: "ephemeral" }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct SystemBlock {
     #[serde(rename = "type")]
     pub block_type: &'static str,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 /// Anthropic request content: either a plain string or a list of typed blocks.

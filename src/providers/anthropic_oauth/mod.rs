@@ -346,6 +346,7 @@ impl Provider for AnthropicOAuthProvider {
                             // Merge the prompt/cache counts from message_start with
                             // the output count on this message_delta, then map both
                             // through the shared converter so cache tokens surface.
+                            let mut cache_write_tokens = 0u32;
                             let usage = event.usage.map(|delta_usage| {
                                 let mut merged = start_usage.clone().unwrap_or_default();
                                 merged.output_tokens = delta_usage.output_tokens;
@@ -358,9 +359,10 @@ impl Provider for AnthropicOAuthProvider {
                                 if delta_usage.cache_read_input_tokens > 0 {
                                     merged.cache_read_input_tokens = delta_usage.cache_read_input_tokens;
                                 }
+                                cache_write_tokens = merged.cache_creation_input_tokens;
                                 usage_to_openai(&merged)
                             });
-                            yield Ok(final_chunk(&message_id, &model, fr, usage));
+                            yield Ok(final_chunk(&message_id, &model, fr, usage, cache_write_tokens));
                         }
                         _ => {}
                     }

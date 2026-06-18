@@ -1021,13 +1021,14 @@ impl Router {
                         let mut prompt_tokens = 0u32;
                         let mut completion_tokens = 0u32;
                         let mut cached_tokens = 0u32;
+                        let mut cache_write_tokens = 0u32;
                         let mut ttft_ms = 0u32;
 
                         let mut stream: futures::stream::BoxStream<'static, Result<StreamingChunk, ProviderError>> = provider_stream;
 
                         while let Some(result) = stream.next().await {
                             match result {
-                                Ok(chunk) => {
+                                Ok(mut chunk) => {
                                     if first_token {
                                         first_token = false;
                                         ttft_ms = start.elapsed().as_millis() as u32;
@@ -1043,6 +1044,13 @@ impl Router {
                                             .as_ref()
                                             .and_then(|d| d.cached_tokens)
                                             .unwrap_or(0);
+                                    }
+
+                                    // Cache-write count rides out-of-band in extra_fields
+                                    // (OpenAI usage has no field for it). Consume and strip
+                                    // it so the client sees a clean chunk.
+                                    if let Some(v) = chunk.extra_fields.remove(crate::providers::CACHE_WRITE_TOKENS_FIELD) {
+                                        cache_write_tokens = v.as_u64().unwrap_or(0) as u32;
                                     }
 
                                     chunks_yielded = true;
@@ -1162,6 +1170,9 @@ impl Router {
                                 metrics_store.emitter().emit_input_tokens(&provider_name, &original_model, prompt_tokens, user.clone());
                                 if cached_tokens > 0 {
                                     metrics_store.emitter().emit_cached_input_tokens(&provider_name, &original_model, cached_tokens, user.clone());
+                                }
+                                if cache_write_tokens > 0 {
+                                    metrics_store.emitter().emit_cache_write_input_tokens(&provider_name, &original_model, cache_write_tokens, user.clone());
                                 }
                                 metrics_store.emitter().emit_output_tokens(&provider_name, &original_model, completion_tokens, user.clone());
                             }

@@ -155,7 +155,17 @@ pub fn final_chunk(
     model: &str,
     finish_reason: Option<FinishReason>,
     usage: Option<CompletionUsage>,
+    cache_write_tokens: u32,
 ) -> StreamingChunk {
+    // Carry the cache-write count out-of-band; OpenAI usage has no field for it.
+    // The router consumes and strips this before the chunk reaches the client.
+    let mut extra_fields = std::collections::HashMap::new();
+    if cache_write_tokens > 0 {
+        extra_fields.insert(
+            CACHE_WRITE_TOKENS_FIELD.to_string(),
+            serde_json::json!(cache_write_tokens),
+        );
+    }
     StreamingChunk {
         id: id.to_string(),
         object: "chat.completion.chunk".to_string(),
@@ -178,7 +188,7 @@ pub fn final_chunk(
         #[allow(deprecated)]
         system_fingerprint: None,
         usage,
-        extra_fields: Default::default(),
+        extra_fields,
     }
 }
 

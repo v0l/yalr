@@ -22,6 +22,7 @@ export function fmt(e: WsProviderMetrics['event']): { label: string; value: stri
   if (has(e, 'TotalLatency')) return { label: 'LAT', value: `${fmtNum(e.TotalLatency)}ms`, kind: 'info' }
   if (has(e, 'InputTokens')) return { label: 'IN', value: fmtNum(e.InputTokens), kind: 'info' }
   if (has(e, 'CachedInputTokens')) return { label: 'CACHE', value: fmtNum(e.CachedInputTokens), kind: 'ok' }
+  if (has(e, 'CacheWriteInputTokens')) return { label: 'CACHE+', value: fmtNum(e.CacheWriteInputTokens), kind: 'info' }
   if (has(e, 'OutputTokens')) return { label: 'OUT', value: fmtNum(e.OutputTokens), kind: 'info' }
   if (has(e, 'Failure')) {
     const f = e.Failure as { error_message: string }
@@ -63,7 +64,7 @@ export function eventKind(ev: WsProviderMetrics): 'success' | 'failure' | 'load'
   if (has(ev.event, 'Failure')) return 'failure'
   if (has(ev.event, 'ProviderLoad')) return 'load'
   if (has(ev.event, 'Balance') || has(ev.event, 'Quota')) return 'balance'
-  if (has(ev.event, 'TTFT') || has(ev.event, 'OutputTokensPerSecond') || has(ev.event, 'InputTokensPerSecond') || has(ev.event, 'TotalLatency') || has(ev.event, 'InputTokens') || has(ev.event, 'CachedInputTokens') || has(ev.event, 'OutputTokens')) return 'info'
+  if (has(ev.event, 'TTFT') || has(ev.event, 'OutputTokensPerSecond') || has(ev.event, 'InputTokensPerSecond') || has(ev.event, 'TotalLatency') || has(ev.event, 'InputTokens') || has(ev.event, 'CachedInputTokens') || has(ev.event, 'CacheWriteInputTokens') || has(ev.event, 'OutputTokens')) return 'info'
   return 'other'
 }
 
