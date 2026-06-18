@@ -1,5 +1,4 @@
 use yalr::{api, config, metrics};
-use std::env;
 use clap::Parser;
 
 #[derive(Parser)]
@@ -28,9 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     metrics_store.load_history_from_db().await;
     metrics_store.start_history_snapshots(300); // 5-minute intervals
 
-    let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{}:{}", config.host, config.port);
 
     tracing::info!(addr = %addr, "Starting YALR");
 

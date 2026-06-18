@@ -12,3 +12,9 @@ auth:
   enabled: true
   # allowed_pubkeys:
   #   - "your_pubkey_here"
+
+# Anthropic provider behaviour
+anthropic:
+  # Inject prompt-cache breakpoints (system/tools + growing conversation prefix).
+  # On by default; set to false for purely one-shot traffic.
+  prompt_cache: true

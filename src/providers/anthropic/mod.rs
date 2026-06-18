@@ -21,6 +21,7 @@ use tokio::sync::RwLock;
 use super::*;
 
 use convert::{build_anthropic_request, build_client, convert_messages};
+pub use convert::set_prompt_cache_enabled;
 use response::{anthropic_response_to_openai, map_anthropic_error};
 
 /// Anthropic-specific provider using the async-anthropic crate.

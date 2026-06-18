@@ -81,12 +81,10 @@ fn default_api_key() -> secrecy::SecretString {
     if cfg!(test) {
         return "test".into();
     }
-    std::env::var("ANTHROPIC_API_KEY")
-        .unwrap_or_else(|_| {
-            tracing::warn!("Default Anthropic client initialized without api key");
-            String::new()
-        })
-        .into()
+    // The router always sets the API key explicitly via the builder; a default
+    // client with no key is a misconfiguration rather than an env-var lookup.
+    tracing::warn!("Default Anthropic client initialized without api key");
+    String::new().into()
 }
 
 impl Client {

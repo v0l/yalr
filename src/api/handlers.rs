@@ -41,6 +41,7 @@ mod tests {
             },
             auth: None,
             payments: None,
+            anthropic: Default::default(),
         };
 
         let app_config = crate::config::AppConfig {
@@ -52,6 +53,8 @@ mod tests {
             auth_config: crate::auth::nip98::AuthConfig::default(),
             payments_config: None,
             admin_ui_path: "/app/admin/dist".to_string(),
+            host: "0.0.0.0".to_string(),
+            port: 3000,
         };
 
         let session_store = Arc::new(SessionStore::new());

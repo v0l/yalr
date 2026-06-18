@@ -20,6 +20,10 @@ RUN apt-get update && \
 # Copy manifests first for dependency caching
 COPY Cargo.toml Cargo.lock ./
 
+# Vendored path dependencies (e.g. async-anthropic) must be present for the
+# dependency-only build below to resolve them.
+COPY vendor ./vendor
+
 # Create dummy source for dependency compilation
 RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/bin/server.rs && \

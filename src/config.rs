@@ -9,6 +9,27 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub auth: Option<AuthConfig>,
     pub payments: Option<PaymentsConfig>,
+    #[serde(default)]
+    pub anthropic: AnthropicConfig,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct AnthropicConfig {
+    /// Inject Anthropic prompt-cache breakpoints (system/tools + the growing
+    /// conversation prefix). On by default; set to `false` for purely one-shot
+    /// traffic where the cache-write premium wouldn't pay off.
+    #[serde(default = "default_true")]
+    pub prompt_cache: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AnthropicConfig {
+    fn default() -> Self {
+        Self { prompt_cache: true }
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -47,6 +68,7 @@ impl Default for Config {
             },
             auth: None,
             payments: None,
+            anthropic: AnthropicConfig::default(),
         }
     }
 }
@@ -106,6 +128,8 @@ pub struct AppConfig {
     pub auth_config: crate::auth::nip98::AuthConfig,
     pub payments_config: Option<PaymentsConfig>,
     pub admin_ui_path: String,
+    pub host: String,
+    pub port: u16,
 }
 
 impl AppConfig {
@@ -135,10 +159,15 @@ impl AppConfig {
             }
         }).unwrap_or_default();
 
+        // Apply provider-level feature toggles sourced from the config file.
+        crate::providers::anthropic::set_prompt_cache_enabled(config.anthropic.prompt_cache);
+
         let payments_config = config.payments;
         let admin_ui_path = config.server.admin_ui_path.clone();
+        let host = config.server.host.clone();
+        let port = config.server.port;
 
-        Ok(Self { db, router, auth_config, payments_config, admin_ui_path })
+        Ok(Self { db, router, auth_config, payments_config, admin_ui_path, host, port })
     }
 
     pub async fn load_providers(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

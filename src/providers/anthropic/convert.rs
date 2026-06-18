@@ -206,13 +206,22 @@ pub(super) fn build_client(
     builder.build().unwrap_or_default()
 }
 
-/// Whether to inject Anthropic prompt-cache breakpoints. On by default; set
-/// `YALR_ANTHROPIC_PROMPT_CACHE` to `0`/`false`/`off`/`no` to disable (e.g. for
-/// purely one-shot traffic where the cache-write premium wouldn't pay off).
+/// Process-wide prompt-cache toggle, sourced from `anthropic.prompt_cache` in
+/// the config file (default on). Set once at startup by
+/// [`set_prompt_cache_enabled`].
+static PROMPT_CACHE_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// Configure whether to inject Anthropic prompt-cache breakpoints. Driven by the
+/// `anthropic.prompt_cache` setting in the main config file; disable for purely
+/// one-shot traffic where the cache-write premium wouldn't pay off.
+pub fn set_prompt_cache_enabled(enabled: bool) {
+    PROMPT_CACHE_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether to inject Anthropic prompt-cache breakpoints.
 fn prompt_cache_enabled() -> bool {
-    std::env::var("YALR_ANTHROPIC_PROMPT_CACHE")
-        .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no"))
-        .unwrap_or(true)
+    PROMPT_CACHE_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Attach an ephemeral cache breakpoint to a message content block.
@@ -499,7 +508,7 @@ mod tests {
         // Enabled (default + explicit): system becomes a cached text block, and
         // the last content block of the last message gets a cache breakpoint
         // while earlier blocks do not.
-        std::env::set_var("YALR_ANTHROPIC_PROMPT_CACHE", "1");
+        set_prompt_cache_enabled(true);
         let built = build_anthropic_request(Some("You are helpful".to_string()), two_user_msgs(), &request);
         match built.system.expect("system should be set") {
             async_anthropic::types::SystemPrompt::Blocks(blocks) => {
@@ -518,14 +527,15 @@ mod tests {
         assert!(cache_of(&built.messages[1]).is_some(), "last message must be marked");
 
         // Disabled: system stays a plain string and no message is marked.
-        std::env::set_var("YALR_ANTHROPIC_PROMPT_CACHE", "off");
+        set_prompt_cache_enabled(false);
         let built = build_anthropic_request(Some("You are helpful".to_string()), two_user_msgs(), &request);
         assert!(matches!(
             built.system,
             Some(async_anthropic::types::SystemPrompt::Text(_))
         ));
         assert!(cache_of(&built.messages[1]).is_none(), "no message marked when disabled");
-        std::env::remove_var("YALR_ANTHROPIC_PROMPT_CACHE");
+        // Restore the default so other tests in this binary aren't affected.
+        set_prompt_cache_enabled(true);
     }
 
     #[tokio::test]
