@@ -122,9 +122,16 @@ pub async fn chat_completions_handler(
 
     match state.config.router.chat_completions(&request, Some(metrics_user)).await {
         Ok(response) => {
+            let cached_tokens = response
+                .usage
+                .as_ref()
+                .and_then(|u| u.prompt_tokens_details.as_ref())
+                .and_then(|d| d.cached_tokens)
+                .unwrap_or(0);
             tracing::info!(
                 model = request.model,
                 completion_id = response.id,
+                cached_tokens,
                 "Request completed successfully"
             );
 

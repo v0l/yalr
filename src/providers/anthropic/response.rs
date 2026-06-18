@@ -67,13 +67,7 @@ pub(super) fn anthropic_response_to_openai(
         _ => None,
     };
 
-    let usage = response.usage.as_ref().map(|u| CompletionUsage {
-        prompt_tokens: u.input_tokens.unwrap_or(0),
-        completion_tokens: u.output_tokens.unwrap_or(0),
-        total_tokens: u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0),
-        completion_tokens_details: None,
-        prompt_tokens_details: None,
-    });
+    let usage = response.usage.as_ref().map(|u| anthropic_usage_to_openai(u));
 
     let message = async_openai::types::chat::ChatCompletionResponseMessage {
         content: Some(text),
@@ -102,6 +96,39 @@ pub(super) fn anthropic_response_to_openai(
         #[allow(deprecated)]
         system_fingerprint: None,
         object: "chat.completion".to_string(),
+    }
+}
+
+/// Convert an Anthropic usage block to OpenAI `CompletionUsage`.
+///
+/// Anthropic reports `input_tokens` as the *uncached* prompt remainder, with
+/// cache-write (`cache_creation_input_tokens`) and cache-read
+/// (`cache_read_input_tokens`) counted separately. OpenAI's `prompt_tokens` is
+/// the full prompt size, so we sum all three; the cache-read portion is also
+/// surfaced under `prompt_tokens_details.cached_tokens`, matching how OpenAI
+/// reports its own automatic prompt caching.
+pub(super) fn anthropic_usage_to_openai(u: &async_anthropic::types::Usage) -> CompletionUsage {
+    let input = u.input_tokens.unwrap_or(0);
+    let cache_creation = u.cache_creation_input_tokens.unwrap_or(0);
+    let cache_read = u.cache_read_input_tokens.unwrap_or(0);
+    let prompt_tokens = input + cache_creation + cache_read;
+    let completion_tokens = u.output_tokens.unwrap_or(0);
+
+    let prompt_tokens_details = if cache_creation > 0 || cache_read > 0 {
+        Some(async_openai::types::chat::PromptTokensDetails {
+            audio_tokens: None,
+            cached_tokens: Some(cache_read),
+        })
+    } else {
+        None
+    };
+
+    CompletionUsage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens + completion_tokens,
+        completion_tokens_details: None,
+        prompt_tokens_details,
     }
 }
 
@@ -194,6 +221,7 @@ mod tests {
                 async_anthropic::types::MessageContent::Text(
                     async_anthropic::types::Text {
                         text: "Hello there!".to_string(),
+                        ..Default::default()
                     },
                 ),
             ]),
@@ -203,6 +231,7 @@ mod tests {
             usage: Some(async_anthropic::types::Usage {
                 input_tokens: Some(10),
                 output_tokens: Some(5),
+                ..Default::default()
             }),
         };
 
@@ -219,6 +248,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_usage_maps_cache_tokens() {
+        let usage = async_anthropic::types::Usage {
+            input_tokens: Some(100),
+            output_tokens: Some(30),
+            cache_creation_input_tokens: Some(20),
+            cache_read_input_tokens: Some(500),
+        };
+        let mapped = anthropic_usage_to_openai(&usage);
+        // prompt_tokens is the full prompt: uncached + cache-write + cache-read.
+        assert_eq!(mapped.prompt_tokens, 620);
+        assert_eq!(mapped.completion_tokens, 30);
+        assert_eq!(mapped.total_tokens, 650);
+        let details = mapped.prompt_tokens_details.expect("cache details present");
+        assert_eq!(details.cached_tokens, Some(500));
+    }
+
+    #[tokio::test]
+    async fn test_usage_no_cache_details_when_uncached() {
+        let usage = async_anthropic::types::Usage {
+            input_tokens: Some(42),
+            output_tokens: Some(7),
+            ..Default::default()
+        };
+        let mapped = anthropic_usage_to_openai(&usage);
+        assert_eq!(mapped.prompt_tokens, 42);
+        assert!(mapped.prompt_tokens_details.is_none());
+    }
+
+    #[tokio::test]
     async fn test_response_to_openai_tool_calls() {
         let response = async_anthropic::types::CreateMessagesResponse {
             id: Some("msg_1".to_string()),
@@ -227,12 +285,13 @@ mod tests {
                     id: "call_1".to_string(),
                     name: "get_weather".to_string(),
                     input: serde_json::json!({ "city": "Paris" }),
+                    ..Default::default()
                 }),
             ]),
             model: Some("claude-3-haiku-20240307".to_string()),
             stop_reason: Some("tool_use".to_string()),
             stop_sequence: None,
-            usage: Some(async_anthropic::types::Usage { input_tokens: Some(5), output_tokens: Some(3) }),
+            usage: Some(async_anthropic::types::Usage { input_tokens: Some(5), output_tokens: Some(3), ..Default::default() }),
         };
         let result = anthropic_response_to_openai(&response, "claude-3-haiku-20240307");
         assert_eq!(

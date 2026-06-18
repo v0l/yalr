@@ -168,6 +168,16 @@ pub struct ResponseUsage {
     pub input_tokens: u32,
     #[serde(default)]
     pub output_tokens: u32,
+    #[serde(default)]
+    pub input_tokens_details: Option<InputTokensDetails>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct InputTokensDetails {
+    /// Input tokens served from OpenAI's automatic prompt cache (subset of
+    /// `input_tokens`).
+    #[serde(default)]
+    pub cached_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -202,12 +212,27 @@ pub fn now_secs() -> u32 {
 }
 
 pub fn usage_to_openai(u: &ResponseUsage) -> CompletionUsage {
+    // The Responses API reports `input_tokens` as the full prompt size (cached
+    // tokens included), with the cache-hit subset under `input_tokens_details`.
+    // So `prompt_tokens` maps directly; we only surface the cached count.
+    let cached = u
+        .input_tokens_details
+        .as_ref()
+        .map(|d| d.cached_tokens)
+        .unwrap_or(0);
     CompletionUsage {
         prompt_tokens: u.input_tokens,
         completion_tokens: u.output_tokens,
         total_tokens: u.input_tokens + u.output_tokens,
         completion_tokens_details: None,
-        prompt_tokens_details: None,
+        prompt_tokens_details: if cached > 0 {
+            Some(async_openai::types::chat::PromptTokensDetails {
+                audio_tokens: None,
+                cached_tokens: Some(cached),
+            })
+        } else {
+            None
+        },
     }
 }
 
@@ -305,6 +330,38 @@ mod tests {
         assert_eq!(input.len(), 1);
         assert_eq!(input[0].role, "user");
         assert_eq!(input[0].content[0].part_type, "input_text");
+    }
+
+    #[test]
+    fn usage_surfaces_cached_tokens() {
+        // Responses API shape: input_tokens is the full prompt, cached subset
+        // lives under input_tokens_details.
+        let u: ResponseUsage = serde_json::from_value(serde_json::json!({
+            "input_tokens": 1000,
+            "output_tokens": 50,
+            "input_tokens_details": { "cached_tokens": 800 }
+        }))
+        .unwrap();
+        let mapped = usage_to_openai(&u);
+        assert_eq!(mapped.prompt_tokens, 1000);
+        assert_eq!(mapped.completion_tokens, 50);
+        assert_eq!(mapped.total_tokens, 1050);
+        assert_eq!(
+            mapped.prompt_tokens_details.and_then(|d| d.cached_tokens),
+            Some(800)
+        );
+    }
+
+    #[test]
+    fn usage_no_cache_details_when_uncached() {
+        let u = ResponseUsage {
+            input_tokens: 42,
+            output_tokens: 7,
+            input_tokens_details: None,
+        };
+        let mapped = usage_to_openai(&u);
+        assert_eq!(mapped.prompt_tokens, 42);
+        assert!(mapped.prompt_tokens_details.is_none());
     }
 
     #[test]

@@ -114,12 +114,43 @@ pub struct ContentBlock {
     pub input: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct AnthropicUsage {
     #[serde(default)]
     pub input_tokens: u32,
     #[serde(default)]
     pub output_tokens: u32,
+    #[serde(default)]
+    pub cache_creation_input_tokens: u32,
+    #[serde(default)]
+    pub cache_read_input_tokens: u32,
+}
+
+/// Convert an Anthropic usage block to OpenAI `CompletionUsage`.
+///
+/// Anthropic reports `input_tokens` as the *uncached* prompt remainder, with
+/// cache-write/read counted separately; OpenAI's `prompt_tokens` is the full
+/// prompt, so we sum all three and surface the cache-read subset under
+/// `prompt_tokens_details.cached_tokens`.
+pub fn usage_to_openai(u: &AnthropicUsage) -> CompletionUsage {
+    let prompt_tokens =
+        u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens;
+    CompletionUsage {
+        prompt_tokens,
+        completion_tokens: u.output_tokens,
+        total_tokens: prompt_tokens + u.output_tokens,
+        completion_tokens_details: None,
+        prompt_tokens_details: if u.cache_creation_input_tokens > 0
+            || u.cache_read_input_tokens > 0
+        {
+            Some(async_openai::types::chat::PromptTokensDetails {
+                audio_tokens: None,
+                cached_tokens: Some(u.cache_read_input_tokens),
+            })
+        } else {
+            None
+        },
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +173,9 @@ pub struct StreamEvent {
 pub struct StreamMessage {
     #[serde(default)]
     pub id: Option<String>,
+    /// Present on `message_start`; carries the input + cache token counts.
+    #[serde(default)]
+    pub usage: Option<AnthropicUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,5 +228,35 @@ mod tests {
         assert_eq!(finish_reason(Some("end_turn")), Some(FinishReason::Stop));
         assert_eq!(finish_reason(Some("tool_use")), Some(FinishReason::ToolCalls));
         assert_eq!(finish_reason(None), None);
+    }
+
+    #[test]
+    fn usage_surfaces_cache_tokens() {
+        let u = AnthropicUsage {
+            input_tokens: 100,
+            output_tokens: 30,
+            cache_creation_input_tokens: 20,
+            cache_read_input_tokens: 500,
+        };
+        let mapped = usage_to_openai(&u);
+        // prompt_tokens is the full prompt: uncached + cache-write + cache-read.
+        assert_eq!(mapped.prompt_tokens, 620);
+        assert_eq!(mapped.total_tokens, 650);
+        assert_eq!(
+            mapped.prompt_tokens_details.and_then(|d| d.cached_tokens),
+            Some(500)
+        );
+    }
+
+    #[test]
+    fn usage_no_cache_details_when_uncached() {
+        let u = AnthropicUsage {
+            input_tokens: 42,
+            output_tokens: 7,
+            ..Default::default()
+        };
+        let mapped = usage_to_openai(&u);
+        assert_eq!(mapped.prompt_tokens, 42);
+        assert!(mapped.prompt_tokens_details.is_none());
     }
 }

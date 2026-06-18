@@ -52,7 +52,7 @@ pub(super) fn convert_messages(
                         role: async_anthropic::types::MessageRole::User,
                         content: async_anthropic::types::MessageContentList(vec![
                             async_anthropic::types::MessageContent::Text(
-                                async_anthropic::types::Text { text: content },
+                                async_anthropic::types::Text { text: content, ..Default::default() },
                             ),
                         ]),
                     };
@@ -77,7 +77,7 @@ pub(super) fn convert_messages(
                     let mut blocks: Vec<async_anthropic::types::MessageContent> = Vec::new();
                     if !text.is_empty() {
                         blocks.push(async_anthropic::types::MessageContent::Text(
-                            async_anthropic::types::Text { text },
+                            async_anthropic::types::Text { text, ..Default::default() },
                         ));
                     }
 
@@ -94,6 +94,7 @@ pub(super) fn convert_messages(
                                         id: f.id.clone(),
                                         name: f.function.name.clone(),
                                         input,
+                                        ..Default::default()
                                     },
                                 ));
                             }
@@ -104,7 +105,7 @@ pub(super) fn convert_messages(
                     // text block when an assistant turn has neither text nor tools.
                     if blocks.is_empty() {
                         blocks.push(async_anthropic::types::MessageContent::Text(
-                            async_anthropic::types::Text { text: String::new() },
+                            async_anthropic::types::Text { text: String::new(), ..Default::default() },
                         ));
                     }
 
@@ -127,6 +128,7 @@ pub(super) fn convert_messages(
                             tool_use_id: tool_msg.tool_call_id.clone(),
                             content: Some(content),
                             is_error: false,
+                            ..Default::default()
                         },
                     );
 
@@ -204,14 +206,46 @@ pub(super) fn build_client(
     builder.build().unwrap_or_default()
 }
 
+/// Whether to inject Anthropic prompt-cache breakpoints. On by default; set
+/// `YALR_ANTHROPIC_PROMPT_CACHE` to `0`/`false`/`off`/`no` to disable (e.g. for
+/// purely one-shot traffic where the cache-write premium wouldn't pay off).
+fn prompt_cache_enabled() -> bool {
+    std::env::var("YALR_ANTHROPIC_PROMPT_CACHE")
+        .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no"))
+        .unwrap_or(true)
+}
+
+/// Attach an ephemeral cache breakpoint to a message content block.
+fn set_cache_breakpoint(block: &mut async_anthropic::types::MessageContent) {
+    use async_anthropic::types::{CacheControl, MessageContent};
+    let cc = Some(CacheControl::ephemeral());
+    match block {
+        MessageContent::Text(t) => t.cache_control = cc,
+        MessageContent::ToolUse(t) => t.cache_control = cc,
+        MessageContent::ToolResult(t) => t.cache_control = cc,
+    }
+}
+
 /// Build an Anthropic create messages request from the OpenAI-format request.
 pub(super) fn build_anthropic_request(
     system: Option<String>,
-    messages: Vec<async_anthropic::types::Message>,
+    mut messages: Vec<async_anthropic::types::Message>,
     request: &CreateChatCompletionRequest,
 ) -> async_anthropic::types::CreateMessagesRequest {
     let mut builder = async_anthropic::types::CreateMessagesRequestBuilder::default();
     builder.model(&request.model);
+
+    // Incremental conversation caching: mark the last content block of the last
+    // message with a cache breakpoint. Each turn's breakpoint reads the prior
+    // cached prefix and extends it, so a growing multi-turn conversation is
+    // served largely from cache. Combined with the system-prompt breakpoint
+    // this stays within Anthropic's 4-breakpoint limit (2 used).
+    if prompt_cache_enabled() {
+        if let Some(last_block) = messages.last_mut().and_then(|m| m.content.last_mut()) {
+            set_cache_breakpoint(last_block);
+        }
+    }
+
     builder.messages(messages);
     builder.max_tokens(request.max_completion_tokens.unwrap_or(4096) as i32);
 
@@ -240,8 +274,17 @@ pub(super) fn build_anthropic_request(
         }
     }
 
-    if let Some(ref system_content) = system {
-        builder.system(system_content.clone());
+    if let Some(system_content) = system {
+        // Mark the system prompt with an ephemeral cache breakpoint. Anthropic
+        // renders tools -> system -> messages, so a breakpoint on the system
+        // block caches the tool definitions and system prompt together — the
+        // large, stable prefix that repeats across requests. Prefixes below the
+        // model's minimum cacheable size are silently ignored by the provider.
+        if prompt_cache_enabled() {
+            builder.system(async_anthropic::types::SystemPrompt::cached(system_content));
+        } else {
+            builder.system(system_content);
+        }
     }
 
     if let Some(tools) = convert_tools(request) {
@@ -423,6 +466,66 @@ mod tests {
         let (_s, msgs) = convert_messages(&[tool("a"), tool("b")]);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content.len(), 2);
+    }
+
+    // Toggles the process-global cache env var, so it must not run concurrently
+    // with anything else that reads it — keep all assertions in one test.
+    #[tokio::test]
+    async fn test_system_prompt_cache_breakpoint_toggle() {
+        let request = CreateChatCompletionRequest {
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            messages: vec![],
+            ..Default::default()
+        };
+
+        let two_user_msgs = || {
+            convert_messages(&[
+                ChatCompletionRequestMessage::User(
+                    async_openai::types::chat::ChatCompletionRequestUserMessage {
+                        content: ChatCompletionRequestUserMessageContent::Text("first".to_string()),
+                        name: None,
+                    },
+                ),
+                ChatCompletionRequestMessage::User(
+                    async_openai::types::chat::ChatCompletionRequestUserMessage {
+                        content: ChatCompletionRequestUserMessageContent::Text("second".to_string()),
+                        name: None,
+                    },
+                ),
+            ])
+            .1
+        };
+
+        // Enabled (default + explicit): system becomes a cached text block, and
+        // the last content block of the last message gets a cache breakpoint
+        // while earlier blocks do not.
+        std::env::set_var("YALR_ANTHROPIC_PROMPT_CACHE", "1");
+        let built = build_anthropic_request(Some("You are helpful".to_string()), two_user_msgs(), &request);
+        match built.system.expect("system should be set") {
+            async_anthropic::types::SystemPrompt::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                assert_eq!(blocks[0].text, "You are helpful");
+                let cc = blocks[0].cache_control.as_ref().expect("cache_control present");
+                assert_eq!(cc.cache_type, "ephemeral");
+            }
+            other => panic!("expected cached system blocks, got {other:?}"),
+        }
+        let cache_of = |m: &async_anthropic::types::Message| match m.content.last() {
+            Some(async_anthropic::types::MessageContent::Text(t)) => t.cache_control.clone(),
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert!(cache_of(&built.messages[0]).is_none(), "earlier message must not be marked");
+        assert!(cache_of(&built.messages[1]).is_some(), "last message must be marked");
+
+        // Disabled: system stays a plain string and no message is marked.
+        std::env::set_var("YALR_ANTHROPIC_PROMPT_CACHE", "off");
+        let built = build_anthropic_request(Some("You are helpful".to_string()), two_user_msgs(), &request);
+        assert!(matches!(
+            built.system,
+            Some(async_anthropic::types::SystemPrompt::Text(_))
+        ));
+        assert!(cache_of(&built.messages[1]).is_none(), "no message marked when disabled");
+        std::env::remove_var("YALR_ANTHROPIC_PROMPT_CACHE");
     }
 
     #[tokio::test]

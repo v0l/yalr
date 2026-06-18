@@ -1,0 +1,33 @@
+# Vendored fork of async-anthropic 0.6.0 (https://github.com/bosun-ai/async-anthropic).
+# Forked in-tree to add Anthropic prompt-caching support: `cache_control` on the
+# system prompt and `cache_creation_input_tokens` / `cache_read_input_tokens` on
+# the usage block, neither of which the upstream 0.6.0 release models.
+[package]
+name = "async-anthropic"
+version = "0.6.0"
+edition = "2021"
+description = "Anthropic Rust Client (vendored fork with prompt-caching support)."
+license = "MIT"
+repository = "https://github.com/bosun-ai/async-anthropic"
+
+[lib]
+name = "async_anthropic"
+path = "src/lib.rs"
+
+[features]
+default = ["rustls"]
+native-tls = ["reqwest/native-tls"]
+rustls = ["reqwest/rustls-tls-native-roots"]
+
+[dependencies]
+backoff = { version = "0.4", features = ["futures", "tokio"] }
+derive_builder = "0.20.2"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+reqwest-eventsource = "0.6.0"
+secrecy = "0.10.3"
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0", default-features = false }
+thiserror = "2.0"
+tokio = { version = "1", default-features = false }
+tokio-stream = { version = "0.1.14", default-features = false }
+tracing = "0.1.41"

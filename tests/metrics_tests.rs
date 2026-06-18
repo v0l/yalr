@@ -11,19 +11,31 @@ fn create_test_event(provider: &str, model: &str, event: MetricsEvent) -> Provid
         model: model.to_string(),
         timestamp_ms: 0,
         event,
+        user: None,
     }
 }
 
 #[tokio::test]
 async fn test_metrics_emitter_success() {
     let (_emitter, store) = create_test_metrics();
-    
+
     let event = create_test_event("provider1", "model1", MetricsEvent::Success);
     store.record(event).await;
-    
+
     let events = store.get_events_for("provider1", Some("model1")).await;
     assert_eq!(events.len(), 1);
     assert!(matches!(events[0].event, MetricsEvent::Success));
+}
+
+#[tokio::test]
+async fn test_metrics_emitter_cached_input_tokens() {
+    let (emitter, store) = create_test_metrics();
+
+    emitter.emitter().emit_cached_input_tokens("provider1", "model1", 512, None);
+
+    let events = store.get_events_for("provider1", Some("model1")).await;
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0].event, MetricsEvent::CachedInputTokens(512)));
 }
 
 #[tokio::test]

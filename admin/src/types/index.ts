@@ -181,6 +181,7 @@ export type WsMetricsEvent =
   | { InputTokensPerSecond: number }
   | { TotalLatency: number }
   | { InputTokens: number }
+  | { CachedInputTokens: number }
   | { OutputTokens: number }
   | 'Success'
   | { Failure: WsFailureDetails }

@@ -541,6 +541,27 @@ impl Router {
         // Providers must be added via explicit routing config in the database.
     }
 
+    /// Register an in-memory round-robin routing table for `model`, spreading
+    /// across `providers` with equal weight. Replaces any existing table for
+    /// that model. This is the programmatic alternative to DB-backed routing
+    /// config (see [`reload_config`]) for embedding scenarios and tests that
+    /// route to in-memory providers rather than DB-configured ones. The
+    /// providers should also be registered via [`add_provider`].
+    pub async fn register_route(&self, model: &str, providers: Vec<Arc<dyn Provider>>) {
+        let entries = providers
+            .into_iter()
+            .map(|provider| ProviderEntry {
+                provider,
+                model_override: None,
+                weight: 1,
+            })
+            .collect();
+        self.routing_tables
+            .write()
+            .await
+            .insert(model.to_string(), RoutingTable::with_strategy(entries, StrategyKind::RoundRobin));
+    }
+
     pub async fn remove_provider(&self, slug: &str) {
         self.providers.write().await.remove(slug);
 
@@ -860,6 +881,19 @@ impl Router {
                             tokens.prompt_tokens,
                             user.clone(),
                         );
+                        if let Some(cached) = tokens
+                            .prompt_tokens_details
+                            .as_ref()
+                            .and_then(|d| d.cached_tokens)
+                            .filter(|&c| c > 0)
+                        {
+                            self.metrics_store.emitter().emit_cached_input_tokens(
+                                &provider_name,
+                                &original_model,
+                                cached,
+                                user.clone(),
+                            );
+                        }
                         self.metrics_store.emitter().emit_output_tokens(
                             &provider_name,
                             &original_model,
@@ -986,6 +1020,7 @@ impl Router {
                         let mut total_tokens = 0u32;
                         let mut prompt_tokens = 0u32;
                         let mut completion_tokens = 0u32;
+                        let mut cached_tokens = 0u32;
                         let mut ttft_ms = 0u32;
 
                         let mut stream: futures::stream::BoxStream<'static, Result<StreamingChunk, ProviderError>> = provider_stream;
@@ -1003,6 +1038,11 @@ impl Router {
                                         prompt_tokens = usage.prompt_tokens;
                                         completion_tokens = usage.completion_tokens;
                                         total_tokens = usage.total_tokens;
+                                        cached_tokens = usage
+                                            .prompt_tokens_details
+                                            .as_ref()
+                                            .and_then(|d| d.cached_tokens)
+                                            .unwrap_or(0);
                                     }
 
                                     chunks_yielded = true;
@@ -1120,6 +1160,9 @@ impl Router {
                                 metrics_store.emitter().emit_output_tokens_per_second(&provider_name, &original_model, output_tokens_per_sec, user.clone());
                                 metrics_store.emitter().emit_input_tokens_per_second(&provider_name, &original_model, input_tokens_per_sec, user.clone());
                                 metrics_store.emitter().emit_input_tokens(&provider_name, &original_model, prompt_tokens, user.clone());
+                                if cached_tokens > 0 {
+                                    metrics_store.emitter().emit_cached_input_tokens(&provider_name, &original_model, cached_tokens, user.clone());
+                                }
                                 metrics_store.emitter().emit_output_tokens(&provider_name, &original_model, completion_tokens, user.clone());
                             }
 

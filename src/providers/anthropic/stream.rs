@@ -24,6 +24,10 @@ pub(super) fn chat_completions_stream(
             let mut anthropic_stream = client.messages().create_stream(anthropic_request).await;
 
             let mut message_id = String::new();
+            // Anthropic reports prompt + cache token counts on `message_start`
+            // and the output count on `message_delta`. Hold the start usage so
+            // the final usage chunk can report both together.
+            let mut start_usage: Option<async_anthropic::types::Usage> = None;
             // Maps an Anthropic content-block index to its OpenAI tool_call index.
             let mut tool_block_indices: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
             let mut next_tool_index: u32 = 0;
@@ -40,6 +44,7 @@ pub(super) fn chat_completions_stream(
                 match event {
                     async_anthropic::types::MessagesStreamEvent::MessageStart { message, .. } => {
                         message_id = message.id;
+                        start_usage = message.usage;
                     }
                     async_anthropic::types::MessagesStreamEvent::ContentBlockStart { index, content_block } => {
                         if let async_anthropic::types::MessageContent::ToolUse(tool_use) = content_block {
@@ -174,12 +179,17 @@ pub(super) fn chat_completions_stream(
                             _ => None,
                         };
 
-                        let usage_info = usage.map(|u| CompletionUsage {
-                            prompt_tokens: u.input_tokens.unwrap_or(0),
-                            completion_tokens: u.output_tokens.unwrap_or(0),
-                            total_tokens: u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0),
-                            completion_tokens_details: None,
-                            prompt_tokens_details: None,
+                        // Combine the prompt/cache counts seen on `message_start`
+                        // with the output count on this `message_delta`, then map
+                        // through the shared usage converter so cache tokens land
+                        // in `prompt_tokens_details.cached_tokens`.
+                        let usage_info = usage.map(|delta_usage| {
+                            let mut merged = start_usage.clone().unwrap_or_default();
+                            merged.output_tokens = delta_usage.output_tokens;
+                            if delta_usage.input_tokens.is_some() {
+                                merged.input_tokens = delta_usage.input_tokens;
+                            }
+                            super::response::anthropic_usage_to_openai(&merged)
                         });
 
                         let created = SystemTime::now()

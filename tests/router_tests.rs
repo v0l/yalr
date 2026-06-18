@@ -167,9 +167,10 @@ async fn test_router_with_single_provider() {
     let provider1 = Arc::new(MockProvider::new("provider1"));
 
     router.add_provider(provider1.clone()).await;
+    router.register_route("test-model", vec![provider1.clone()]).await;
 
     let request = create_test_request("test-model");
-    let response = router.chat_completions(&request).await;
+    let response = router.chat_completions(&request, None).await;
 
     assert!(response.is_ok());
 }
@@ -186,11 +187,17 @@ async fn test_router_round_robin_distribution() {
     router.add_provider(provider1.clone()).await;
     router.add_provider(provider2.clone()).await;
     router.add_provider(provider3.clone()).await;
+    router
+        .register_route(
+            "test-model",
+            vec![provider1.clone(), provider2.clone(), provider3.clone()],
+        )
+        .await;
 
     let mut results = Vec::new();
-    for i in 0..6 {
-        let request = create_test_request(&format!("model-{}", i));
-        let response = router.chat_completions(&request).await;
+    for _ in 0..6 {
+        let request = create_test_request("test-model");
+        let response = router.chat_completions(&request, None).await;
         assert!(response.is_ok());
         results.push(response.unwrap().id);
     }
@@ -211,7 +218,7 @@ async fn test_router_with_failing_provider() {
     router.add_provider(provider2.clone()).await;
 
     let request = create_test_request("test-model");
-    let response = router.chat_completions(&request).await;
+    let response = router.chat_completions(&request, None).await;
 
     assert!(response.is_ok() || response.is_err());
 }
@@ -222,7 +229,7 @@ async fn test_router_no_providers() {
     let (router, _metrics) = create_test_router_with_db(db);
 
     let request = create_test_request("test-model");
-    let response = router.chat_completions(&request).await;
+    let response = router.chat_completions(&request, None).await;
 
     assert!(matches!(response, Err(RouterError::NoAvailableProvider)));
 }
@@ -234,9 +241,10 @@ async fn test_router_streaming() {
 
     let provider1 = Arc::new(MockProvider::new("provider1"));
     router.add_provider(provider1.clone()).await;
+    router.register_route("test-model", vec![provider1.clone()]).await;
 
     let request = create_test_stream_request("test-model");
-    let stream_result = router.chat_completions_stream(&request).await;
+    let stream_result = router.chat_completions_stream(&request, None).await;
 
     assert!(stream_result.is_ok());
 
@@ -258,9 +266,10 @@ async fn test_router_streaming_with_failure() {
 
     let provider1 = Arc::new(MockProvider::new("provider1").with_failure());
     router.add_provider(provider1.clone()).await;
+    router.register_route("test-model", vec![provider1.clone()]).await;
 
     let request = create_test_stream_request("test-model");
-    let stream_result = router.chat_completions_stream(&request).await;
+    let stream_result = router.chat_completions_stream(&request, None).await;
 
     assert!(stream_result.is_ok());
 
@@ -283,12 +292,12 @@ async fn test_router_slug_based_routing() {
     router.add_provider(anthropic_provider.clone()).await;
 
     let request = create_test_request("openai/gpt-4");
-    let response = router.chat_completions(&request).await;
+    let response = router.chat_completions(&request, None).await;
     assert!(response.is_ok());
     assert_eq!(response.unwrap().id, "mock-openai-primary");
 
     let request = create_test_request("anthropic/claude-3");
-    let response = router.chat_completions(&request).await;
+    let response = router.chat_completions(&request, None).await;
     assert!(response.is_ok());
     assert_eq!(response.unwrap().id, "mock-anthropic-main");
 }
@@ -302,7 +311,7 @@ async fn test_router_metrics_collection() {
     router.add_provider(provider1.clone()).await;
 
     let request = create_test_request("test-model");
-    let _ = router.chat_completions(&request).await;
+    let _ = router.chat_completions(&request, None).await;
 
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
@@ -320,10 +329,13 @@ async fn test_router_latency_tracking() {
 
     router.add_provider(provider1.clone()).await;
     router.add_provider(provider2.clone()).await;
+    router
+        .register_route("test-model", vec![provider1.clone(), provider2.clone()])
+        .await;
 
-    for i in 0..3 {
-        let request = create_test_request(&format!("model-{}", i));
-        let response = router.chat_completions(&request).await;
+    for _ in 0..3 {
+        let request = create_test_request("test-model");
+        let response = router.chat_completions(&request, None).await;
         assert!(response.is_ok());
     }
 }
@@ -405,7 +417,7 @@ async fn test_router_model_override_with_mock() {
     router.add_provider(mock_provider).await;
 
     let request = create_test_request("openai/gpt-4-0613");
-    let response = router.chat_completions(&request).await;
+    let response = router.chat_completions(&request, None).await;
     assert!(response.is_ok());
     assert_eq!(response.unwrap().model, "gpt-4-0613");
 }

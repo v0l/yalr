@@ -185,13 +185,7 @@ impl Provider for AnthropicOAuthProvider {
             .map_err(|e| ProviderError::Other(e.into()))?;
 
         let (text, tool_calls) = split_content_blocks(&parsed.content);
-        let usage = parsed.usage.map(|u| CompletionUsage {
-            prompt_tokens: u.input_tokens,
-            completion_tokens: u.output_tokens,
-            total_tokens: u.input_tokens + u.output_tokens,
-            completion_tokens_details: None,
-            prompt_tokens_details: None,
-        });
+        let usage = parsed.usage.as_ref().map(usage_to_openai);
 
         let message = async_openai::types::chat::ChatCompletionResponseMessage {
             content: Some(text),
@@ -271,6 +265,9 @@ impl Provider for AnthropicOAuthProvider {
             let mut bytes_stream = resp.bytes_stream();
             let mut buffer = String::new();
             let mut message_id = String::new();
+            // Prompt + cache token counts arrive on message_start; output on
+            // message_delta. Hold the former to report both together at the end.
+            let mut start_usage: Option<AnthropicUsage> = None;
             // Maps an Anthropic content-block index to its OpenAI tool_call index.
             let mut tool_block_indices: std::collections::HashMap<usize, u32> =
                 std::collections::HashMap::new();
@@ -299,6 +296,9 @@ impl Provider for AnthropicOAuthProvider {
                         "message_start" => {
                             if let Some(m) = event.message {
                                 message_id = m.id.unwrap_or_default();
+                                // Anthropic reports input + cache token counts on
+                                // message_start; hold them for the final usage chunk.
+                                start_usage = m.usage;
                             }
                         }
                         "content_block_start" => {
@@ -343,12 +343,22 @@ impl Provider for AnthropicOAuthProvider {
                         }
                         "message_delta" => {
                             let fr = event.delta.as_ref().and_then(|d| finish_reason(d.stop_reason.as_deref()));
-                            let usage = event.usage.map(|u| CompletionUsage {
-                                prompt_tokens: u.input_tokens,
-                                completion_tokens: u.output_tokens,
-                                total_tokens: u.input_tokens + u.output_tokens,
-                                completion_tokens_details: None,
-                                prompt_tokens_details: None,
+                            // Merge the prompt/cache counts from message_start with
+                            // the output count on this message_delta, then map both
+                            // through the shared converter so cache tokens surface.
+                            let usage = event.usage.map(|delta_usage| {
+                                let mut merged = start_usage.clone().unwrap_or_default();
+                                merged.output_tokens = delta_usage.output_tokens;
+                                if delta_usage.input_tokens > 0 {
+                                    merged.input_tokens = delta_usage.input_tokens;
+                                }
+                                if delta_usage.cache_creation_input_tokens > 0 {
+                                    merged.cache_creation_input_tokens = delta_usage.cache_creation_input_tokens;
+                                }
+                                if delta_usage.cache_read_input_tokens > 0 {
+                                    merged.cache_read_input_tokens = delta_usage.cache_read_input_tokens;
+                                }
+                                usage_to_openai(&merged)
                             });
                             yield Ok(final_chunk(&message_id, &model, fr, usage));
                         }
@@ -377,10 +387,27 @@ impl Provider for AnthropicOAuthProvider {
     }
 
     async fn fetch_quota(&self) -> Option<Vec<QuotaSnapshot>> {
-        self.quota
-            .read()
-            .ok()
-            .map(|g| g.clone())
-            .filter(|q| !q.is_empty())
+        let token = match self.session.access_token().await {
+            Ok(t) => t,
+            Err(_) => return self.quota.read().ok().and_then(|g| if g.is_empty() { None } else { Some(g.clone()) }),
+        };
+        match self
+            .apply_oauth_headers(self.http.get(self.models_url()), &token)
+            .send()
+            .await
+        {
+            Ok(r) => {
+                let quotas = anthropic_quotas_from_headers(r.headers());
+                if !quotas.is_empty() {
+                    if let Ok(mut guard) = self.quota.write() {
+                        *guard = quotas.clone();
+                    }
+                    Some(quotas)
+                } else {
+                    self.quota.read().ok().and_then(|g| if g.is_empty() { None } else { Some(g.clone()) })
+                }
+            }
+            Err(_) => self.quota.read().ok().and_then(|g| if g.is_empty() { None } else { Some(g.clone()) }),
+        }
     }
 }

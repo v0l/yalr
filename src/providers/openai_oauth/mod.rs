@@ -254,10 +254,32 @@ impl Provider for OpenAiOAuthProvider {
     }
 
     async fn fetch_quota(&self) -> Option<Vec<QuotaSnapshot>> {
-        self.quota
-            .read()
-            .ok()
-            .map(|g| g.clone())
-            .filter(|q| !q.is_empty())
+        let token = match self.session.access_token().await {
+            Ok(t) => t,
+            Err(_) => return self.quota.read().ok().and_then(|g| if g.is_empty() { None } else { Some(g.clone()) }),
+        };
+        let mut req = self
+            .http
+            .get(self.base_url.as_str())
+            .bearer_auth(&token)
+            .header("OpenAI-Beta", BETA_HEADER)
+            .header("originator", ORIGINATOR);
+        if let Some(account_id) = self.session.account_id().await {
+            req = req.header("chatgpt-account-id", account_id);
+        }
+        match req.send().await {
+            Ok(r) => {
+                let quotas = openai_quotas_from_headers(r.headers());
+                if !quotas.is_empty() {
+                    if let Ok(mut guard) = self.quota.write() {
+                        *guard = quotas.clone();
+                    }
+                    Some(quotas)
+                } else {
+                    self.quota.read().ok().and_then(|g| if g.is_empty() { None } else { Some(g.clone()) })
+                }
+            }
+            Err(_) => self.quota.read().ok().and_then(|g| if g.is_empty() { None } else { Some(g.clone()) }),
+        }
     }
 }
