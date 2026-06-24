@@ -195,6 +195,11 @@ pub(super) fn build_client(
 ) -> async_anthropic::Client {
     // Simplify: build client chaining setters inline
     let mut builder = async_anthropic::Client::builder();
+    // The builder's field-level `#[builder(default)]` falls back to the field
+    // type's Default (empty String), NOT the struct's `impl Default`. Without an
+    // explicit version the `anthropic-version` header is empty and Anthropic
+    // silently ignores `cache_control`, so prompt caching never engages.
+    builder.version("2023-06-01".to_string());
     if let Some(key) = api_key {
         if !key.is_empty() {
             builder.api_key(key.to_string());
