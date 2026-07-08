@@ -17,7 +17,7 @@ use super::*;
 use crate::db::Database;
 use crate::oauth::{OAuthKind, OAuthSession};
 use crate::providers::provider_trait::QuotaSnapshot;
-use crate::providers::quota::anthropic_quotas_from_headers;
+use crate::providers::quota::{anthropic_quotas_from_headers, anthropic_quotas_from_usage};
 use wire::*;
 
 const BETA_HEADER: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05";
@@ -80,6 +80,19 @@ impl AnthropicOAuthProvider {
         } else {
             format!("{}/v1/models", base)
         }
+    }
+
+    /// URL of the OAuth usage endpoint (subscription rate-limit windows).
+    ///
+    /// This lives at `/api/oauth/usage` on the API host — outside the `/v1`
+    /// namespace — so we strip any trailing `/v1` from the configured base URL.
+    fn usage_url(&self) -> String {
+        let base = self
+            .base_url
+            .trim_end_matches('/')
+            .trim_end_matches("/v1")
+            .trim_end_matches('/');
+        format!("{}/api/oauth/usage", base)
     }
 
     /// Apply all OAuth-specific headers to a request builder.
@@ -389,10 +402,37 @@ impl Provider for AnthropicOAuthProvider {
     }
 
     async fn fetch_quota(&self) -> Option<Vec<QuotaSnapshot>> {
+        let cached = || {
+            self.quota
+                .read()
+                .ok()
+                .and_then(|g| if g.is_empty() { None } else { Some(g.clone()) })
+        };
         let token = match self.session.access_token().await {
             Ok(t) => t,
-            Err(_) => return self.quota.read().ok().and_then(|g| if g.is_empty() { None } else { Some(g.clone()) }),
+            Err(_) => return cached(),
         };
+
+        // Preferred source: the dedicated OAuth usage endpoint, which reports
+        // per-window utilization (5h / 7d / per-model) plus reset timestamps.
+        if let Ok(resp) = self
+            .apply_oauth_headers(self.http.get(self.usage_url()), &token)
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                let quotas = anthropic_quotas_from_usage(&body);
+                if !quotas.is_empty() {
+                    if let Ok(mut guard) = self.quota.write() {
+                        *guard = quotas.clone();
+                    }
+                    return Some(quotas);
+                }
+            }
+        }
+
+        // Fallback: scrape rate-limit headers off a lightweight models request.
         match self
             .apply_oauth_headers(self.http.get(self.models_url()), &token)
             .send()
@@ -406,10 +446,10 @@ impl Provider for AnthropicOAuthProvider {
                     }
                     Some(quotas)
                 } else {
-                    self.quota.read().ok().and_then(|g| if g.is_empty() { None } else { Some(g.clone()) })
+                    cached()
                 }
             }
-            Err(_) => self.quota.read().ok().and_then(|g| if g.is_empty() { None } else { Some(g.clone()) }),
+            Err(_) => cached(),
         }
     }
 }
