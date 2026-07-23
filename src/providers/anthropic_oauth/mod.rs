@@ -216,7 +216,13 @@ impl Provider for AnthropicOAuthProvider {
             choices: vec![async_openai::types::chat::ChatChoice {
                 index: 0,
                 message,
-                finish_reason: finish_reason(parsed.stop_reason.as_deref()),
+                finish_reason: match parsed.stop_reason.as_deref() {
+                    Some("end_turn") | Some("max_tokens") | Some("stop_sequence") => {
+                        Some(async_openai::types::chat::FinishReason::Stop)
+                    }
+                    Some("tool_use") => Some(async_openai::types::chat::FinishReason::ToolCalls),
+                    _ => None,
+                },
                 logprobs: None,
             }],
             usage,

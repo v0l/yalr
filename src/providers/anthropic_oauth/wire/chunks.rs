@@ -153,7 +153,7 @@ pub fn text_chunk(id: &str, model: &str, text: String) -> StreamingChunk {
 pub fn final_chunk(
     id: &str,
     model: &str,
-    finish_reason: Option<FinishReason>,
+    finish_reason: Option<String>,
     usage: Option<CompletionUsage>,
     cache_write_tokens: u32,
 ) -> StreamingChunk {

@@ -172,8 +172,14 @@ pub struct StreamingChunk {
 pub struct StreamingChoice {
     pub index: u32,
     pub delta: StreamingDelta,
+    /// Pass-through as raw string. Upstream aggregators (e.g. OpenRouter) forward
+    /// provider-specific finish reasons that are NOT in async-openai's strict
+    /// `FinishReason` enum (e.g. "eos", "tool_use", "end_turn", "error"). Parsing
+    /// those into the enum fails and drops the whole chunk, which surfaces to the
+    /// client as a spurious mid-stream stop. We never inspect this value, so keep
+    /// it as an opaque string and echo it back verbatim.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub finish_reason: Option<FinishReason>,
+    pub finish_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logprobs: Option<ChatChoiceLogprobs>,
 }

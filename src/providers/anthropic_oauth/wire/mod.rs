@@ -214,10 +214,10 @@ pub fn now_secs() -> u32 {
         .as_secs() as u32
 }
 
-pub fn finish_reason(stop: Option<&str>) -> Option<FinishReason> {
+pub fn finish_reason(stop: Option<&str>) -> Option<String> {
     match stop {
-        Some("end_turn") | Some("max_tokens") | Some("stop_sequence") => Some(FinishReason::Stop),
-        Some("tool_use") => Some(FinishReason::ToolCalls),
+        Some("end_turn") | Some("max_tokens") | Some("stop_sequence") => Some("stop".to_string()),
+        Some("tool_use") => Some("tool_calls".to_string()),
         _ => None,
     }
 }
@@ -243,8 +243,8 @@ mod tests {
 
     #[test]
     fn finish_reason_mapping() {
-        assert_eq!(finish_reason(Some("end_turn")), Some(FinishReason::Stop));
-        assert_eq!(finish_reason(Some("tool_use")), Some(FinishReason::ToolCalls));
+        assert_eq!(finish_reason(Some("end_turn")), Some("stop".to_string()));
+        assert_eq!(finish_reason(Some("tool_use")), Some("tool_calls".to_string()));
         assert_eq!(finish_reason(None), None);
     }
 

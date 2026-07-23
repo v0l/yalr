@@ -171,11 +171,10 @@ pub(super) fn chat_completions_stream(
                     }
                     async_anthropic::types::MessagesStreamEvent::MessageDelta { delta, usage } => {
                         let finish_reason = match delta.stop_reason.as_deref() {
-                            Some("end_turn") | Some("max_tokens") => {
-                                Some(async_openai::types::chat::FinishReason::Stop)
+                            Some("end_turn") | Some("max_tokens") | Some("stop_sequence") => {
+                                Some("stop".to_string())
                             }
-                            Some("stop_sequence") => Some(async_openai::types::chat::FinishReason::Stop),
-                            Some("tool_use") => Some(async_openai::types::chat::FinishReason::ToolCalls),
+                            Some("tool_use") => Some("tool_calls".to_string()),
                             _ => None,
                         };
 

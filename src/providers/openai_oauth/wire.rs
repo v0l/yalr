@@ -294,7 +294,7 @@ pub fn final_chunk(id: &str, model: &str, usage: Option<CompletionUsage>) -> Str
                 reasoning_content: None,
                 extra_fields: Default::default(),
             },
-            finish_reason: Some(FinishReason::Stop),
+            finish_reason: Some("stop".to_string()),
             logprobs: None,
         }],
         service_tier: None,
