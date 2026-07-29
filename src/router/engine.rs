@@ -746,6 +746,31 @@ impl Router {
     ///
     /// Many backends don't support the `developer` role at all.
     /// Message ordering is the caller's responsibility.
+    /// Returns true if a streaming chunk carries any meaningful assistant
+    /// output: non-empty text, non-empty reasoning content, or tool calls.
+    /// Role-only, usage-only, and finish-reason-only chunks return false.
+    fn chunk_has_content(chunk: &StreamingChunk) -> bool {
+        chunk.choices.iter().any(|choice| {
+            let delta = &choice.delta;
+            let has_text = delta
+                .content
+                .as_deref()
+                .map(|c| !c.is_empty())
+                .unwrap_or(false);
+            let has_reasoning = delta
+                .reasoning_content
+                .as_deref()
+                .map(|c| !c.is_empty())
+                .unwrap_or(false);
+            let has_tool_calls = delta
+                .tool_calls
+                .as_ref()
+                .map(|t| !t.is_empty())
+                .unwrap_or(false);
+            has_text || has_reasoning || has_tool_calls
+        })
+    }
+
     fn normalize_chat_request(request: &mut ChatCompletionRequest, provider_name: &str) {
         let should_convert_developer = !provider_name.to_lowercase().contains("openai");
 
@@ -1017,6 +1042,14 @@ impl Router {
                     Ok(provider_stream) => {
                         let start = Instant::now();
                         let mut first_token = true;
+                        // Tracks whether the provider produced any meaningful
+                        // output (text, reasoning, or tool calls). Some upstream
+                        // models (e.g. Moonshot kimi on OpenRouter) occasionally
+                        // return an *empty* completion — stream ends cleanly with
+                        // finish_reason "stop" and zero content. Without a guard
+                        // that ghost turn is forwarded to the client as a valid
+                        // empty answer, silently halting agent loops.
+                        let mut saw_content = false;
                         let mut total_tokens = 0u32;
                         let mut prompt_tokens = 0u32;
                         let mut completion_tokens = 0u32;
@@ -1025,6 +1058,11 @@ impl Router {
                         let mut ttft_ms = 0u32;
 
                         let mut stream: futures::stream::BoxStream<'static, Result<StreamingChunk, ProviderError>> = provider_stream;
+
+                        // Per-attempt flag: did THIS provider yield anything to
+                        // the client? Distinct from `chunks_yielded`, which spans
+                        // the whole failover loop.
+                        let mut attempt_yielded = false;
 
                         while let Some(result) = stream.next().await {
                             match result {
@@ -1053,7 +1091,12 @@ impl Router {
                                         cache_write_tokens = v.as_u64().unwrap_or(0) as u32;
                                     }
 
+                                    if !saw_content && Self::chunk_has_content(&chunk) {
+                                        saw_content = true;
+                                    }
+
                                     chunks_yielded = true;
+                                    attempt_yielded = true;
                                     yield Ok(chunk);
                                 }
                                 Err(e) => {
@@ -1081,7 +1124,7 @@ impl Router {
 
                                     // If no chunks have been sent yet and the error is transient,
                                     // fail over to the next provider instead of surfacing the error.
-                                    if !chunks_yielded && e.is_transient() {
+                                    if !attempt_yielded && e.is_transient() {
                                         tracing::warn!(
                                             provider = &provider_name,
                                             model = &original_model,
@@ -1134,6 +1177,48 @@ impl Router {
                             }
                         }
 
+                        // Stream ended with no meaningful content (either zero
+                        // chunks, or only role/usage/finish-reason chunks with a
+                        // clean stop). Treat as a transient failure and fail over
+                        // to another provider rather than surfacing an empty
+                        // completion to the client.
+                        if !saw_content {
+                            let empty_err = ProviderError::Other(
+                                format!(
+                                    "provider '{}' returned an empty completion (no content, reasoning, or tool calls)",
+                                    provider_name
+                                )
+                                .into(),
+                            );
+                            tracing::warn!(
+                                provider = &provider_name,
+                                model = &original_model,
+                                attempt = attempt,
+                                chunks_seen = chunks_yielded,
+                                "Provider returned empty completion, treating as transient failure"
+                            );
+                            metrics_store.emitter().emit_failure_with_details(
+                                &provider_name,
+                                &original_model,
+                                empty_err.error_type(),
+                                None,
+                                &empty_err.to_string(),
+                                empty_err.retry_after_ms(),
+                                empty_err.status_code(),
+                                user.clone(),
+                            );
+                            last_error = Some(RouterError::ProviderError(empty_err));
+                            // Only (empty) chunks were yielded, no content — so
+                            // failing over is safe for the client. Reset
+                            // chunks_yielded so the outer failover logic works.
+                            chunks_yielded = false;
+                            guard.decrement();
+
+                            let backoff = Duration::from_millis(200 * (attempt as u64));
+                            tokio::time::sleep(backoff).await;
+                            continue;
+                        }
+
                         // Stream completed normally (no error)
                         if !first_token {
                             metrics_store.emitter().emit_success(&provider_name, &original_model, user.clone());
@@ -1181,8 +1266,9 @@ impl Router {
                             break; // Stream completed successfully, don't try more providers
                         }
 
-                        // Empty stream (no chunks, no error) — guard still needs decrement.
-                        // Continue to next provider.
+                        // Unreachable: !saw_content handled above implies
+                        // first_token was false-or-true both covered. Keep a
+                        // defensive continue.
                         guard.decrement();
                         continue;
                     }
