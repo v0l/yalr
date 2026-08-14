@@ -762,12 +762,26 @@ impl Router {
                 .as_deref()
                 .map(|c| !c.is_empty())
                 .unwrap_or(false);
+            // vLLM's Qwen reasoning parser (and some other OpenAI-compatible
+            // backends) stream reasoning under the raw key `"reasoning"`
+            // rather than the `reasoning_content` field async-openai expects.
+            // It lands in `extra_fields` untouched (so it still passes
+            // through to the client unchanged) but must also count as
+            // content here, or a reasoning-only chunk gets misclassified as
+            // empty and the whole stream fails over/errors even though the
+            // provider is actively generating.
+            let has_raw_reasoning = delta
+                .extra_fields
+                .get("reasoning")
+                .and_then(|v| v.as_str())
+                .map(|c| !c.is_empty())
+                .unwrap_or(false);
             let has_tool_calls = delta
                 .tool_calls
                 .as_ref()
                 .map(|t| !t.is_empty())
                 .unwrap_or(false);
-            has_text || has_reasoning || has_tool_calls
+            has_text || has_reasoning || has_raw_reasoning || has_tool_calls
         })
     }
 
@@ -1014,6 +1028,27 @@ impl Router {
                 actual_request.model = resolved_model.clone();
                 Self::normalize_chat_request(&mut actual_request, &provider_name);
 
+                // Backends that stream usage only on request (vLLM, and any
+                // other OpenAI-compatible server) omit prompt_tokens_details
+                // (prefix/prompt-cache hit counts) unless stream_options
+                // .include_usage is set. Force it on upstream so our metrics
+                // always see cache stats, then drop the resulting trailer
+                // chunk (empty `choices`) before it reaches the client unless
+                // they explicitly asked for it themselves.
+                let client_wants_usage = actual_request
+                    .stream_options
+                    .as_ref()
+                    .and_then(|o| o.include_usage)
+                    .unwrap_or(false);
+                let include_obfuscation = actual_request
+                    .stream_options
+                    .as_ref()
+                    .and_then(|o| o.include_obfuscation);
+                actual_request.stream_options = Some(async_openai::types::chat::ChatCompletionStreamOptions {
+                    include_usage: Some(true),
+                    include_obfuscation,
+                });
+
                 let in_flight = metrics_store.increment_in_flight(&provider_name).await;
                 let mut guard = InFlightGuard::new(
                     metrics_store.clone(),
@@ -1097,6 +1132,16 @@ impl Router {
 
                                     chunks_yielded = true;
                                     attempt_yielded = true;
+
+                                    // Drop the synthetic usage-only trailer chunk
+                                    // (empty choices) we forced via stream_options
+                                    // .include_usage unless the client asked for
+                                    // it themselves — keeps client-visible stream
+                                    // shape unchanged while metrics still see it.
+                                    if chunk.choices.is_empty() && chunk.usage.is_some() && !client_wants_usage {
+                                        continue;
+                                    }
+
                                     yield Ok(chunk);
                                 }
                                 Err(e) => {
