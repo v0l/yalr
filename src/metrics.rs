@@ -587,6 +587,17 @@ impl MetricsStore {
         info.get(provider_name).and_then(|r| r.max_concurrency())
     }
 
+    /// Whether runtime info has already been fetched for this provider.
+    ///
+    /// Used to avoid re-fetching `get_runtime_info` (a network round-trip) on
+    /// every request for providers whose runtime info exists but carries no
+    /// `max_concurrency` (e.g. vLLM, which never reports it). Without this the
+    /// caller can't tell "fetched, no value" from "not fetched yet".
+    pub async fn has_provider_runtime_info(&self, provider_name: &str) -> bool {
+        let info = self.provider_runtime_info.read().await;
+        info.contains_key(provider_name)
+    }
+
     /// Record a metrics event
     pub async fn record(&self, event: ProviderMetrics) {
         let provider = event.provider.clone();

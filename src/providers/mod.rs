@@ -71,8 +71,13 @@ use std::sync::Arc;
 
 /// Factory function to create a provider instance based on type.
 ///
+/// Returns `None` (with a warning) when the provider can't be constructed —
+/// currently only a malformed base URL. Callers skip that provider instead of
+/// panicking, so one bad row in the DB can't 500 an API request or kill the
+/// config-reload path.
+///
 /// For OAuth provider types this does NOT have access to the stored tokens and
-/// will panic; callers handling OAuth providers must use
+/// returns `None`; callers handling OAuth providers must use
 /// [`create_provider_from_record`] instead.
 pub fn create_provider(
     name: &str,
@@ -80,12 +85,12 @@ pub fn create_provider(
     base_url: &str,
     api_key: Option<&str>,
     provider_type: ProviderType,
-) -> Arc<dyn Provider> {
-    match provider_type {
+) -> Option<Arc<dyn Provider>> {
+    Some(match provider_type {
         ProviderType::OpenAi => Arc::new(OpenAiProvider::new(name, slug, base_url, api_key)),
-        ProviderType::LlamaCpp => Arc::new(LlamaCppProvider::new(name, slug, base_url, api_key).unwrap()),
-        ProviderType::Vllm => Arc::new(VllmProvider::new(name, slug, base_url, api_key)),
-        ProviderType::Ollama => Arc::new(OllamaProvider::new(name, slug, base_url, api_key).unwrap()),
+        ProviderType::LlamaCpp => Arc::new(LlamaCppProvider::new(name, slug, base_url, api_key).ok()?),
+        ProviderType::Vllm => Arc::new(VllmProvider::new(name, slug, base_url, api_key)?),
+        ProviderType::Ollama => Arc::new(OllamaProvider::new(name, slug, base_url, api_key).ok()?),
         ProviderType::Routstr => Arc::new(RoutstrProvider::new(name, slug, base_url, api_key)),
         ProviderType::OpenRouter => Arc::new(OpenRouterProvider::new(name, slug, base_url, api_key)),
         ProviderType::Anthropic => Arc::new(AnthropicProvider::new(name, slug, base_url, api_key)),
@@ -93,18 +98,21 @@ pub fn create_provider(
         ProviderType::AnthropicOauth | ProviderType::OpenAiOauth => {
             panic!("OAuth providers must be created via create_provider_from_record")
         }
-    }
+    })
 }
 
 /// Factory that builds a provider from a full DB record, giving OAuth providers
 /// access to their stored tokens and a database handle for token refresh.
+///
+/// Returns `None` (with a warning) if the provider can't be constructed, e.g.
+/// a malformed base URL.
 pub fn create_provider_from_record(
     record: &ProviderRecord,
     db: Arc<Database>,
-) -> Arc<dyn Provider> {
-    match record.provider_type {
-        ProviderType::AnthropicOauth => Arc::new(AnthropicOAuthProvider::new(record, db)),
-        ProviderType::OpenAiOauth => Arc::new(OpenAiOAuthProvider::new(record, db)),
+) -> Option<Arc<dyn Provider>> {
+    let provider = match record.provider_type {
+        ProviderType::AnthropicOauth => Some(Arc::new(AnthropicOAuthProvider::new(record, db)) as Arc<dyn Provider>),
+        ProviderType::OpenAiOauth => Some(Arc::new(OpenAiOAuthProvider::new(record, db)) as Arc<dyn Provider>),
         other => create_provider(
             &record.name,
             Some(&record.slug),
@@ -112,7 +120,8 @@ pub fn create_provider_from_record(
             record.api_key.as_deref(),
             other,
         ),
-    }
+    }?;
+    Some(provider)
 }
 
 /// Auto-detect provider type by trying each implementation's get_runtime_info

@@ -247,7 +247,17 @@ impl Router {
         let mut id_to_slug: HashMap<i64, String> = HashMap::new();
 
         for record in &provider_records {
-            let provider = create_provider_from_record(record, self.db.clone());
+            let provider = match create_provider_from_record(record, self.db.clone()) {
+                Some(p) => p,
+                None => {
+                    tracing::warn!(
+                        provider = %record.name,
+                        base_url = %record.base_url,
+                        "Failed to construct provider, skipping"
+                    );
+                    continue;
+                }
+            };
             self.metrics_store.register_provider(&record.name).await;
             id_to_slug.insert(record.id, record.slug.clone());
             providers.insert(record.slug.clone(), provider);
@@ -852,19 +862,20 @@ impl Router {
                 provider_name.clone(),
             );
 
-            // Fetch and cache runtime info to get max_concurrency
-            let max_concurrency = self.metrics_store.get_provider_max_concurrency(&provider_name).await;
-            let max_concurrency = if max_concurrency.is_none() {
-                if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
+            // Fetch and cache runtime info (for load-aware routing) — at most
+            // one network round-trip per provider: presence of a cached entry,
+            // even without a max_concurrency (vLLM never reports one), means we
+            // already asked.
+            let max_concurrency =
+                if self.metrics_store.has_provider_runtime_info(&provider_name).await {
+                    self.metrics_store.get_provider_max_concurrency(&provider_name).await
+                } else if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
                     let max_conc = info.max_concurrency();
                     self.metrics_store.set_provider_runtime_info(&provider_name, info).await;
                     max_conc
                 } else {
                     None
-                }
-            } else {
-                max_concurrency
-            };
+                };
 
             self.metrics_store
                 .emitter()
@@ -1055,19 +1066,20 @@ impl Router {
                     provider_name.clone(),
                 );
 
-                // Fetch and cache runtime info to get max_concurrency
-                let max_concurrency = metrics_store.get_provider_max_concurrency(&provider_name).await;
-                let max_concurrency = if max_concurrency.is_none() {
-                    if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
+                // Fetch and cache runtime info (for load-aware routing) — at most
+                // one network round-trip per provider: presence of a cached
+                // entry, even without a max_concurrency (vLLM never reports one),
+                // means we already asked.
+                let max_concurrency =
+                    if metrics_store.has_provider_runtime_info(&provider_name).await {
+                        metrics_store.get_provider_max_concurrency(&provider_name).await
+                    } else if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
                         let max_conc = info.max_concurrency();
                         metrics_store.set_provider_runtime_info(&provider_name, info).await;
                         max_conc
                     } else {
                         None
-                    }
-                } else {
-                    max_concurrency
-                };
+                    };
 
                 metrics_store
                     .emitter()
@@ -1454,19 +1466,20 @@ impl Router {
                 provider_name.clone(),
             );
 
-            // Fetch and cache runtime info to get max_concurrency
-            let max_concurrency = self.metrics_store.get_provider_max_concurrency(&provider_name).await;
-            let max_concurrency = if max_concurrency.is_none() {
-                if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
+            // Fetch and cache runtime info (for load-aware routing) — at most
+            // one network round-trip per provider: presence of a cached entry,
+            // even without a max_concurrency (vLLM never reports one), means we
+            // already asked.
+            let max_concurrency =
+                if self.metrics_store.has_provider_runtime_info(&provider_name).await {
+                    self.metrics_store.get_provider_max_concurrency(&provider_name).await
+                } else if let Ok(Some(info)) = provider.get_runtime_info(&resolved_model).await {
                     let max_conc = info.max_concurrency();
                     self.metrics_store.set_provider_runtime_info(&provider_name, info).await;
                     max_conc
                 } else {
                     None
-                }
-            } else {
-                max_concurrency
-            };
+                };
 
             self.metrics_store
                 .emitter()
