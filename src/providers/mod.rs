@@ -55,6 +55,34 @@ pub fn streaming_http_client() -> reqwest::Client {
         })
 }
 
+/// How long a provider's `/v1/models` listing stays fresh.
+pub const MODELS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Shared TTL cache for a provider's model listing.
+///
+/// Only successful listings are stored, so a provider that is down is retried
+/// on the next call instead of serving a stale error.
+#[derive(Clone, Default)]
+pub struct ModelsCache {
+    inner: Arc<tokio::sync::RwLock<Option<(Vec<async_openai::types::models::Model>, std::time::Instant)>>>,
+}
+
+impl ModelsCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn get(&self) -> Option<Vec<async_openai::types::models::Model>> {
+        let guard = self.inner.read().await;
+        let (models, cached_at) = guard.as_ref()?;
+        (cached_at.elapsed() < MODELS_CACHE_TTL).then(|| models.clone())
+    }
+
+    pub async fn store(&self, models: Vec<async_openai::types::models::Model>) {
+        *self.inner.write().await = Some((models, std::time::Instant::now()));
+    }
+}
+
 pub use llamacpp::LlamaCppProvider;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
@@ -68,6 +96,7 @@ pub use ppq::PpqProvider;
 
 use crate::db::{Database, Provider as ProviderRecord, ProviderType};
 use std::sync::Arc;
+
 
 /// Factory function to create a provider instance based on type.
 ///

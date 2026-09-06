@@ -41,6 +41,7 @@ pub struct AnthropicOAuthProvider {
     session: Arc<OAuthSession>,
     /// Last quota windows seen on a response, captured from rate-limit headers.
     quota: Arc<RwLock<Vec<QuotaSnapshot>>>,
+    models_cache: ModelsCache,
 }
 
 impl AnthropicOAuthProvider {
@@ -61,6 +62,7 @@ impl AnthropicOAuthProvider {
             http: crate::providers::streaming_http_client(),
             session: Arc::new(session),
             quota: Arc::new(RwLock::new(Vec::new())),
+            models_cache: ModelsCache::new(),
         }
     }
 
@@ -126,6 +128,10 @@ impl Provider for AnthropicOAuthProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<Model>, ProviderError> {
+        if let Some(cached) = self.models_cache.get().await {
+            return Ok(cached);
+        }
+
         let token = self
             .session
             .access_token()
@@ -138,7 +144,7 @@ impl Provider for AnthropicOAuthProvider {
         if let Ok(r) = resp {
             if r.status().is_success() {
                 if let Ok(parsed) = r.json::<crate::providers::ModelListResponse>().await {
-                    return Ok(parsed
+                    let models: Vec<Model> = parsed
                         .data
                         .into_iter()
                         .map(|m| Model {
@@ -147,7 +153,11 @@ impl Provider for AnthropicOAuthProvider {
                             created: 0,
                             owned_by: "anthropic".to_string(),
                         })
-                        .collect());
+                        .collect();
+                    // Only a real upstream listing is cached; the static fallback
+                    // below must not pin a stale list after a transient failure.
+                    self.models_cache.store(models.clone()).await;
+                    return Ok(models);
                 }
             }
         }

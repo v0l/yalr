@@ -57,6 +57,7 @@ pub struct RoutstrProvider {
     api_key: Option<String>,
     /// Cached balance in millisatoshis. Updated on health_check and periodically.
     balance_msat: Arc<AtomicI64>,
+    models_cache: ModelsCache,
 }
 
 impl RoutstrProvider {
@@ -69,6 +70,7 @@ impl RoutstrProvider {
             base_url,
             api_key: api_key.map(String::from),
             balance_msat: Arc::new(AtomicI64::new(0)),
+            models_cache: ModelsCache::new(),
         }
     }
 
@@ -140,6 +142,10 @@ impl Provider for RoutstrProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<Model>, ProviderError> {
+        if let Some(cached) = self.models_cache.get().await {
+            return Ok(cached);
+        }
+
         // Override to handle custom OpenRouter/OpenRouter-like formats
         let models_url = self
             .base_url
@@ -176,6 +182,7 @@ impl Provider for RoutstrProvider {
             owned_by: item.owned_by.unwrap_or_else(|| "routstr".to_string()),
         }).collect();
 
+        self.models_cache.store(result.clone()).await;
         Ok(result)
     }
 

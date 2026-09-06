@@ -5,9 +5,6 @@ use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Instant;
-use tokio::sync::RwLock;
 use crate::router::{Modality, ModelRuntimeInfo};
 
 /// Error response from API - supports both direct and nested formats via untagged enum
@@ -143,7 +140,7 @@ pub struct OpenAiProvider {
     /// API key for health check auth (empty string = no auth)
     api_key: String,
     /// Cached model list
-    models_cache: Arc<RwLock<Option<(Vec<Model>, Instant)>>>,
+    models_cache: ModelsCache,
 }
 
 impl OpenAiProvider {
@@ -164,7 +161,7 @@ impl OpenAiProvider {
             http_client: reqwest::Client::new(),
             base_url: base_url.to_string(),
             api_key: api_key.unwrap_or("").to_string(),
-            models_cache: Arc::new(RwLock::new(None)),
+            models_cache: ModelsCache::new(),
         }
     }
 }
@@ -180,18 +177,12 @@ impl Provider for OpenAiProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<Model>, ProviderError> {
-        // Return cached models if fresh (< 5 min)
-        {
-            let guard = self.models_cache.read().await;
-            if let Some((ref cached, cached_at)) = *guard {
-                if cached_at.elapsed() < std::time::Duration::from_secs(300) {
-                    return Ok(cached.clone());
-                }
-            }
+        if let Some(cached) = self.models_cache.get().await {
+            return Ok(cached);
         }
         let response = self.client.models().list().await?;
         let models = response.data;
-        *self.models_cache.write().await = Some((models.clone(), Instant::now()));
+        self.models_cache.store(models.clone()).await;
         Ok(models)
     }
 

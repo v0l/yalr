@@ -34,6 +34,7 @@ pub struct OpenRouterProvider {
     base_url: String,
     /// API key stored separately for balance API access
     api_key: Option<String>,
+    models_cache: ModelsCache,
 }
 
 impl OpenRouterProvider {
@@ -59,6 +60,7 @@ impl OpenRouterProvider {
             http_client: HttpClient::new(),
             base_url: base_url.to_string(),
             api_key: api_key.map(String::from),
+            models_cache: ModelsCache::new(),
         }
     }
 
@@ -137,6 +139,10 @@ impl Provider for OpenRouterProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<Model>, ProviderError> {
+        if let Some(cached) = self.models_cache.get().await {
+            return Ok(cached);
+        }
+
         // Use custom OpenRouter model format instead of OpenAI's standard format
         let models_url = format!("{}/models", self.base_url.trim_end_matches('/'));
         
@@ -163,7 +169,8 @@ impl Provider for OpenRouterProvider {
             created: item.created.unwrap_or(0),
             owned_by: item.owned_by.unwrap_or_else(|| "openrouter".to_string()),
         }).collect();
-        
+
+        self.models_cache.store(models.clone()).await;
         Ok(models)
     }
 

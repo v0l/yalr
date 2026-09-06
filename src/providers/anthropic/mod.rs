@@ -14,9 +14,6 @@ mod stream;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use std::sync::Arc;
-use std::time::Instant;
-use tokio::sync::RwLock;
 
 use super::*;
 
@@ -42,7 +39,7 @@ pub struct AnthropicProvider {
     /// API key for health check auth header
     api_key: String,
     /// Cached model list
-    models_cache: Arc<RwLock<Option<(Vec<Model>, Instant)>>>,
+    models_cache: ModelsCache,
 }
 
 impl AnthropicProvider {
@@ -63,7 +60,7 @@ impl AnthropicProvider {
             http_client: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.unwrap_or("").to_string(),
-            models_cache: Arc::new(RwLock::new(None)),
+            models_cache: ModelsCache::new(),
         }
     }
 
@@ -80,11 +77,8 @@ impl Provider for AnthropicProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<Model>, ProviderError> {
-        // Return cached models if fresh (< 5 min)
-        if let Some((ref cached, cached_at)) = *self.models_cache.read().await {
-            if cached_at.elapsed() < std::time::Duration::from_secs(300) {
-                return Ok(cached.clone());
-            }
+        if let Some(cached) = self.models_cache.get().await {
+            return Ok(cached);
         }
         let response = self
             .client
@@ -104,7 +98,7 @@ impl Provider for AnthropicProvider {
             })
             .collect();
 
-        *self.models_cache.write().await = Some((models.clone(), Instant::now()));
+        self.models_cache.store(models.clone()).await;
         Ok(models)
     }
 
