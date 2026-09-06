@@ -18,6 +18,11 @@ pub struct ModelEntry {
     /// Pricing structure per RIP-05. None if payments are disabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pricing: Option<ModelPricing>,
+    /// Context window in tokens. Only set when configured in `model_pricing`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<i32>,
 }
 
 /// Pricing breakdown per RIP-05, in sats.
@@ -91,6 +96,18 @@ pub async fn list_models(
     let routing_configs = state.config.db.list_routing_configs().await.unwrap_or_default();
     let mut all_models = Vec::new();
 
+    // Context/output limits come from explicit `model_pricing` rows only; an
+    // unset value is omitted rather than defaulted, so clients can't be told a
+    // placeholder 8k window for a model that actually has more.
+    let limits: HashMap<String, (Option<i32>, Option<i32>)> = state
+        .db
+        .list_model_pricings()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mp| (mp.model_name, (mp.context_window, mp.max_output_tokens)))
+        .collect();
+
     let payments_enabled = state.payments_state.is_some();
 
     // Load user's model permissions for filtering
@@ -144,20 +161,48 @@ pub async fn list_models(
         if !model_allowed(&rc.name) {
             continue;
         }
+        let (context_length, max_output_tokens) =
+            limits.get(&rc.name).copied().unwrap_or((None, None));
         all_models.push(ModelEntry {
             id: rc.name.clone(),
             object: "model".to_string(),
             created: 0,
             owned_by: rc.name.clone(),
             pricing: None,
+            context_length,
+            max_output_tokens,
         });
     }
 
+    // Fan out to every provider at once with a hard deadline: this endpoint used
+    // to await providers one at a time with no request timeout, so a single
+    // upstream that accepted the connection and then stalled hung the whole list.
+    let listings = futures::future::join_all(providers.iter().map(|provider| async move {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.list_models(),
+        )
+        .await;
+        (provider, result)
+    }))
+    .await;
+
     // Add actual models from providers with provider slug prefix
-    for provider in &providers {
+    for (provider, listing) in listings {
         let provider_slug = provider.slug();
 
-        match provider.list_models().await {
+        let listing = match listing {
+            Ok(listing) => listing,
+            Err(_) => {
+                tracing::warn!(
+                    provider = provider.name(),
+                    "Timed out listing models from provider"
+                );
+                continue;
+            }
+        };
+
+        match listing {
             Ok(models) => {
                 for model in models {
                     let full_id = format!("{}/{}", provider_slug, model.id);
@@ -186,12 +231,20 @@ pub async fn list_models(
                         None
                     };
 
+                    let (context_length, max_output_tokens) = limits
+                        .get(&model.id)
+                        .or_else(|| limits.get(&full_id))
+                        .copied()
+                        .unwrap_or((None, None));
+
                     all_models.push(ModelEntry {
                         id: full_id,
                         object: model.object,
                         created: model.created as i64,
                         owned_by: model.owned_by,
                         pricing,
+                        context_length,
+                        max_output_tokens,
                     });
                 }
             }
