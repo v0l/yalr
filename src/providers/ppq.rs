@@ -456,16 +456,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_cached_balance_default_zero() {
-        let provider = PpqProvider::new(
-            "Test",
-            None,
-            "https://api.ppq.ai",
-            Some("key"),
-        );
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/credits/balance"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&mock_server)
+            .await;
+
+        let provider = PpqProvider::new("Test", None, &mock_server.uri(), Some("key"));
         assert_eq!(provider.cached_balance_usd_micro(), 0);
-        let balance = provider.fetch_balance().await;
-        // fetch_balance will fail to reach the fake URL → returns None
-        assert_eq!(balance, None);
+        assert_eq!(provider.fetch_balance().await, None);
     }
 
     #[tokio::test]
