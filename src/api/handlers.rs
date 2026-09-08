@@ -66,6 +66,7 @@ mod tests {
             db: Arc::new(db),
             payments_state: None,
             oauth_pending: Default::default(),
+            model_cache: Default::default(),
         });
 
         (state, metrics_store)

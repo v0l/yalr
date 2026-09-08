@@ -15,4 +15,6 @@ pub struct AppState {
     pub payments_state: Option<Arc<PaymentsState>>,
     /// In-flight OAuth logins awaiting code submission, keyed by `state`.
     pub oauth_pending: crate::oauth::PendingStore,
+    /// Last successful model listing per provider, served when a provider is down.
+    pub model_cache: crate::api::model_cache::ModelListCache,
 }

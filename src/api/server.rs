@@ -115,6 +115,7 @@ pub async fn run_with_shutdown<F>(
         db,
         payments_state,
         oauth_pending: Default::default(),
+        model_cache: Default::default(),
     });
 
     let admin_ui_path = config.admin_ui_path.clone();

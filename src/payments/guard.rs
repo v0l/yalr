@@ -155,6 +155,7 @@ mod tests {
             db,
             payments_state: None,
             oauth_pending: Default::default(),
+            model_cache: Default::default(),
         })
     }
 

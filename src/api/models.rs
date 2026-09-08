@@ -177,78 +177,38 @@ pub async fn list_models(
     // Fan out to every provider at once with a hard deadline: this endpoint used
     // to await providers one at a time with no request timeout, so a single
     // upstream that accepted the connection and then stalled hung the whole list.
+    // Providers the health checker has already marked down are not dialled at
+    // all; their last good listing is served instead.
+    let state_ref = &state;
     let listings = futures::future::join_all(providers.iter().map(|provider| async move {
+        let provider_slug = provider.slug();
+
+        if !state_ref
+            .metrics_store
+            .is_provider_available(provider.name())
+            .await
+        {
+            let cached = state_ref.model_cache.get(&provider_slug).await;
+            tracing::debug!(
+                provider = provider.name(),
+                cached = cached.as_ref().map_or(0, |m| m.len()),
+                "Provider unavailable, serving cached model list"
+            );
+            return (provider, cached.unwrap_or_default());
+        }
+
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             provider.list_models(),
         )
         .await;
-        (provider, result)
-    }))
-    .await;
 
-    // Add actual models from providers with provider slug prefix
-    for (provider, listing) in listings {
-        let provider_slug = provider.slug();
-
-        let listing = match listing {
-            Ok(listing) => listing,
-            Err(_) => {
-                tracing::warn!(
-                    provider = provider.name(),
-                    "Timed out listing models from provider"
-                );
-                continue;
+        let models = match result {
+            Ok(Ok(models)) => {
+                state_ref.model_cache.put(&provider_slug, models.clone()).await;
+                models
             }
-        };
-
-        match listing {
-            Ok(models) => {
-                for model in models {
-                    let full_id = format!("{}/{}", provider_slug, model.id);
-
-                    if !model_allowed(&full_id) {
-                        continue;
-                    }
-
-                    // Resolve pricing for this model (even when payments disabled, show defaults)
-                    let pricing = if payments_enabled {
-                        if let Some(ref ps) = state.payments_state {
-                            let p = ps.pricing_resolver.resolve(&model.id).await;
-                            if !p.is_advertised {
-                                continue; // skip unadvertised models
-                            }
-                            Some(ModelPricing {
-                                prompt: p.price_per_1m_input_sats,
-                                completion: p.price_per_1m_output_sats,
-                                request: p.price_per_request_sats,
-                                unit: "1M tokens".to_string(),
-                            })
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
-                    let (context_length, max_output_tokens) = limits
-                        .get(&model.id)
-                        .or_else(|| limits.get(&full_id))
-                        .copied()
-                        .unwrap_or((None, None));
-
-                    all_models.push(ModelEntry {
-                        id: full_id,
-                        object: model.object,
-                        created: model.created as i64,
-                        owned_by: model.owned_by,
-                        pricing,
-                        context_length,
-                        max_output_tokens,
-                    });
-                }
-            }
-            Err(e) => {
+            Ok(Err(e)) => {
                 let error_msg = e.to_string();
                 // Truncate error message to avoid logging huge JSON responses
                 let short_error = if error_msg.len() > 200 {
@@ -261,7 +221,67 @@ pub async fn list_models(
                     error = %short_error,
                     "Failed to list models from provider"
                 );
+                state_ref.model_cache.get(&provider_slug).await.unwrap_or_default()
             }
+            Err(_) => {
+                tracing::warn!(
+                    provider = provider.name(),
+                    "Timed out listing models from provider"
+                );
+                state_ref.model_cache.get(&provider_slug).await.unwrap_or_default()
+            }
+        };
+
+        (provider, models)
+    }))
+    .await;
+
+    // Add actual models from providers with provider slug prefix
+    for (provider, models) in listings {
+        let provider_slug = provider.slug();
+
+        for model in models {
+            let full_id = format!("{}/{}", provider_slug, model.id);
+
+            if !model_allowed(&full_id) {
+                continue;
+            }
+
+            // Resolve pricing for this model (even when payments disabled, show defaults)
+            let pricing = if payments_enabled {
+                if let Some(ref ps) = state.payments_state {
+                    let p = ps.pricing_resolver.resolve(&model.id).await;
+                    if !p.is_advertised {
+                        continue; // skip unadvertised models
+                    }
+                    Some(ModelPricing {
+                        prompt: p.price_per_1m_input_sats,
+                        completion: p.price_per_1m_output_sats,
+                        request: p.price_per_request_sats,
+                        unit: "1M tokens".to_string(),
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let (context_length, max_output_tokens) = limits
+                .get(&model.id)
+                .or_else(|| limits.get(&full_id))
+                .copied()
+                .unwrap_or((None, None));
+
+            all_models.push(ModelEntry {
+                id: full_id,
+                object: model.object,
+                created: model.created as i64,
+                owned_by: model.owned_by,
+                pricing,
+                context_length,
+                max_output_tokens,
+            });
         }
     }
 

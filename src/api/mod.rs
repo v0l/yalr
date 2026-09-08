@@ -1,6 +1,7 @@
 pub mod chat;
 pub mod config;
 pub mod health;
+pub mod model_cache;
 pub mod model_pricing;
 pub mod models;
 pub mod oauth;
