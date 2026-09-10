@@ -8,6 +8,7 @@ use crate::payments::PaymentsState;
 use crate::state::AppState;
 use axum::{
     body::Body,
+    extract::DefaultBodyLimit,
     http::{Request, StatusCode},
     response::IntoResponse,
     routing::{delete, get, post, put},
@@ -16,6 +17,14 @@ use axum::{
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::{trace::TraceLayer, cors::CorsLayer};
+
+/// Body limit for inference requests. The axum default of 2 MB is far too small
+/// for a long agent conversation: replayed reasoning content (which DeepSeek V4
+/// and others require on every assistant turn) and base64 images push a single
+/// request well past it, and the client sees
+/// `413 Failed to buffer the request body: length limit exceeded` before any
+/// routing happens.
+const INFERENCE_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 
 async fn serve_admin_fallback(req: Request<Body>, admin_ui_path: String) -> impl IntoResponse {
     // Only serve admin UI for GET and HEAD requests
@@ -189,10 +198,12 @@ pub async fn run_with_shutdown<F>(
 
     let chat_completions_routes = Router::new()
         .route("/v1/chat/completions", post(chat_handler))
+        .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let responses_routes = Router::new()
         .route("/v1/responses", post(responses_handlers::create_response))
+        .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let routstr_protected_routes = Router::new()
@@ -311,10 +322,12 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
 
     let chat_completions_routes = Router::new()
         .route("/v1/chat/completions", post(chat_handler))
+        .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let responses_routes = Router::new()
         .route("/v1/responses", post(responses_handlers::create_response))
+        .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let routstr_protected_routes = Router::new()

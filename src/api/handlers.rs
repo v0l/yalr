@@ -128,6 +128,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_chat_accepts_a_body_larger_than_the_axum_default_limit() {
+        let (state, _) = setup_test_state().await;
+        let token = setup_admin_user(&state).await;
+        let app = create_test_app(state.clone()).await;
+
+        // A long agent conversation replaying reasoning content blows past
+        // axum's 2 MB default, which rejected it with 413 before any routing.
+        let body = json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "x".repeat(3 * 1024 * 1024)}],
+        })
+        .to_string();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("authorization", format!("Bearer {}", token))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(
+            response.status(),
+            413,
+            "the request body must be accepted, not rejected by the body limit"
+        );
+    }
+
+    #[tokio::test]
     async fn test_v1_models_requires_auth() {
         let (state, _) = setup_test_state().await;
         let app = create_test_app(state.clone()).await;
