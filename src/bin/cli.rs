@@ -7,7 +7,7 @@ use yalr::{
     api, config, db::{Database, Provider}, metrics, ChatCompletionRequest,
     ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageContent,
     ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
-    ChatCompletionRequestUserMessageContent, Router,
+    ChatCompletionRequestUserMessageContent, Router, ChatRequest,
 };
 
 #[derive(Parser)]
@@ -286,12 +286,12 @@ async fn chat_with_providers(db: Arc<Database>, message: &str, model: &str) {
 
         messages.push(create_user_message(user_input));
 
-        let request = ChatCompletionRequest {
+        let request = ChatRequest::from(ChatCompletionRequest {
             model: model.to_string(),
             messages: messages.clone(),
             stream: Some(true),
             ..Default::default()
-        };
+        });
 
         print!("Assistant: ");
         let _ = std::io::stdout().flush();

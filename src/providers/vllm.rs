@@ -111,14 +111,14 @@ impl Provider for VllmProvider {
 
     async fn chat_completions(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<CreateChatCompletionResponse, ProviderError> {
         self.inner.chat_completions(request).await
     }
 
     fn chat_completions_stream(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<
         BoxStream<'static, Result<crate::providers::StreamingChunk, ProviderError>>,
         ProviderError,
@@ -262,11 +262,11 @@ use crate::router::ModelRuntimeInfo;
     #[tokio::test]
     async fn test_chat_completions_stream_error_handling() {
         let provider = VllmProvider::new("Test", None, "http://127.0.0.1:1", Some("key")).unwrap();
-        let request = CreateChatCompletionRequest {
+        let request = ChatRequest::from(CreateChatCompletionRequest {
             model: "test-model".to_string(),
             messages: vec![],
             ..Default::default()
-        };
+        });
         let result = provider.chat_completions_stream(&request);
         assert!(result.is_ok());
     }

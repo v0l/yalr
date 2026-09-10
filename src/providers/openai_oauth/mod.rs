@@ -85,7 +85,7 @@ impl Provider for OpenAiOAuthProvider {
 
     async fn chat_completions(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<CreateChatCompletionResponse, ProviderError> {
         // The Codex backend streams; aggregate the stream into a single response.
         let mut stream = self.chat_completions_stream(request)?;
@@ -136,7 +136,7 @@ impl Provider for OpenAiOAuthProvider {
 
     fn chat_completions_stream(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamingChunk, ProviderError>>, ProviderError> {
         let body = build_request(request, true);
         let url = self.responses_url();

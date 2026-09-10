@@ -1,7 +1,5 @@
 use async_openai::error::OpenAIError;
-use async_openai::types::chat::{
-    CreateChatCompletionRequest, CreateChatCompletionResponse,
-};
+use async_openai::types::chat::CreateChatCompletionResponse;
 use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use async_openai::types::models::Model;
 use async_trait::async_trait;
@@ -11,6 +9,7 @@ use serde::{Serialize, Deserialize};
 use crate::metrics::ErrorType;
 use crate::router::ModelRuntimeInfo;
 use crate::providers::StreamingChunk;
+use crate::providers::ChatRequest;
 
 /// A monetary amount with an explicit currency unit.
 /// All amounts use the smallest indivisible unit of the currency:
@@ -90,12 +89,12 @@ pub trait Provider: Send + Sync {
 
     async fn chat_completions(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<CreateChatCompletionResponse, ProviderError>;
 
     fn chat_completions_stream(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<
         BoxStream<'static, Result<StreamingChunk, ProviderError>>,
         ProviderError,

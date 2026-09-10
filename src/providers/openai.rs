@@ -128,6 +128,74 @@ fn map_openai_error(err: async_openai::error::OpenAIError) -> ProviderError {
     ProviderError::OpenAIError(err)
 }
 
+/// Serialize a request for the upstream wire, restoring what the typed parse
+/// dropped.
+///
+/// DeepSeek V4 (thinking mode) rejects a multi-turn request where any assistant
+/// message lacks `reasoning_content`: "The `reasoning_content` in the thinking
+/// mode must be passed back to the API". Two things make that field go
+/// missing. A client that replays the reasoning it was streamed still loses it
+/// here, because the typed assistant message has no such field, so we merge
+/// each raw assistant object back in. And OpenRouter intermittently streams a
+/// turn with no reasoning at all, leaving the client nothing to replay, so an
+/// empty string is back-filled (what Vercel's AI SDK does for `deepseek-v4`).
+///
+/// Gated to V4 on purpose. `deepseek-reasoner`/R1 has the opposite rule (prior
+/// reasoning must not be echoed), and unknown message keys are not worth
+/// round-tripping to backends whose tolerance for them is untested.
+fn to_wire_value(request: &ChatRequest) -> Result<serde_json::Value, crate::providers::ProviderError> {
+    let mut value = serde_json::to_value(request.inner())
+        .map_err(|e| crate::providers::ProviderError::Other(e.into()))?;
+
+    let is_v4 = request
+        .model
+        .to_ascii_lowercase()
+        .contains("deepseek-v4");
+    if !is_v4 {
+        return Ok(value);
+    }
+
+    let Some(messages) = value.get_mut("messages").and_then(|m| m.as_array_mut()) else {
+        return Ok(value);
+    };
+
+    // Extras are keyed by assistant ordinal, not message position, so the
+    // developer-to-system rewrite can't misalign them.
+    let mut ordinal = 0;
+    for message in messages.iter_mut() {
+        if message.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            continue;
+        }
+        let raw = request.assistant_extras_at(ordinal);
+        ordinal += 1;
+
+        let Some(object) = message.as_object_mut() else {
+            continue;
+        };
+        if let Some(raw) = raw {
+            for (key, raw_value) in raw {
+                if !raw_value.is_null() && !object.contains_key(key) {
+                    object.insert(key.clone(), raw_value.clone());
+                }
+            }
+        }
+
+        // `reasoning` is vLLM's (and others') spelling of the same field.
+        let reasoning = ["reasoning_content", "reasoning"]
+            .iter()
+            .find_map(|key| object.get(*key).and_then(|v| v.as_str()))
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_default();
+        object.insert(
+            "reasoning_content".to_string(),
+            serde_json::Value::String(reasoning),
+        );
+    }
+
+    Ok(value)
+}
+
 #[derive(Clone)]
 pub struct OpenAiProvider {
     name: String,
@@ -188,12 +256,13 @@ impl Provider for OpenAiProvider {
 
     async fn chat_completions(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<CreateChatCompletionResponse, ProviderError> {
+        let request_value = to_wire_value(request)?;
         let response = self
             .client
             .chat()
-            .create(request.clone())
+            .create_byot(request_value)
             .await
             .map_err(map_openai_error)?;
         Ok(response)
@@ -201,7 +270,7 @@ impl Provider for OpenAiProvider {
 
     fn chat_completions_stream(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<
         BoxStream<'static, Result<crate::providers::StreamingChunk, ProviderError>>,
         ProviderError,
@@ -215,8 +284,7 @@ impl Provider for OpenAiProvider {
         let request_model = request.model.clone();
 
         // Serialize request once at the start
-        let request_value = serde_json::to_value(request)
-            .map_err(|e| ProviderError::Other(e.into()))?;
+        let request_value = to_wire_value(&request)?;
 
         let stream = async move {
             match client.chat().create_stream_byot(request_value.clone()).await {
@@ -587,12 +655,104 @@ mod tests {
 #[tokio::test]
     async fn test_chat_completions_stream_error_handling() {
         let provider = OpenAiProvider::new("Test", None, "http://invalid-url", Some("key"));
-        let request = CreateChatCompletionRequest {
+        let request = ChatRequest::from(CreateChatCompletionRequest {
             model: "test-model".to_string(),
             messages: vec![],
             ..Default::default()
-        };
+        });
         let result = provider.chat_completions_stream(&request);
         assert!(result.is_ok());
+    }
+
+    fn reasoning_content(message: &serde_json::Value) -> Option<&serde_json::Value> {
+        message.get("reasoning_content")
+    }
+
+    fn wire(raw: serde_json::Value) -> serde_json::Value {
+        let request = ChatRequest::from_value(raw).expect("request should parse");
+        to_wire_value(&request).expect("request should serialize")
+    }
+
+    #[test]
+    fn v4_preserves_client_sent_reasoning_through_the_typed_round_trip() {
+        let value = wire(serde_json::json!({
+            "model": "deepseek/deepseek-v4-pro",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": null, "reasoning_content": "I thought about it", "tool_calls": []},
+                {"role": "tool", "tool_call_id": "1", "content": "ok"},
+                {"role": "user", "content": "and now?"},
+            ]
+        }));
+
+        let messages = value["messages"].as_array().unwrap();
+        assert_eq!(reasoning_content(&messages[0]), None);
+        assert_eq!(
+            reasoning_content(&messages[1]),
+            Some(&serde_json::json!("I thought about it")),
+            "assistant reasoning must survive the typed parse, not be replaced"
+        );
+    }
+
+    #[test]
+    fn v4_backfills_empty_reasoning_when_the_client_sent_none() {
+        let value = wire(serde_json::json!({
+            "model": "deepseek/deepseek-v4-flash",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello", "tool_calls": []},
+            ]
+        }));
+
+        let messages = value["messages"].as_array().unwrap();
+        assert_eq!(reasoning_content(&messages[0]), None);
+        assert_eq!(reasoning_content(&messages[1]), Some(&serde_json::json!("")));
+    }
+
+    #[test]
+    fn v4_treats_a_null_reasoning_field_as_absent() {
+        let value = wire(serde_json::json!({
+            "model": "deepseek-v4-pro",
+            "messages": [{"role": "assistant", "content": "hi", "reasoning_content": null}]
+        }));
+
+        assert_eq!(
+            reasoning_content(&value["messages"][0]),
+            Some(&serde_json::json!(""))
+        );
+    }
+
+    #[test]
+    fn v4_falls_back_to_the_reasoning_spelling_used_by_vllm() {
+        let value = wire(serde_json::json!({
+            "model": "deepseek-v4-pro",
+            "messages": [{"role": "assistant", "content": "hi", "reasoning": "thinking"}]
+        }));
+
+        assert_eq!(
+            reasoning_content(&value["messages"][0]),
+            Some(&serde_json::json!("thinking"))
+        );
+    }
+
+    #[test]
+    fn other_models_are_left_alone() {
+        for model in ["deepseek/deepseek-r1", "deepseek-chat", "gpt-4o"] {
+            let value = wire(serde_json::json!({
+                "model": model,
+                "messages": [
+                    {"role": "assistant", "content": "hello", "reasoning_content": "prior"},
+                    {"role": "assistant", "content": "hello again"},
+                ]
+            }));
+
+            for message in value["messages"].as_array().unwrap() {
+                assert_eq!(
+                    reasoning_content(message),
+                    None,
+                    "model {model} must be sent the unmodified wire shape"
+                );
+            }
+        }
     }
 }

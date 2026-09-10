@@ -104,7 +104,7 @@ impl Provider for AnthropicProvider {
 
     async fn chat_completions(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<CreateChatCompletionResponse, ProviderError> {
         let (system, messages) = convert_messages(&request.messages);
         let anthropic_request = build_anthropic_request(system, messages, request);
@@ -121,7 +121,7 @@ impl Provider for AnthropicProvider {
 
     fn chat_completions_stream(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<
         BoxStream<'static, Result<StreamingChunk, ProviderError>>,
         ProviderError,
@@ -212,7 +212,7 @@ mod tests {
             Some("test-key"),
         );
 
-        let request = CreateChatCompletionRequest {
+        let request = ChatRequest::from(CreateChatCompletionRequest {
             model: "claude-3-haiku-20240307".to_string(),
             messages: vec![ChatCompletionRequestMessage::User(
                 async_openai::types::chat::ChatCompletionRequestUserMessage {
@@ -221,7 +221,7 @@ mod tests {
                 },
             )],
             ..Default::default()
-        };
+        });
 
         let result = provider.chat_completions(&request).await;
         assert!(result.is_err());

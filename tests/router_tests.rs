@@ -3,6 +3,7 @@ use futures::{stream, StreamExt};
 use yalr::{
     ChatCompletionRequest, ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
     ChatCompletionRequestUserMessageContent, Provider, ProviderError, Router, RouterError,
+    ChatRequest,
 };
 use yalr::providers::{
     CreateChatCompletionRequest, CreateChatCompletionResponse, StreamingChunk, StreamingChoice,
@@ -98,7 +99,7 @@ impl Provider for MockProvider {
 
     async fn chat_completions(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<CreateChatCompletionResponse, ProviderError> {
         if self.should_fail {
             return Err(ProviderError::Other("Mock failure".to_string().into()));
@@ -128,7 +129,7 @@ impl Provider for MockProvider {
 
     fn chat_completions_stream(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<
         futures::stream::BoxStream<'static, Result<StreamingChunk, ProviderError>>,
         ProviderError,
@@ -215,8 +216,8 @@ fn create_test_router_with_db(db: Arc<Database>) -> (Router, MetricsStore) {
     (router, metrics_store)
 }
 
-fn create_test_request(model: &str) -> ChatCompletionRequest {
-    ChatCompletionRequest {
+fn create_test_request(model: &str) -> ChatRequest {
+    ChatRequest::from(ChatCompletionRequest {
         model: model.to_string(),
         messages: vec![ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
             content: ChatCompletionRequestUserMessageContent::Text("Hello".to_string()),
@@ -224,10 +225,10 @@ fn create_test_request(model: &str) -> ChatCompletionRequest {
         })],
         stream: Some(false),
         ..Default::default()
-    }
+    })
 }
 
-fn create_test_stream_request(model: &str) -> ChatCompletionRequest {
+fn create_test_stream_request(model: &str) -> ChatRequest {
     let mut req = create_test_request(model);
     req.stream = Some(true);
     req
@@ -594,13 +595,13 @@ async fn test_router_streaming_tool_calls_count_as_content() {
         async fn list_models(&self) -> Result<Vec<yalr::Model>, ProviderError> { Ok(vec![]) }
         async fn chat_completions(
             &self,
-            _request: &CreateChatCompletionRequest,
+            _request: &ChatRequest,
         ) -> Result<CreateChatCompletionResponse, ProviderError> {
             unimplemented!()
         }
         fn chat_completions_stream(
             &self,
-            request: &CreateChatCompletionRequest,
+            request: &ChatRequest,
         ) -> Result<futures::stream::BoxStream<'static, Result<StreamingChunk, ProviderError>>, ProviderError> {
             let chunk = StreamingChunk {
                 id: "tc".to_string(),

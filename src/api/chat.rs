@@ -1,6 +1,6 @@
 use crate::state::AppState;
 use crate::db::ModelAccess;
-use crate::ChatCompletionRequest;
+use crate::providers::ChatRequest;
 use axum::{
     extract::{Extension, State},
     response::{sse::{Event, KeepAlive, Sse}, IntoResponse},
@@ -16,7 +16,7 @@ use std::sync::Arc;
 pub async fn chat_handler(
     State(state): State<std::sync::Arc<AppState>>,
     Extension(authenticated_user): Extension<crate::auth::admin::AuthenticatedUser>,
-    Json(request): Json<ChatCompletionRequest>,
+    Json(request): Json<ChatRequest>,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, String)> {
     if request.stream.unwrap_or(false) {
         let stream_response = chat_completions_stream(State(state), Extension(authenticated_user), Json(request)).await;
@@ -65,7 +65,7 @@ async fn check_model_access(
 pub async fn chat_completions_handler(
     State(state): State<std::sync::Arc<AppState>>,
     Extension(authenticated_user): Extension<crate::auth::admin::AuthenticatedUser>,
-    Json(request): Json<ChatCompletionRequest>,
+    Json(request): Json<ChatRequest>,
 ) -> Result<Json<crate::ChatCompletionResponse>, (axum::http::StatusCode, String)> {
     let user = &authenticated_user.user;
 
@@ -165,7 +165,7 @@ pub async fn chat_completions_handler(
 pub async fn chat_completions_stream(
     State(state): State<std::sync::Arc<AppState>>,
     Extension(authenticated_user): Extension<crate::auth::admin::AuthenticatedUser>,
-    Json(request): Json<ChatCompletionRequest>,
+    Json(request): Json<ChatRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>> + Send + 'static>, (axum::http::StatusCode, String)> {
     let user = &authenticated_user.user;
 

@@ -174,7 +174,7 @@ impl Provider for AnthropicOAuthProvider {
 
     async fn chat_completions(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<CreateChatCompletionResponse, ProviderError> {
         let token = self
             .session
@@ -245,7 +245,7 @@ impl Provider for AnthropicOAuthProvider {
 
     fn chat_completions_stream(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamingChunk, ProviderError>>, ProviderError> {
         let body = build_request(request, true);
         let url = self.messages_url();

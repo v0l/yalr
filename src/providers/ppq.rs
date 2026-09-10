@@ -1,5 +1,5 @@
 use super::*;
-use async_openai::types::chat::{CreateChatCompletionRequest, CreateChatCompletionResponse};
+use async_openai::types::chat::CreateChatCompletionResponse;
 use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
 use reqwest::Client as HttpClient;
@@ -195,14 +195,14 @@ impl Provider for PpqProvider {
 
     async fn chat_completions(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<CreateChatCompletionResponse, ProviderError> {
         self.inner.chat_completions(request).await
     }
 
     fn chat_completions_stream(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<
         BoxStream<'static, Result<crate::providers::StreamingChunk, ProviderError>>,
         ProviderError,
@@ -479,11 +479,11 @@ mod tests {
             "https://invalid-url",
             Some("key"),
         );
-        let request = CreateChatCompletionRequest {
+        let request = ChatRequest::from(CreateChatCompletionRequest {
             model: "test-model".to_string(),
             messages: vec![],
             ..Default::default()
-        };
+        });
         let result = provider.chat_completions_stream(&request);
         assert!(result.is_ok());
     }

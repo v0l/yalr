@@ -14,6 +14,7 @@ pub use metrics::{HealthConfig, HealthState};
 
 // Re-export types from providers module for centralized type management
 pub use providers::{
+    ChatRequest,
     CreateChatCompletionRequest as ChatCompletionRequest,
     CreateChatCompletionResponse as ChatCompletionResponse,
     StreamingChunk, StreamingChoice, StreamingDelta,

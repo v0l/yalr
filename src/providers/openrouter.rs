@@ -176,14 +176,14 @@ impl Provider for OpenRouterProvider {
 
     async fn chat_completions(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<CreateChatCompletionResponse, ProviderError> {
         self.inner.chat_completions(request).await
     }
 
     fn chat_completions_stream(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> Result<
         BoxStream<'static, Result<crate::providers::StreamingChunk, ProviderError>>,
         ProviderError,

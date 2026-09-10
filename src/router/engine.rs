@@ -1,6 +1,6 @@
 use crate::db::Database;
 use crate::metrics::{MetricsStore, MetricsUser};
-use crate::providers::{create_provider_from_record, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
+use crate::providers::{create_provider_from_record, ChatRequest, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
 use crate::router::strategies::ProviderEntry;
 use crate::{ChatCompletionRequest, ChatCompletionResponse, ProviderError};
 use crate::providers::StreamingChunk;
@@ -830,7 +830,7 @@ impl Router {
 
     pub async fn chat_completions(
         &self,
-        request: &ChatCompletionRequest,
+        request: &ChatRequest,
         user: Option<MetricsUser>,
     ) -> Result<ChatCompletionResponse, RouterError> {
         let start = Instant::now();
@@ -1002,7 +1002,7 @@ impl Router {
 
     pub async fn chat_completions_stream(
         &self,
-        request: &ChatCompletionRequest,
+        request: &ChatRequest,
         user: Option<MetricsUser>,
     ) -> Result<BoxStream<'static, Result<StreamingChunk, RouterError>>, RouterError>
     {
