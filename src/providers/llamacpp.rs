@@ -143,6 +143,10 @@ impl Provider for LlamaCppProvider {
         }
     }
 
+    fn reports_modalities(&self) -> bool {
+        true
+    }
+
     async fn get_runtime_info(
         &self,
         model_id: &str,

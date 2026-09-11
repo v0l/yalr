@@ -116,6 +116,16 @@ pub trait Provider: Send + Sync {
         Ok(None)
     }
 
+    /// Whether [`get_runtime_info`](Self::get_runtime_info) can report input
+    /// modalities (vision/audio/video) for this provider's models.
+    ///
+    /// Most providers hardcode `Text`, so the models list would pay a network
+    /// round-trip per model to learn nothing. Only providers that derive
+    /// modalities from an upstream capabilities endpoint return true.
+    fn reports_modalities(&self) -> bool {
+        false
+    }
+
     /// Fetch the current balance from the upstream provider.
     /// Result is emitted as a `MetricsEvent::Balance` by the health check loop.
     /// Returns `None` for providers that don't support balance tracking.

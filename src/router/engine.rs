@@ -581,6 +581,47 @@ impl Router {
         }
     }
 
+    /// Every (provider, resolved_model) pair configured for `model`, with no
+    /// health filtering and no side effects.
+    ///
+    /// `collect_candidates` is the routing path: it advances the round-robin
+    /// counter, drops unhealthy providers, and reorders by load. Introspection
+    /// such as computing a model's advertised input modalities must do none of
+    /// those things, so it reads the routing table directly instead. Order is
+    /// the configured entry order, not a routing decision.
+    pub async fn candidate_backends(&self, model: &str) -> Vec<(Arc<dyn Provider>, String)> {
+        if let Some((slug_prefix, actual_model)) = model.split_once('/') {
+            let providers = self.providers.read().await;
+            return providers
+                .get(slug_prefix)
+                .cloned()
+                .or_else(|| {
+                    providers
+                        .values()
+                        .find(|p| p.slug().starts_with(slug_prefix))
+                        .cloned()
+                })
+                .map(|p| vec![(p, actual_model.to_string())])
+                .unwrap_or_default();
+        }
+
+        let tables = self.routing_tables.read().await;
+        let Some(table) = tables.get(model) else {
+            return Vec::new();
+        };
+        table
+            .entries
+            .iter()
+            .map(|entry| {
+                let resolved_model = entry
+                    .model_override
+                    .clone()
+                    .unwrap_or_else(|| model.to_string());
+                (entry.provider.clone(), resolved_model)
+            })
+            .collect()
+    }
+
     /// Collect all candidate (provider, resolved_model) pairs for a given model,
     /// ordered by preference (available providers first, then unavailable as fallback).
     ///
@@ -2103,6 +2144,82 @@ mod tests {
 
         assert!(matches!(&request.messages[0], ChatCompletionRequestMessage::System(_)));
         assert!(matches!(&request.messages[1], ChatCompletionRequestMessage::User(_)));
+    }
+
+    #[tokio::test]
+    async fn test_candidate_backends_lists_all_configured_backends() {
+        let (router, metrics_store) = setup_test_router().await;
+
+        let provider1 = Arc::new(OpenAiProvider::new("Up", Some("up"), "http://localhost:8001", Some("key")));
+        let provider2 = Arc::new(OpenAiProvider::new("Down", Some("down"), "http://localhost:8002", Some("key")));
+
+        // Registering makes the `slug/model` lookups resolvable; the routing
+        // table below is still inserted by hand so the entries are exactly known.
+        router.add_provider(provider1.clone()).await;
+        router.add_provider(provider2.clone()).await;
+
+        {
+            let mut tables = router.routing_tables.write().await;
+            tables.insert(
+                "vision-model".to_string(),
+                RoutingTable::new(vec![
+                    ProviderEntry { provider: provider1.clone(), model_override: None, weight: 1 },
+                    ProviderEntry {
+                        provider: provider2.clone(),
+                        model_override: Some("upstream-v2".to_string()),
+                        weight: 1,
+                    },
+                ]),
+            );
+        }
+
+        // Introspection must still list a backend the health checker has written off.
+        for _ in 0..5 {
+            metrics_store.record(ProviderMetrics {
+                provider: "Down".to_string(),
+                model: "vision-model".to_string(),
+                timestamp_ms: 0,
+                event: MetricsEvent::Failure(FailureDetails {
+                    error_type: ErrorType::Other,
+                    error_code: None,
+                    error_message: "down".to_string(),
+                    retry_after_ms: None,
+                    status_code: None,
+                }),
+                user: None,
+            }).await;
+        }
+
+        let counter_before = {
+            let tables = router.routing_tables.read().await;
+            tables["vision-model"].rr_counter.load(Ordering::Relaxed)
+        };
+
+        for _ in 0..3 {
+            let backends = router.candidate_backends("vision-model").await;
+            assert_eq!(backends.len(), 2, "both configured backends must be listed");
+            assert_eq!(backends[0].0.name(), "Up");
+            assert_eq!(backends[0].1, "vision-model");
+            assert_eq!(backends[1].0.name(), "Down");
+            assert_eq!(backends[1].1, "upstream-v2");
+        }
+
+        // Reading modalities must not perturb routing. `collect_candidates`
+        // advances the round-robin counter; introspection must not, or every
+        // capabilities lookup would skew which provider gets real traffic.
+        let counter_after = {
+            let tables = router.routing_tables.read().await;
+            tables["vision-model"].rr_counter.load(Ordering::Relaxed)
+        };
+        assert_eq!(counter_before, counter_after);
+
+        // Provider-qualified names resolve to exactly the named backend.
+        let prefixed = router.candidate_backends("down/whatever").await;
+        assert_eq!(prefixed.len(), 1);
+        assert_eq!(prefixed[0].0.name(), "Down");
+        assert_eq!(prefixed[0].1, "whatever");
+
+        assert!(router.candidate_backends("no-such-model").await.is_empty());
     }
 
     #[tokio::test]

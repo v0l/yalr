@@ -21,6 +21,20 @@ pub struct ModelRuntimeInfo {
     pub additional_fields: std::collections::HashMap<String, serde_json::Value>,
 }
 
+impl Modality {
+    /// Short lowercase name, matching the OpenAI/LM Studio
+    /// `architecture.input_modalities` convention (as opposed to the
+    /// PascalCase this enum serializes to on the admin endpoints).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Modality::Text => "text",
+            Modality::Image => "image",
+            Modality::Audio => "audio",
+            Modality::Video => "video",
+        }
+    }
+}
+
 impl ModelRuntimeInfo {
     pub fn supports_modality(&self, modality: Modality) -> bool {
         self.modalities.contains(&modality)

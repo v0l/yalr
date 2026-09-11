@@ -17,4 +17,6 @@ pub struct AppState {
     pub oauth_pending: crate::oauth::PendingStore,
     /// Last successful model listing per provider, served when a provider is down.
     pub model_cache: crate::api::model_cache::ModelListCache,
+    /// Cached input modalities per provider/model, for the models list.
+    pub modality_cache: crate::api::model_cache::ModalityCache,
 }

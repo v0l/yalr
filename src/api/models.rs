@@ -1,3 +1,4 @@
+use crate::providers::Provider;
 use crate::router::{DbModelInfo, ModelInfoDetector};
 use crate::state::AppState;
 use axum::{
@@ -7,6 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// A model entry conforming to RIP-01 / RIP-05: includes pricing in sats.
 #[derive(Serialize)]
@@ -23,6 +25,17 @@ pub struct ModelEntry {
     pub context_length: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<i32>,
+    /// What the upstream accepts as input, in the OpenAI/LM Studio
+    /// `architecture.input_modalities` shape. Omitted when no backend can
+    /// report it, so clients fall back to their own default instead of being
+    /// told a confident "text only" we cannot actually verify.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<ModelArchitecture>,
+}
+
+#[derive(Serialize)]
+pub struct ModelArchitecture {
+    pub input_modalities: Vec<String>,
 }
 
 /// Pricing breakdown per RIP-05, in sats.
@@ -84,6 +97,87 @@ pub struct ProviderModelsResponse {
     pub provider: String,
     pub models: Vec<ProviderModelItem>,
     pub total_count: usize,
+}
+
+/// Deadline for a single capability probe. `get_runtime_info` has no internal
+/// timeout, and the models list must not inherit a hung upstream's latency.
+const MODALITY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Input modalities for a single provider model, from the provider's own
+/// capabilities endpoint. `None` when the provider cannot report them, so
+/// callers can tell "text only" apart from "unknown".
+async fn provider_input_modalities(
+    state: &AppState,
+    provider: &Arc<dyn Provider>,
+    model_id: &str,
+) -> Option<ModelArchitecture> {
+    if !provider.reports_modalities() {
+        return None;
+    }
+
+    // Skip a provider the health checker has already written off: its probe
+    // would burn the full timeout on every listing request and still fail.
+    if !state.metrics_store.is_provider_available(provider.name()).await {
+        return None;
+    }
+
+    let key = format!("{}/{}", provider.slug(), model_id);
+    let input_modalities = match state.modality_cache.get(&key).await {
+        Some(cached) => cached,
+        None => {
+            let probe = tokio::time::timeout(
+                MODALITY_PROBE_TIMEOUT,
+                provider.get_runtime_info(model_id),
+            )
+            .await;
+            let modalities: Vec<String> = match probe {
+                Ok(Ok(Some(info))) => info
+                    .modalities
+                    .iter()
+                    .map(|m| m.as_str().to_string())
+                    .collect(),
+                // Do not cache a failed or timed-out probe as text-only: a
+                // provider that is briefly unreachable must not pin an
+                // unverifiable answer for the whole TTL. The next request retries.
+                _ => return None,
+            };
+            state.modality_cache.put(&key, modalities.clone()).await;
+            modalities
+        }
+    };
+
+    Some(ModelArchitecture { input_modalities })
+}
+
+/// Input modalities for a routing engine: the union across its backends.
+///
+/// A routing engine is a pool, not one model. The union answers "can a request
+/// through this model carry an image" - at least one backend accepts it, and
+/// the engine fails over on the rejection from a text-only backend. Backends
+/// that cannot report modalities are skipped rather than treated as text-only,
+/// so a pool is not downgraded just because one member has no capabilities
+/// endpoint. `None` when no backend can report, which preserves the client's
+/// own default.
+async fn routing_input_modalities(state: &AppState, model: &str) -> Option<ModelArchitecture> {
+    let backends = state.config.router.candidate_backends(model).await;
+    let mut input_modalities: Vec<String> = Vec::new();
+    let mut reported = false;
+
+    for (provider, resolved_model) in backends {
+        let Some(architecture) =
+            provider_input_modalities(state, &provider, &resolved_model).await
+        else {
+            continue;
+        };
+        reported = true;
+        for modality in architecture.input_modalities {
+            if !input_modalities.contains(&modality) {
+                input_modalities.push(modality);
+            }
+        }
+    }
+
+    reported.then_some(ModelArchitecture { input_modalities })
 }
 
 pub async fn list_models(
@@ -171,6 +265,7 @@ pub async fn list_models(
             pricing: None,
             context_length,
             max_output_tokens,
+            architecture: routing_input_modalities(&state, &rc.name).await,
         });
     }
 
@@ -281,6 +376,7 @@ pub async fn list_models(
                 pricing,
                 context_length,
                 max_output_tokens,
+                architecture: provider_input_modalities(&state, provider, &model.id).await,
             });
         }
     }
@@ -418,5 +514,172 @@ pub async fn list_provider_models(
             }))
         }
         Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::admin::SessionStore;
+    use crate::config::AppConfig;
+    use crate::db::Database;
+    use crate::metrics::MetricsStore;
+    use crate::providers::{LlamaCppProvider, OpenAiProvider};
+    use crate::router::engine::Router;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Minimal llama.cpp `/props` stand-in. Returns `vision` for the whole
+    /// process, because that is exactly the shape `LlamaCppProvider` arrives at:
+    /// one server, one loaded model, one set of modalities.
+    async fn start_props_server(vision: bool) -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_for_task = hits.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                hits_for_task.fetch_add(1, Ordering::SeqCst);
+                let body = format!(
+                    r#"{{"model_alias":"glm-5.3-flash","total_slots":2,"modalities":{{"vision":{},"audio":false}},"default_generation_settings":{{"n_ctx":262144}}}}"#,
+                    vision
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let mut buf = [0u8; 2048];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        (format!("http://127.0.0.1:{}/v1", addr.port()), hits)
+    }
+
+    async fn state_with(provider: Arc<dyn Provider>, model: &str) -> Arc<AppState> {
+        let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+        let metrics_store = MetricsStore::new(100);
+        let router = Arc::new(Router::new(metrics_store.clone(), db.clone()));
+        router.add_provider(provider.clone()).await;
+        router.register_route(model, vec![provider]).await;
+
+        Arc::new(AppState {
+            config: AppConfig {
+                db: db.clone(),
+                router,
+                auth_config: Default::default(),
+                payments_config: None,
+                admin_ui_path: String::new(),
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            },
+            metrics_emitter: metrics_store.emitter().clone(),
+            metrics_store: metrics_store.into(),
+            session_store: Arc::new(SessionStore::new()),
+            db,
+            payments_state: None,
+            oauth_pending: Default::default(),
+            model_cache: Default::default(),
+            modality_cache: Default::default(),
+        })
+    }
+
+    fn vision_provider(base_url: &str) -> Arc<dyn Provider> {
+        Arc::new(LlamaCppProvider::new("LocalVision", Some("local"), base_url, None).unwrap())
+    }
+
+    #[tokio::test]
+    async fn routing_engine_advertises_vision_from_its_backend() {
+        let (base, _) = start_props_server(true).await;
+        let state = state_with(vision_provider(&base), "code-high").await;
+
+        let architecture = routing_input_modalities(&state, "code-high").await.unwrap();
+        assert_eq!(architecture.input_modalities, vec!["text", "image"]);
+    }
+
+    #[tokio::test]
+    async fn text_only_backend_advertises_text_only() {
+        let (base, _) = start_props_server(false).await;
+        let state = state_with(vision_provider(&base), "code").await;
+
+        let architecture = routing_input_modalities(&state, "code").await.unwrap();
+        assert_eq!(architecture.input_modalities, vec!["text"]);
+    }
+
+    #[tokio::test]
+    async fn modality_probe_is_cached() {
+        let (base, hits) = start_props_server(true).await;
+        let state = state_with(vision_provider(&base), "code-high").await;
+
+        for _ in 0..3 {
+            assert!(routing_input_modalities(&state, "code-high").await.is_some());
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "one /props probe, then cached");
+    }
+
+    #[tokio::test]
+    async fn provider_without_modality_support_yields_none() {
+        // Every non-llama.cpp provider hardcodes `Text`; reporting that as a
+        // fact would override the client's own default with a guess.
+        let provider: Arc<dyn Provider> = Arc::new(OpenAiProvider::new(
+            "OpenAI",
+            Some("openai"),
+            "http://127.0.0.1:1/v1",
+            Some("key"),
+        ));
+        assert!(!provider.reports_modalities());
+        let state = state_with(provider, "gpt").await;
+
+        let backends = state.config.router.candidate_backends("gpt").await;
+        assert_eq!(backends.len(), 1);
+        assert!(provider_input_modalities(&state, &backends[0].0, "gpt").await.is_none());
+        assert!(routing_input_modalities(&state, "gpt").await.is_none());
+    }
+
+    #[test]
+    fn model_entry_omits_architecture_when_unknown() {
+        let entry = ModelEntry {
+            id: "code-high".to_string(),
+            object: "model".to_string(),
+            created: 0,
+            owned_by: "code-high".to_string(),
+            pricing: None,
+            context_length: Some(1048576),
+            max_output_tokens: Some(65536),
+            architecture: None,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(
+            json.get("architecture").is_none(),
+            "unknown capabilities must be omitted, not reported as text-only"
+        );
+    }
+
+    #[test]
+    fn model_entry_serializes_input_modalities_lowercase() {
+        let entry = ModelEntry {
+            id: "llamacpp/glm-5.3-flash".to_string(),
+            object: "model".to_string(),
+            created: 0,
+            owned_by: "llamacpp".to_string(),
+            pricing: None,
+            context_length: None,
+            max_output_tokens: None,
+            architecture: Some(ModelArchitecture {
+                input_modalities: vec!["text".to_string(), "image".to_string()],
+            }),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(
+            json["architecture"]["input_modalities"],
+            serde_json::json!(["text", "image"])
+        );
     }
 }
