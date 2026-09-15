@@ -2,11 +2,12 @@ import { useEffect, useState, useMemo } from 'react'
 import { ThreadPrimitive, ComposerPrimitive, MessagePrimitive, ActionBarPrimitive, AssistantRuntimeProvider, useLocalRuntime, AuiIf, type ChatModelAdapter, type ChatModelRunResult, type ThreadAssistantMessagePart, type DictationAdapter, type SpeechSynthesisAdapter } from '@assistant-ui/react'
 import { api } from '../api/client'
 import type { Model } from '../types'
-import { ArrowUpIcon, MicIcon, SquareIcon, Volume2Icon } from 'lucide-react'
+import { ArrowUpIcon, Loader2Icon, MicIcon, SquareIcon, Volume2Icon } from 'lucide-react'
 import ModelPicker from '../components/ModelPicker'
 import VoiceSettings from '../components/VoiceSettings'
 import { loadVoiceSelection, saveVoiceSelection, splitAudioModels, type VoiceModelSelection } from '../lib/audio'
 import { RouterDictationAdapter, RouterSpeechAdapter } from '../lib/voice-adapters'
+import VoiceStatus, { useVoicePhase } from '../components/VoiceStatus'
 
 const createChatModelAdapter = (modelId: string): ChatModelAdapter => {
   return {
@@ -82,22 +83,14 @@ function ChatInterface({
             }}
           </ThreadPrimitive.Messages>
 
-          <ThreadPrimitive.ViewportFooter className="sticky bottom-0 mt-auto flex flex-col gap-3 bg-background pb-2">
+          <ThreadPrimitive.ViewportFooter className="sticky bottom-0 mt-auto flex flex-col gap-2 bg-background pb-2">
+            <VoiceStatus />
             <ComposerPrimitive.Root className="mx-auto flex w-full max-w-3xl items-end border border-border bg-card">
               <ComposerPrimitive.Input
                 placeholder="Message YALR..."
                 className="h-10 max-h-40 grow resize-none bg-transparent p-3 text-[13px] text-foreground outline-none placeholder:text-muted-foreground/60 font-mono"
               />
-              {dictation && (
-                <>
-                  <ComposerPrimitive.Dictate className="m-1.5 flex size-8 items-center justify-center border border-border text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground" title="Dictate">
-                    <MicIcon className="size-4" />
-                  </ComposerPrimitive.Dictate>
-                  <ComposerPrimitive.StopDictation className="m-1.5 flex size-8 items-center justify-center border border-brand/30 bg-brand/10 text-brand transition-colors hover:bg-brand/20" title="Stop dictation">
-                    <SquareIcon className="size-3.5" />
-                  </ComposerPrimitive.StopDictation>
-                </>
-              )}
+              {dictation && <DictationButton />}
               <ComposerPrimitive.Send className="m-1.5 flex size-8 items-center justify-center bg-brand/10 border border-brand/30 text-brand transition-opacity disabled:opacity-20 hover:bg-brand/20">
                 <ArrowUpIcon className="size-4" />
               </ComposerPrimitive.Send>
@@ -109,6 +102,40 @@ function ChatInterface({
         </ThreadPrimitive.Viewport>
       </ThreadPrimitive.Root>
     </AssistantRuntimeProvider>
+  )
+}
+
+/// One button, not two: mic to start, stop square while recording, and a
+/// spinner-free disabled state while the recording is being transcribed.
+function DictationButton() {
+  const phase = useVoicePhase()
+
+  if (phase.kind === 'recording') {
+    return (
+      <ComposerPrimitive.StopDictation
+        className="m-1.5 flex size-8 items-center justify-center border border-brand/30 bg-brand/10 text-brand transition-colors hover:bg-brand/20"
+        title="Stop recording and transcribe"
+      >
+        <SquareIcon className="size-3.5" />
+      </ComposerPrimitive.StopDictation>
+    )
+  }
+
+  if (phase.kind === 'transcribing') {
+    return (
+      <span className="m-1.5 flex size-8 items-center justify-center border border-border text-muted-foreground" title="Transcribing">
+        <Loader2Icon className="size-4 animate-spin" />
+      </span>
+    )
+  }
+
+  return (
+    <ComposerPrimitive.Dictate
+      className="m-1.5 flex size-8 items-center justify-center border border-border text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+      title="Record and transcribe"
+    >
+      <MicIcon className="size-4" />
+    </ComposerPrimitive.Dictate>
   )
 }
 

@@ -4,6 +4,45 @@ import { preferredRecordingMime, recordingFileName } from './audio'
 
 type Listener = () => void
 
+export type VoicePhase =
+  | { kind: 'idle' }
+  | { kind: 'recording'; since: number }
+  | { kind: 'transcribing' }
+  | { kind: 'speaking' }
+  | { kind: 'error'; message: string }
+
+let phase: VoicePhase = { kind: 'idle' }
+const phaseListeners = new Set<Listener>()
+
+function setPhase(next: VoicePhase) {
+  phase = next
+  phaseListeners.forEach(l => l())
+}
+
+export function getVoicePhase(): VoicePhase {
+  return phase
+}
+
+export function subscribeVoicePhase(callback: Listener): () => void {
+  phaseListeners.add(callback)
+  return () => {
+    phaseListeners.delete(callback)
+  }
+}
+
+export function clearVoiceError(): void {
+  if (phase.kind === 'error') setPhase({ kind: 'idle' })
+}
+
+function errorText(error: unknown, fallback: string): string {
+  if (error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+    return 'Microphone permission denied'
+  }
+  if (error instanceof DOMException && error.name === 'NotFoundError') return 'No microphone found'
+  if (error instanceof Error) return error.message
+  return fallback
+}
+
 /// Routes assistant-ui's speak action to `/v1/audio/speech` and plays the
 /// returned audio, instead of the browser's local voices.
 export class RouterSpeechAdapter implements SpeechSynthesisAdapter {
@@ -39,9 +78,16 @@ export class RouterSpeechAdapter implements SpeechSynthesisAdapter {
     const end = (reason: 'finished' | 'cancelled' | 'error', error?: unknown) => {
       if (utterance.status.type === 'ended') return
       if (objectUrl) URL.revokeObjectURL(objectUrl)
+      if (reason === 'error') {
+        setPhase({ kind: 'error', message: errorText(error, 'Speech synthesis failed') })
+      } else if (phase.kind === 'speaking') {
+        setPhase({ kind: 'idle' })
+      }
       utterance.status = { type: 'ended', reason, error }
       notify()
     }
+
+    setPhase({ kind: 'speaking' })
 
     api
       .synthesizeSpeech(this.model, text, { voice: this.voice, signal: controller.signal })
@@ -83,6 +129,7 @@ export class RouterDictationAdapter implements DictationAdapter {
   listen(): DictationAdapter.Session {
     const startListeners = new Set<Listener>()
     const endListeners = new Set<(result: DictationAdapter.Result) => void>()
+    const speechListeners = new Set<(result: DictationAdapter.Result) => void>()
     const chunks: Blob[] = []
     let recorder: MediaRecorder | null = null
     let stream: MediaStream | null = null
@@ -91,9 +138,11 @@ export class RouterDictationAdapter implements DictationAdapter {
     const session: DictationAdapter.Session = {
       status: { type: 'starting' },
       stop: async () => {
+        setPhase({ kind: 'transcribing' })
         const recorded = await finishRecording()
         if (cancelled || !recorded || recorded.size === 0) {
           session.status = { type: 'ended', reason: cancelled ? 'cancelled' : 'stopped' }
+          setPhase(cancelled ? { kind: 'idle' } : { kind: 'error', message: 'Nothing was recorded' })
           return
         }
         try {
@@ -102,16 +151,22 @@ export class RouterDictationAdapter implements DictationAdapter {
             fileName: recordingFileName(recorded.type),
           })
           session.status = { type: 'ended', reason: 'stopped' }
-          endListeners.forEach(l => l({ transcript, isFinal: true }))
+          // The composer only takes text from onSpeech. onSpeechEnd just tears
+          // the session down and discards its result, so emit here first.
+          const result = { transcript, isFinal: true }
+          speechListeners.forEach(l => l(result))
+          endListeners.forEach(l => l(result))
+          setPhase(transcript.trim() ? { kind: 'idle' } : { kind: 'error', message: 'No speech detected' })
         } catch (error) {
-          console.error('Transcription failed', error)
           session.status = { type: 'ended', reason: 'error' }
+          setPhase({ kind: 'error', message: errorText(error, 'Transcription failed') })
         }
       },
       cancel: () => {
         cancelled = true
         stopTracks()
         session.status = { type: 'ended', reason: 'cancelled' }
+        setPhase({ kind: 'idle' })
       },
       onSpeechStart: callback => {
         startListeners.add(callback)
@@ -121,8 +176,12 @@ export class RouterDictationAdapter implements DictationAdapter {
         endListeners.add(callback)
         return () => endListeners.delete(callback)
       },
-      // Batch transcription has no interim results.
-      onSpeech: () => () => {},
+      onSpeech: callback => {
+        speechListeners.add(callback)
+        return () => {
+          speechListeners.delete(callback)
+        }
+      },
     }
 
     const stopTracks = () => {
@@ -159,11 +218,12 @@ export class RouterDictationAdapter implements DictationAdapter {
         }
         recorder.start()
         session.status = { type: 'running' }
+        setPhase({ kind: 'recording', since: Date.now() })
         startListeners.forEach(l => l())
       })
       .catch(error => {
-        console.error('Microphone unavailable', error)
         session.status = { type: 'ended', reason: 'error' }
+        setPhase({ kind: 'error', message: errorText(error, 'Microphone unavailable') })
       })
 
     return session
