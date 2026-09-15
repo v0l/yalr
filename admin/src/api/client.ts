@@ -290,13 +290,22 @@ export const api = {
   async synthesizeSpeech(
     model: string,
     input: string,
-    options?: { voice?: string; signal?: AbortSignal },
+    options?: { voice?: string; responseFormat?: string; signal?: AbortSignal },
   ): Promise<Blob> {
     const headers = await getAuthHeaders()
+    // mp3 by default: OpenRouter serves raw pcm otherwise, which <audio> cannot
+    // play. An empty voice is omitted, since a null fails their schema.
+    const body: Record<string, unknown> = {
+      model,
+      input,
+      response_format: options?.responseFormat ?? 'mp3',
+    }
+    if (options?.voice) body.voice = options.voice
+
     const response = await fetch(`${API_BASE_URL}/v1/audio/speech`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, input, voice: options?.voice }),
+      body: JSON.stringify(body),
       signal: options?.signal,
     })
 

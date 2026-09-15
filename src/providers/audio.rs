@@ -62,7 +62,9 @@ impl TranscriptionResponse {
 pub struct SpeechRequest {
     pub model: String,
     pub input: String,
-    #[serde(default)]
+    /// Skipped when absent: OpenRouter's schema rejects an explicit null and
+    /// only falls back to a provider default when the key is missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<String>,
@@ -141,6 +143,14 @@ mod tests {
             body: Bytes::from_static(b"1\n00:00:00,000 --> 00:00:01,000\nhi\n"),
         };
         assert_eq!(srt.text(), None);
+    }
+
+    #[test]
+    fn absent_voice_is_omitted_not_null() {
+        let parsed: SpeechRequest =
+            serde_json::from_str(r#"{"model":"tts-1","input":"hi"}"#).unwrap();
+        let wire = serde_json::to_value(&parsed).unwrap();
+        assert!(wire.get("voice").is_none(), "null voice fails OpenRouter validation");
     }
 
     #[test]

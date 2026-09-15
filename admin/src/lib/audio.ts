@@ -37,18 +37,29 @@ export function recordingFileName(mime: string | undefined): string {
   return 'recording.webm'
 }
 
+/// Most TTS backends reject a request with no voice, and the valid names are
+/// model-specific, so seed a known-good one where we can recognise the family.
+export function defaultVoiceFor(model: string): string {
+  const id = model.toLowerCase()
+  if (id.includes('kokoro')) return 'af_bella'
+  if (id.includes('gemini')) return 'Zephyr'
+  if (id.includes('orpheus')) return 'tara'
+  if (id.includes('openai') || id.includes('tts-1') || id.includes('gpt')) return 'alloy'
+  return ''
+}
+
 const STORAGE_KEY = 'voiceModels'
 
-export type VoiceModelSelection = { stt: string | null; tts: string | null }
+export type VoiceModelSelection = { stt: string | null; tts: string | null; voice: string }
 
 export function loadVoiceSelection(): VoiceModelSelection {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return { stt: null, tts: null }
+    if (!raw) return { stt: null, tts: null, voice: '' }
     const parsed = JSON.parse(raw)
-    return { stt: parsed?.stt ?? null, tts: parsed?.tts ?? null }
+    return { stt: parsed?.stt ?? null, tts: parsed?.tts ?? null, voice: parsed?.voice ?? '' }
   } catch {
-    return { stt: null, tts: null }
+    return { stt: null, tts: null, voice: '' }
   }
 }
 

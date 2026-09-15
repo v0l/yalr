@@ -221,7 +221,7 @@ export default function Chat() {
   useEffect(() => {
     const stt = voice.stt && audioModels.stt.includes(voice.stt) ? voice.stt : audioModels.stt[0] ?? null
     const tts = voice.tts && audioModels.tts.includes(voice.tts) ? voice.tts : audioModels.tts[0] ?? null
-    if (stt !== voice.stt || tts !== voice.tts) setVoice({ stt, tts })
+    if (stt !== voice.stt || tts !== voice.tts) setVoice({ ...voice, stt, tts })
   }, [audioModels, voice])
 
   const updateVoice = (next: VoiceModelSelection) => {
@@ -230,7 +230,10 @@ export default function Chat() {
   }
 
   const adapter: ChatModelAdapter | undefined = useMemo(() => selectedModel ? createChatModelAdapter(selectedModel) : undefined, [selectedModel])
-  const speechAdapter = useMemo(() => voice.tts ? new RouterSpeechAdapter(voice.tts) : undefined, [voice.tts])
+  const speechAdapter = useMemo(
+    () => voice.tts ? new RouterSpeechAdapter(voice.tts, voice.voice || undefined) : undefined,
+    [voice.tts, voice.voice],
+  )
   const dictationAdapter = useMemo(
     () => voice.stt && typeof MediaRecorder !== 'undefined' ? new RouterDictationAdapter(voice.stt) : undefined,
     [voice.stt],
@@ -281,6 +284,7 @@ export default function Chat() {
             ttsModels={audioModels.tts}
             stt={voice.stt}
             tts={voice.tts}
+            voice={voice.voice}
             onChange={updateVoice}
           />
         </div>

@@ -1,16 +1,18 @@
 import ModelPicker from './ModelPicker'
+import { defaultVoiceFor, type VoiceModelSelection } from '../lib/audio'
 
 type Props = {
   sttModels: string[]
   ttsModels: string[]
   stt: string | null
   tts: string | null
-  onChange: (next: { stt: string | null; tts: string | null }) => void
+  voice: string
+  onChange: (next: VoiceModelSelection) => void
 }
 
 /// Voice model selection for the chat page. Hidden entirely when no audio
 /// models are reachable, so a text-only deployment sees no dead controls.
-export default function VoiceSettings({ sttModels, ttsModels, stt, tts, onChange }: Props) {
+export default function VoiceSettings({ sttModels, ttsModels, stt, tts, voice, onChange }: Props) {
   if (sttModels.length === 0 && ttsModels.length === 0) return null
 
   return (
@@ -23,7 +25,7 @@ export default function VoiceSettings({ sttModels, ttsModels, stt, tts, onChange
           <ModelPicker
             value={stt ?? ''}
             models={sttModels}
-            onChange={value => onChange({ stt: value, tts })}
+            onChange={next => onChange({ stt: next, tts, voice })}
             className="w-56"
           />
         </div>
@@ -36,8 +38,15 @@ export default function VoiceSettings({ sttModels, ttsModels, stt, tts, onChange
           <ModelPicker
             value={tts ?? ''}
             models={ttsModels}
-            onChange={value => onChange({ stt, tts: value })}
+            onChange={next => onChange({ stt, tts: next, voice: defaultVoiceFor(next) || voice })}
             className="w-56"
+          />
+          <input
+            value={voice}
+            onChange={e => onChange({ stt, tts, voice: e.target.value })}
+            placeholder="voice name"
+            title="Most backends require a voice name, e.g. alloy, af_bella, Zephyr"
+            className="h-8 w-32 border border-border bg-card px-2 font-mono text-[11px] text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-brand"
           />
         </div>
       )}
