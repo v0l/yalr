@@ -52,6 +52,21 @@ impl Router {
         .await
     }
 
+    /// Voice names the configured backends advertise for `model`.
+    ///
+    /// Reads the routing table directly rather than routing: this is
+    /// introspection, so it must not advance round-robin or mark health.
+    pub async fn voices(&self, model: &str) -> Vec<String> {
+        for (provider, resolved_model) in self.candidate_backends(model).await {
+            match provider.list_voices(&resolved_model).await {
+                Ok(Some(voices)) if !voices.is_empty() => return voices,
+                Ok(_) => {}
+                Err(e) => tracing::debug!(provider = provider.name(), error = %e, "Voice lookup failed"),
+            }
+        }
+        Vec::new()
+    }
+
     /// Try each candidate backend for `model` in routing order, recording
     /// metrics per attempt and failing over on transient errors.
     ///

@@ -123,6 +123,16 @@ pub trait Provider: Send + Sync {
         ))
     }
 
+    /// Voice names a TTS model accepts, when the upstream publishes them.
+    ///
+    /// Voices are model-specific and most backends reject a request without a
+    /// valid one, so a client has no way to guess. `None` means the provider
+    /// does not advertise a list, not that the model takes no voice.
+    async fn list_voices(&self, model: &str) -> Result<Option<Vec<String>>, ProviderError> {
+        let _ = model;
+        Ok(None)
+    }
+
     /// Text-to-speech. Returns an error for providers with no audio support.
     async fn speech(&self, request: &SpeechRequest) -> Result<SpeechResponse, ProviderError> {
         let _ = request;

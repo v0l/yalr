@@ -5,7 +5,7 @@ import type { Model } from '../types'
 import { ArrowUpIcon, Loader2Icon, MicIcon, SquareIcon, Volume2Icon } from 'lucide-react'
 import ModelPicker from '../components/ModelPicker'
 import VoiceSettings from '../components/VoiceSettings'
-import { loadVoiceSelection, saveVoiceSelection, splitAudioModels, type VoiceModelSelection } from '../lib/audio'
+import { loadChatModel, loadVoiceSelection, saveChatModel, saveVoiceSelection, splitAudioModels, type VoiceModelSelection } from '../lib/audio'
 import { RouterDictationAdapter, RouterSpeechAdapter } from '../lib/voice-adapters'
 import VoiceStatus, { useVoicePhase } from '../components/VoiceStatus'
 
@@ -209,7 +209,11 @@ export default function Chat() {
       try {
         const response = await api.getModels()
         setModels(response.data)
-        if (response.data.length > 0) setSelectedModel(response.data[0].id)
+        if (response.data.length > 0) {
+          const remembered = loadChatModel()
+          const available = remembered && response.data.some(m => m.id === remembered)
+          setSelectedModel(available ? remembered : response.data[0].id)
+        }
       } catch (e) { setError(e instanceof Error ? e.message : 'Failed to fetch models') }
       finally { setLoading(false) }
     }
@@ -221,12 +225,21 @@ export default function Chat() {
   useEffect(() => {
     const stt = voice.stt && audioModels.stt.includes(voice.stt) ? voice.stt : audioModels.stt[0] ?? null
     const tts = voice.tts && audioModels.tts.includes(voice.tts) ? voice.tts : audioModels.tts[0] ?? null
-    if (stt !== voice.stt || tts !== voice.tts) setVoice({ ...voice, stt, tts })
+    if (stt !== voice.stt || tts !== voice.tts) {
+      const next = { stt, tts, voice: tts === voice.tts ? voice.voice : '' }
+      setVoice(next)
+      saveVoiceSelection(next)
+    }
   }, [audioModels, voice])
 
   const updateVoice = (next: VoiceModelSelection) => {
     setVoice(next)
     saveVoiceSelection(next)
+  }
+
+  const updateModel = (next: string) => {
+    setSelectedModel(next)
+    saveChatModel(next)
   }
 
   const adapter: ChatModelAdapter | undefined = useMemo(() => selectedModel ? createChatModelAdapter(selectedModel) : undefined, [selectedModel])
@@ -275,7 +288,7 @@ export default function Chat() {
           <ModelPicker
             value={selectedModel}
             models={models.map(m => m.id)}
-            onChange={setSelectedModel}
+            onChange={updateModel}
             disabled={models.length === 0}
             className="w-full max-w-sm"
           />

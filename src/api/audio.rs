@@ -121,6 +121,29 @@ async fn audio_stt(
         .into_response())
 }
 
+#[derive(serde::Deserialize)]
+pub struct VoicesQuery {
+    pub model: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct VoicesResponse {
+    pub model: String,
+    pub voices: Vec<String>,
+}
+
+/// Voice names the backends behind `model` accept. Empty when the upstream
+/// does not publish a list, which is not the same as "takes no voice".
+pub async fn voices(
+    State(state): State<Arc<AppState>>,
+    Extension(authenticated): Extension<AuthenticatedUser>,
+    axum::extract::Query(query): axum::extract::Query<VoicesQuery>,
+) -> Result<Json<VoicesResponse>, ApiError> {
+    check_model_access(&state, authenticated.user.id, &query.model).await?;
+    let voices = state.config.router.voices(&query.model).await;
+    Ok(Json(VoicesResponse { model: query.model, voices }))
+}
+
 pub async fn speech(
     State(state): State<Arc<AppState>>,
     Extension(authenticated): Extension<AuthenticatedUser>,

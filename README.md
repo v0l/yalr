@@ -239,6 +239,12 @@ of `json`, `verbose_json`, `text`, `srt` and `vtt` all work. Speech audio is
 streamed to the client as it arrives from the backend. Uploads are capped at
 256 MB.
 
+`GET /v1/audio/voices?model=...` returns the voice names a TTS model accepts,
+where the upstream publishes them (OpenRouter does; Kokoro has 54, Gemini TTS
+30). An empty list means the backend does not advertise its voices, not that it
+takes none. Most backends reject a request whose voice they do not know, so
+this is how a client picks a valid one.
+
 The admin chat page picks up audio models automatically: a mic button appears
 in the composer when a transcription model is reachable, and a read-aloud
 button on assistant messages when a speech model is. Models are recognised by

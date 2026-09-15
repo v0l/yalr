@@ -287,6 +287,13 @@ export const api = {
     return typeof payload?.text === 'string' ? payload.text : ''
   },
 
+  async getVoices(model: string): Promise<string[]> {
+    const response = await request<{ model: string; voices: string[] }>(
+      `/v1/audio/voices?model=${encodeURIComponent(model)}`,
+    )
+    return response.voices
+  },
+
   async synthesizeSpeech(
     model: string,
     input: string,

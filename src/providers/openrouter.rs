@@ -4,6 +4,8 @@ use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::Arc;
 use crate::router::{Modality, ModelRuntimeInfo};
 
 /// Output modalities requested from OpenRouter's models listing.
@@ -38,6 +40,9 @@ pub struct OpenRouterProvider {
     /// API key stored separately for balance API access
     api_key: Option<String>,
     models_cache: ModelsCache,
+    /// Voice names per model, harvested from the same listing. Voices are
+    /// model-specific and a client cannot guess them.
+    voices: Arc<tokio::sync::RwLock<HashMap<String, Vec<String>>>>,
 }
 
 impl OpenRouterProvider {
@@ -64,6 +69,7 @@ impl OpenRouterProvider {
             base_url: base_url.to_string(),
             api_key: api_key.map(String::from),
             models_cache: ModelsCache::new(),
+            voices: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -75,6 +81,65 @@ impl OpenRouterProvider {
     /// # Returns
     /// * `Some(CurrencyAmount::UsdMicro(balance))` - Remaining balance in microcents
     /// * `None` - If API key is missing, request fails, or response is invalid
+    /// Fetch the model listing and harvest each model's voice list.
+    ///
+    /// Always hits the network: the models cache holds the converted
+    /// `Model` values, which have nowhere to carry voices, so serving a
+    /// cached listing would leave the voice map empty forever.
+    async fn fetch_models(&self) -> Result<Vec<Model>, ProviderError> {
+        // The default listing is text-output only, which hides every STT and
+        // TTS model, so ask for those output modalities explicitly. `all` would
+        // drag in image and video generation models we cannot route.
+        let models_url = format!(
+            "{}/models?output_modalities={}",
+            self.base_url.trim_end_matches('/'),
+            MODEL_OUTPUT_MODALITIES
+        );
+
+        let mut req = self.http_client.get(&models_url);
+        if let Some(ref key) = self.api_key {
+            req = req.bearer_auth(key);
+        }
+
+        let response = req.send().await.map_err(|e| ProviderError::Other(e.into()))?;
+
+        if !response.status().is_success() {
+            return Err(ProviderError::ServerError {
+                message: format!("Failed to list models: {}", response.status()),
+                status_code: Some(response.status().as_u16()),
+            });
+        }
+
+        let body: ModelListResponse = response.json().await.map_err(|e| ProviderError::Other(e.into()))?;
+
+        let mut voices = HashMap::new();
+        let models: Vec<Model> = body
+            .data
+            .into_iter()
+            .map(|item| {
+                if let Some(list) = item.extra.get("supported_voices").and_then(|v| v.as_array()) {
+                    let names: Vec<String> = list
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect();
+                    if !names.is_empty() {
+                        voices.insert(item.id.clone(), names);
+                    }
+                }
+                Model {
+                    id: item.id,
+                    object: item.object.unwrap_or_else(|| "model".to_string()),
+                    created: item.created.unwrap_or(0),
+                    owned_by: item.owned_by.unwrap_or_else(|| "openrouter".to_string()),
+                }
+            })
+            .collect();
+
+        *self.voices.write().await = voices;
+        self.models_cache.store(models.clone()).await;
+        Ok(models)
+    }
+
     pub(super) async fn fetch_balance_from_api(&self) -> Option<CurrencyAmount> {
         let api_key = self.api_key.as_ref()?;
         if api_key.is_empty() {
@@ -145,43 +210,7 @@ impl Provider for OpenRouterProvider {
         if let Some(cached) = self.models_cache.get().await {
             return Ok(cached);
         }
-
-        // Use custom OpenRouter model format instead of OpenAI's standard format.
-        // The default listing is text-output only, which hides every STT and TTS
-        // model, so ask for those output modalities explicitly. `all` would drag
-        // in image and video generation models we cannot route.
-        let models_url = format!(
-            "{}/models?output_modalities={}",
-            self.base_url.trim_end_matches('/'),
-            MODEL_OUTPUT_MODALITIES
-        );
-        
-        let mut req = self.http_client.get(&models_url);
-        if let Some(ref key) = self.api_key {
-            req = req.bearer_auth(key);
-        }
-        
-        let response = req.send().await.map_err(|e| ProviderError::Other(e.into()))?;
-        
-        if !response.status().is_success() {
-            return Err(ProviderError::ServerError {
-                message: format!("Failed to list models: {}", response.status()),
-                status_code: Some(response.status().as_u16()),
-            });
-        }
-        
-        let body: ModelListResponse = response.json().await.map_err(|e| ProviderError::Other(e.into()))?;
-        
-        // Parse OpenRouter models and convert to standard Model type
-        let models: Vec<Model> = body.data.into_iter().map(|item| Model {
-            id: item.id,
-            object: item.object.unwrap_or_else(|| "model".to_string()),
-            created: item.created.unwrap_or(0),
-            owned_by: item.owned_by.unwrap_or_else(|| "openrouter".to_string()),
-        }).collect();
-
-        self.models_cache.store(models.clone()).await;
-        Ok(models)
+        self.fetch_models().await
     }
 
     async fn chat_completions(
@@ -207,6 +236,13 @@ impl Provider for OpenRouterProvider {
 
     async fn responses(&self, request: &CreateResponse) -> Result<ApiResponse, ProviderError> {
         self.inner.responses(request).await
+    }
+
+    async fn list_voices(&self, model: &str) -> Result<Option<Vec<String>>, ProviderError> {
+        if self.voices.read().await.is_empty() {
+            self.fetch_models().await?;
+        }
+        Ok(self.voices.read().await.get(model).cloned())
     }
 
     async fn transcriptions(
@@ -326,6 +362,58 @@ mod tests {
         let models = provider.list_models().await.unwrap();
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["openai/whisper-large-v3-turbo", "hexgrad/kokoro-82m"]);
+    }
+
+    #[tokio::test]
+    async fn voices_survive_a_warm_model_cache() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                r#"{"data":[{"id":"tts","supported_voices":["Zephyr"]}]}"#,
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = OpenRouterProvider::new("OpenRouter", None, &server.uri(), Some("key"));
+        // Warm the listing cache first: a cached listing must not starve the
+        // voice map, since the cached type cannot carry voices.
+        provider.list_models().await.unwrap();
+        assert_eq!(
+            provider.list_voices("tts").await.unwrap(),
+            Some(vec!["Zephyr".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn supported_voices_are_exposed_per_model() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                r#"{"data":[
+                    {"id":"google/gemini-tts","supported_voices":["Zephyr","Puck"]},
+                    {"id":"openai/gpt-4o"}
+                ]}"#,
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = OpenRouterProvider::new("OpenRouter", None, &server.uri(), Some("key"));
+        assert_eq!(
+            provider.list_voices("google/gemini-tts").await.unwrap(),
+            Some(vec!["Zephyr".to_string(), "Puck".to_string()])
+        );
+        // A model with no published voices must not masquerade as having none.
+        assert_eq!(provider.list_voices("openai/gpt-4o").await.unwrap(), None);
     }
 
     #[tokio::test]

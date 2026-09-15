@@ -216,6 +216,7 @@ pub async fn run_with_shutdown<F>(
         .route("/v1/audio/transcriptions", post(crate::api::audio::transcriptions))
         .route("/v1/audio/translations", post(crate::api::audio::translations))
         .route("/v1/audio/speech", post(crate::api::audio::speech))
+        .route("/v1/audio/voices", get(crate::api::audio::voices))
         .layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT_BYTES))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
@@ -348,6 +349,7 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/v1/audio/transcriptions", post(crate::api::audio::transcriptions))
         .route("/v1/audio/translations", post(crate::api::audio::translations))
         .route("/v1/audio/speech", post(crate::api::audio::speech))
+        .route("/v1/audio/voices", get(crate::api::audio::voices))
         .layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT_BYTES))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
