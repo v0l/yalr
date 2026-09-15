@@ -6,6 +6,9 @@ use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use crate::router::{Modality, ModelRuntimeInfo};
 
+/// Output modalities requested from OpenRouter's models listing.
+const MODEL_OUTPUT_MODALITIES: &str = "text,speech,transcription";
+
 /// Response from OpenRouter's /v1/credits API endpoint
 #[derive(Debug, Clone, Deserialize)]
 struct CreditsResponse {
@@ -143,8 +146,15 @@ impl Provider for OpenRouterProvider {
             return Ok(cached);
         }
 
-        // Use custom OpenRouter model format instead of OpenAI's standard format
-        let models_url = format!("{}/models", self.base_url.trim_end_matches('/'));
+        // Use custom OpenRouter model format instead of OpenAI's standard format.
+        // The default listing is text-output only, which hides every STT and TTS
+        // model, so ask for those output modalities explicitly. `all` would drag
+        // in image and video generation models we cannot route.
+        let models_url = format!(
+            "{}/models?output_modalities={}",
+            self.base_url.trim_end_matches('/'),
+            MODEL_OUTPUT_MODALITIES
+        );
         
         let mut req = self.http_client.get(&models_url);
         if let Some(ref key) = self.api_key {
@@ -294,6 +304,28 @@ mod tests {
         );
         let balance = provider.fetch_balance().await;
         assert!(balance.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_models_asks_for_audio_output_modalities() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .and(query_param("output_modalities", MODEL_OUTPUT_MODALITIES))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                r#"{"data":[{"id":"openai/whisper-large-v3-turbo"},{"id":"hexgrad/kokoro-82m"}]}"#,
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = OpenRouterProvider::new("OpenRouter", None, &server.uri(), Some("key"));
+        let models = provider.list_models().await.unwrap();
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["openai/whisper-large-v3-turbo", "hexgrad/kokoro-82m"]);
     }
 
     #[tokio::test]
