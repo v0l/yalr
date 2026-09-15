@@ -286,6 +286,20 @@ impl Provider for RoutstrProvider {
         self.inner.responses(request).await
     }
 
+    async fn transcriptions(
+        &self,
+        request: &crate::providers::audio::TranscriptionRequest,
+    ) -> Result<crate::providers::audio::TranscriptionResponse, ProviderError> {
+        self.inner.transcriptions(request).await
+    }
+
+    async fn speech(
+        &self,
+        request: &crate::providers::audio::SpeechRequest,
+    ) -> Result<crate::providers::audio::SpeechResponse, ProviderError> {
+        self.inner.speech(request).await
+    }
+
     async fn fetch_balance(&self) -> Option<CurrencyAmount> {
         match self.fetch_balance_from_api().await {
             Ok(msats) => Some(CurrencyAmount::Msats(msats)),

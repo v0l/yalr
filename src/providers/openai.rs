@@ -201,12 +201,12 @@ pub struct OpenAiProvider {
     name: String,
     slug: String,
     pub(crate) client: Client<OpenAIConfig>,
-    /// Raw reqwest client for lightweight health checks
-    http_client: reqwest::Client,
+    /// Raw reqwest client for lightweight health checks and audio endpoints
+    pub(crate) http_client: reqwest::Client,
     /// Base URL (no trailing slash) for constructing health check URLs
-    base_url: String,
+    pub(crate) base_url: String,
     /// API key for health check auth (empty string = no auth)
-    api_key: String,
+    pub(crate) api_key: String,
     /// Cached model list
     models_cache: ModelsCache,
 }
@@ -252,6 +252,20 @@ impl Provider for OpenAiProvider {
         let models = response.data;
         self.models_cache.store(models.clone()).await;
         Ok(models)
+    }
+
+    async fn transcriptions(
+        &self,
+        request: &crate::providers::audio::TranscriptionRequest,
+    ) -> Result<crate::providers::audio::TranscriptionResponse, ProviderError> {
+        self.audio_transcriptions(request).await
+    }
+
+    async fn speech(
+        &self,
+        request: &crate::providers::audio::SpeechRequest,
+    ) -> Result<crate::providers::audio::SpeechResponse, ProviderError> {
+        self.audio_speech(request).await
     }
 
     async fn chat_completions(

@@ -16,14 +16,14 @@ use tokio::sync::RwLock;
 
 /// Guard that decrements in-flight count when dropped.
 /// Ensures in-flight tracking is correct even on early returns or panics.
-struct InFlightGuard {
+pub(crate) struct InFlightGuard {
     metrics_store: MetricsStore,
     provider_name: String,
     decremented: bool,
 }
 
 impl InFlightGuard {
-    fn new(metrics_store: MetricsStore, provider_name: String) -> Self {
+    pub(crate) fn new(metrics_store: MetricsStore, provider_name: String) -> Self {
         Self {
             metrics_store,
             provider_name,
@@ -31,7 +31,7 @@ impl InFlightGuard {
         }
     }
 
-    fn decrement(&mut self) {
+    pub(crate) fn decrement(&mut self) {
         if !self.decremented {
             let metrics = self.metrics_store.clone();
             let name = self.provider_name.clone();
@@ -208,10 +208,10 @@ impl HealthCheckRouter {
 
 pub struct Router {
     db: Arc<Database>,
-    metrics_store: MetricsStore,
+    pub(crate) metrics_store: MetricsStore,
     providers: RwLock<HashMap<String, Arc<dyn Provider>>>,
     routing_tables: RwLock<HashMap<String, RoutingTable>>,
-    max_retries: u32,
+    pub(crate) max_retries: u32,
     health_check_handles: RwLock<HashMap<String, tokio::task::JoinHandle<()>>>,
     shutdown_tx: RwLock<Option<tokio::sync::broadcast::Sender<()>>>,
 }
@@ -629,7 +629,7 @@ impl Router {
     /// fewer in-flight requests (relative to their weight) are preferred. This
     /// prevents a slow provider from absorbing all traffic just because the
     /// round-robin counter keeps cycling back to it while it's still processing.
-    async fn collect_candidates(
+    pub(crate) async fn collect_candidates(
         &self,
         model: &str,
     ) -> Vec<(Arc<dyn Provider>, String)> {

@@ -199,6 +199,20 @@ impl Provider for OpenRouterProvider {
         self.inner.responses(request).await
     }
 
+    async fn transcriptions(
+        &self,
+        request: &crate::providers::audio::TranscriptionRequest,
+    ) -> Result<crate::providers::audio::TranscriptionResponse, ProviderError> {
+        self.inner.transcriptions(request).await
+    }
+
+    async fn speech(
+        &self,
+        request: &crate::providers::audio::SpeechRequest,
+    ) -> Result<crate::providers::audio::SpeechResponse, ProviderError> {
+        self.inner.speech(request).await
+    }
+
     async fn get_runtime_info(&self, model_id: &str) -> Result<Option<ModelRuntimeInfo>, ProviderError> {
         self.inner.get_runtime_info(model_id).await
     }

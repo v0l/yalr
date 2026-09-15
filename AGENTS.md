@@ -49,6 +49,14 @@ serialization time; add wire-shape handling there, not in the router.
 
 **API**: `src/api/handlers.rs` - Chat completion handlers use both routers
 
+**Audio**: `src/api/audio.rs` (`/v1/audio/*` handlers), `src/router/audio.rs`
+(failover), `src/providers/audio.rs` (types), `src/providers/openai_audio.rs`
+(OpenAI-compatible impl). A provider that cannot serve audio returns
+`ProviderError::Unsupported`, which the failover loop skips without emitting a
+failure event or consuming a retry. When every healthy candidate is
+unsupported, the loop retries against `candidate_backends()` so capability
+wins over health filtering.
+
 **Metrics**: `src/metrics.rs` - Shared metrics store for health/load tracking
 
 **Database**: `src/db/mod.rs` - SQLite via sqlx with migrations in `./migrations/`
@@ -65,6 +73,9 @@ serialization time; add wire-shape handling there, not in the router.
 - Engine matches model name against `routing_config_providers` table
 - Uses round-robin strategy to select from active providers configured for that model
 - Falls back to first available routing config if no model-specific match
+
+**Audio models** route the same way, through `Router::transcriptions()` and
+`Router::speech()`.
 
 **Key methods**: `ModelRequestRouter::is_prefixed()`, `extract_prefix()`, `extract_model()`, `RoutingEngine::route_by_slug()`, `RoutingEngine::route()`
 

@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod chat;
 pub mod config;
 pub mod health;

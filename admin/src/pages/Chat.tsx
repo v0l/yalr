@@ -1,9 +1,12 @@
 import { useEffect, useState, useMemo } from 'react'
-import { ThreadPrimitive, ComposerPrimitive, MessagePrimitive, ActionBarPrimitive, AssistantRuntimeProvider, useLocalRuntime, AuiIf, type ChatModelAdapter, type ChatModelRunResult, type ThreadAssistantMessagePart } from '@assistant-ui/react'
+import { ThreadPrimitive, ComposerPrimitive, MessagePrimitive, ActionBarPrimitive, AssistantRuntimeProvider, useLocalRuntime, AuiIf, type ChatModelAdapter, type ChatModelRunResult, type ThreadAssistantMessagePart, type DictationAdapter, type SpeechSynthesisAdapter } from '@assistant-ui/react'
 import { api } from '../api/client'
 import type { Model } from '../types'
-import { ArrowUpIcon } from 'lucide-react'
+import { ArrowUpIcon, MicIcon, SquareIcon, Volume2Icon } from 'lucide-react'
 import ModelPicker from '../components/ModelPicker'
+import VoiceSettings from '../components/VoiceSettings'
+import { loadVoiceSelection, saveVoiceSelection, splitAudioModels, type VoiceModelSelection } from '../lib/audio'
+import { RouterDictationAdapter, RouterSpeechAdapter } from '../lib/voice-adapters'
 
 const createChatModelAdapter = (modelId: string): ChatModelAdapter => {
   return {
@@ -46,8 +49,16 @@ const createChatModelAdapter = (modelId: string): ChatModelAdapter => {
   }
 }
 
-function ChatInterface({ adapter }: { adapter: ChatModelAdapter }) {
-  const runtime = useLocalRuntime(adapter)
+function ChatInterface({
+  adapter,
+  speech,
+  dictation,
+}: {
+  adapter: ChatModelAdapter
+  speech?: SpeechSynthesisAdapter
+  dictation?: DictationAdapter
+}) {
+  const runtime = useLocalRuntime(adapter, { adapters: { speech, dictation } })
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <ThreadPrimitive.Root className="flex h-full flex-col items-stretch bg-background px-4 font-mono text-foreground">
@@ -77,6 +88,16 @@ function ChatInterface({ adapter }: { adapter: ChatModelAdapter }) {
                 placeholder="Message YALR..."
                 className="h-10 max-h-40 grow resize-none bg-transparent p-3 text-[13px] text-foreground outline-none placeholder:text-muted-foreground/60 font-mono"
               />
+              {dictation && (
+                <>
+                  <ComposerPrimitive.Dictate className="m-1.5 flex size-8 items-center justify-center border border-border text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground" title="Dictate">
+                    <MicIcon className="size-4" />
+                  </ComposerPrimitive.Dictate>
+                  <ComposerPrimitive.StopDictation className="m-1.5 flex size-8 items-center justify-center border border-brand/30 bg-brand/10 text-brand transition-colors hover:bg-brand/20" title="Stop dictation">
+                    <SquareIcon className="size-3.5" />
+                  </ComposerPrimitive.StopDictation>
+                </>
+              )}
               <ComposerPrimitive.Send className="m-1.5 flex size-8 items-center justify-center bg-brand/10 border border-brand/30 text-brand transition-opacity disabled:opacity-20 hover:bg-brand/20">
                 <ArrowUpIcon className="size-4" />
               </ComposerPrimitive.Send>
@@ -126,6 +147,16 @@ function AssistantMessage() {
                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
                 </button>
               </ActionBarPrimitive.Copy>
+              <ActionBarPrimitive.Speak asChild>
+                <button className="p-1 hover:bg-secondary transition-colors" title="Read aloud">
+                  <Volume2Icon className="size-3.5" />
+                </button>
+              </ActionBarPrimitive.Speak>
+              <ActionBarPrimitive.StopSpeaking asChild>
+                <button className="p-1 text-brand hover:bg-secondary transition-colors" title="Stop">
+                  <SquareIcon className="size-3.5" />
+                </button>
+              </ActionBarPrimitive.StopSpeaking>
               <ActionBarPrimitive.Reload asChild>
                 <button className="p-1 hover:bg-secondary transition-colors" title="Regenerate">
                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
@@ -144,6 +175,7 @@ export default function Chat() {
   const [selectedModel, setSelectedModel] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [voice, setVoice] = useState<VoiceModelSelection>(() => loadVoiceSelection())
 
   useEffect(() => {
     async function fetchModels() {
@@ -157,7 +189,25 @@ export default function Chat() {
     fetchModels()
   }, [])
 
+  const audioModels = useMemo(() => splitAudioModels(models.map(m => m.id)), [models])
+
+  useEffect(() => {
+    const stt = voice.stt && audioModels.stt.includes(voice.stt) ? voice.stt : audioModels.stt[0] ?? null
+    const tts = voice.tts && audioModels.tts.includes(voice.tts) ? voice.tts : audioModels.tts[0] ?? null
+    if (stt !== voice.stt || tts !== voice.tts) setVoice({ stt, tts })
+  }, [audioModels, voice])
+
+  const updateVoice = (next: VoiceModelSelection) => {
+    setVoice(next)
+    saveVoiceSelection(next)
+  }
+
   const adapter: ChatModelAdapter | undefined = useMemo(() => selectedModel ? createChatModelAdapter(selectedModel) : undefined, [selectedModel])
+  const speechAdapter = useMemo(() => voice.tts ? new RouterSpeechAdapter(voice.tts) : undefined, [voice.tts])
+  const dictationAdapter = useMemo(
+    () => voice.stt && typeof MediaRecorder !== 'undefined' ? new RouterDictationAdapter(voice.stt) : undefined,
+    [voice.stt],
+  )
 
   if (loading) {
     return (
@@ -190,20 +240,27 @@ export default function Chat() {
     <div className="h-full flex flex-col bg-background">
       <div className="px-6 pt-6 pb-4">
         <h1 className="font-display text-[28px] tracking-[0.04em] text-foreground mb-3 leading-none">CHAT</h1>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <label className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground shrink-0">Model:</label>
           <ModelPicker
             value={selectedModel}
             models={models.map(m => m.id)}
             onChange={setSelectedModel}
             disabled={models.length === 0}
-            className="flex-1 max-w-sm"
+            className="w-full max-w-sm"
+          />
+          <VoiceSettings
+            sttModels={audioModels.stt}
+            ttsModels={audioModels.tts}
+            stt={voice.stt}
+            tts={voice.tts}
+            onChange={updateVoice}
           />
         </div>
       </div>
       <div className="flex-1 px-6 pb-6">
         <div className="h-full border border-border bg-background">
-          <ChatInterface adapter={adapter} />
+          <ChatInterface adapter={adapter} speech={speechAdapter} dictation={dictationAdapter} />
         </div>
       </div>
     </div>

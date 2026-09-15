@@ -59,6 +59,21 @@ async function getAuthHeaders(): Promise<HeadersInit> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+async function audioErrorMessage(response: Response, fallback: string): Promise<string> {
+  if (response.status === 401) {
+    localStorage.removeItem('token')
+    window.location.href = '/login'
+  }
+  const body = await response.text().catch(() => '')
+  try {
+    const parsed = JSON.parse(body)
+    if (parsed?.error?.message) return parsed.error.message
+  } catch {
+    // Non-JSON error body (proxy HTML, plain text); fall through to the raw text.
+  }
+  return body || `${fallback} (${response.status})`
+}
+
 export const api = {
   async getHealth(): Promise<HealthResponse> {
     return request('/api/health')
@@ -244,6 +259,52 @@ export const api = {
 
   async getModels(): Promise<{ object: string; data: Model[] }> {
     return request('/v1/models')
+  },
+
+  async transcribeAudio(
+    audio: Blob,
+    model: string,
+    options?: { language?: string; fileName?: string; signal?: AbortSignal },
+  ): Promise<string> {
+    const headers = await getAuthHeaders()
+    const form = new FormData()
+    form.append('model', model)
+    form.append('file', audio, options?.fileName ?? 'recording.webm')
+    if (options?.language) form.append('language', options.language)
+
+    const response = await fetch(`${API_BASE_URL}/v1/audio/transcriptions`, {
+      method: 'POST',
+      headers,
+      body: form,
+      signal: options?.signal,
+    })
+
+    if (!response.ok) {
+      throw new Error(await audioErrorMessage(response, 'Transcription failed'))
+    }
+
+    const payload = await response.json()
+    return typeof payload?.text === 'string' ? payload.text : ''
+  },
+
+  async synthesizeSpeech(
+    model: string,
+    input: string,
+    options?: { voice?: string; signal?: AbortSignal },
+  ): Promise<Blob> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/v1/audio/speech`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, input, voice: options?.voice }),
+      signal: options?.signal,
+    })
+
+    if (!response.ok) {
+      throw new Error(await audioErrorMessage(response, 'Speech synthesis failed'))
+    }
+
+    return response.blob()
   },
 
   async getHealthOverview(): Promise<import('../types').HealthOverviewResponse> {

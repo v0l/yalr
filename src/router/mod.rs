@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod detector;
 pub mod engine;
 pub mod model_info;

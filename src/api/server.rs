@@ -26,6 +26,11 @@ use tower_http::{trace::TraceLayer, cors::CorsLayer};
 /// routing happens.
 const INFERENCE_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 
+/// Upload cap for `/v1/audio/transcriptions`. OpenAI rejects anything over
+/// 25 MB; local whisper backends accept more, so leave headroom for an hour of
+/// uncompressed WAV.
+const AUDIO_BODY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
+
 async fn serve_admin_fallback(req: Request<Body>, admin_ui_path: String) -> impl IntoResponse {
     // Only serve admin UI for GET and HEAD requests
     if req.method() != axum::http::Method::GET && req.method() != axum::http::Method::HEAD {
@@ -207,6 +212,13 @@ pub async fn run_with_shutdown<F>(
         .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let audio_routes = Router::new()
+        .route("/v1/audio/transcriptions", post(crate::api::audio::transcriptions))
+        .route("/v1/audio/translations", post(crate::api::audio::translations))
+        .route("/v1/audio/speech", post(crate::api::audio::speech))
+        .layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
     let routstr_protected_routes = Router::new()
         .route("/v1/balance/info", get(crate::payments::routstr::balance_info))
         .route("/v1/balance/refund", post(crate::payments::routstr::balance_refund))
@@ -224,6 +236,7 @@ pub async fn run_with_shutdown<F>(
         .route("/api/metrics/ws", get(ws::ws_metrics_handler))
         .merge(chat_completions_routes)
         .merge(responses_routes)
+        .merge(audio_routes)
         .merge(routstr_protected_routes)
         .nest("/v1/models", models_route)
         .route("/v1/info", get(crate::payments::routstr::routstr_info))
@@ -331,6 +344,13 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let audio_routes = Router::new()
+        .route("/v1/audio/transcriptions", post(crate::api::audio::transcriptions))
+        .route("/v1/audio/translations", post(crate::api::audio::translations))
+        .route("/v1/audio/speech", post(crate::api::audio::speech))
+        .layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
     let routstr_protected_routes = Router::new()
         .route("/v1/balance/info", get(crate::payments::routstr::balance_info))
         .route("/v1/balance/refund", post(crate::payments::routstr::balance_refund))
@@ -345,6 +365,7 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
     Router::new()
         .merge(chat_completions_routes)
         .merge(responses_routes)
+        .merge(audio_routes)
         .merge(routstr_protected_routes)
         .nest("/v1/models", models_route)
         .route("/v1/info", get(crate::payments::routstr::routstr_info))

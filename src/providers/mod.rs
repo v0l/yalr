@@ -24,9 +24,11 @@ pub struct ModelListResponse {
     pub data: Vec<ModelListEntry>,
 }
 
+pub mod audio;
 pub mod llamacpp;
 pub mod ollama;
 pub mod openai;
+mod openai_audio;
 pub mod openrouter;
 pub mod request;
 pub mod anthropic;

@@ -6,9 +6,9 @@ description = "Yet another LLM router - Load balancing and routing for LLM provi
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-axum = { version = "0.7", features = ["macros", "ws"] }
+axum = { version = "0.7", features = ["macros", "ws", "multipart"] }
 tower-http = { version = "0.5", features = ["trace", "cors", "fs"] }
-reqwest = { version = "0.11", features = ["json", "stream"] }
+reqwest = { version = "0.11", features = ["json", "stream", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
@@ -43,6 +43,7 @@ payments-rs = { git = "https://github.com/v0l/payments-rs", default-features = f
   "method-lnd",
   "tls-ring",
 ] }
+bytes = "1"
 
 [[bin]]
 name = "yalr-server"

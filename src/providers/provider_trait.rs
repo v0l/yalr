@@ -10,6 +10,7 @@ use crate::metrics::ErrorType;
 use crate::router::ModelRuntimeInfo;
 use crate::providers::StreamingChunk;
 use crate::providers::ChatRequest;
+use crate::providers::audio::{SpeechRequest, SpeechResponse, TranscriptionRequest, TranscriptionResponse};
 
 /// A monetary amount with an explicit currency unit.
 /// All amounts use the smallest indivisible unit of the currency:
@@ -111,6 +112,25 @@ pub trait Provider: Send + Sync {
         ))
     }
 
+    /// Speech-to-text. Returns an error for providers with no audio support.
+    async fn transcriptions(
+        &self,
+        request: &TranscriptionRequest,
+    ) -> Result<TranscriptionResponse, ProviderError> {
+        let _ = request;
+        Err(ProviderError::Unsupported(
+            "This provider does not support audio transcriptions".to_string(),
+        ))
+    }
+
+    /// Text-to-speech. Returns an error for providers with no audio support.
+    async fn speech(&self, request: &SpeechRequest) -> Result<SpeechResponse, ProviderError> {
+        let _ = request;
+        Err(ProviderError::Unsupported(
+            "This provider does not support audio speech".to_string(),
+        ))
+    }
+
     async fn get_runtime_info(&self, model_id: &str) -> Result<Option<ModelRuntimeInfo>, ProviderError> {
         let _ = model_id;
         Ok(None)
@@ -178,6 +198,12 @@ pub enum ProviderError {
     #[error("Not found: {0}")]
     NotFound(String),
 
+    /// The provider cannot serve this kind of request at all (no such
+    /// endpoint/capability). Not a failure of the provider: routing should move
+    /// on to the next candidate without recording an error against its health.
+    #[error("Unsupported by provider: {0}")]
+    Unsupported(String),
+
     #[error(transparent)]
     Other(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
@@ -201,6 +227,7 @@ impl Clone for ProviderError {
             ProviderError::Timeout => ProviderError::Timeout,
             ProviderError::Authentication(msg) => ProviderError::Authentication(msg.clone()),
             ProviderError::NotFound(msg) => ProviderError::NotFound(msg.clone()),
+            ProviderError::Unsupported(msg) => ProviderError::Unsupported(msg.clone()),
             ProviderError::Other(_) => ProviderError::Other("Error".to_string().into()),
         }
     }
@@ -212,7 +239,7 @@ impl ProviderError {
             ProviderError::RateLimit { .. } => ErrorType::RateLimit,
             ProviderError::Timeout => ErrorType::Timeout,
             ProviderError::Authentication(_) => ErrorType::Authentication,
-            ProviderError::NotFound(_) => ErrorType::NotFound,
+            ProviderError::NotFound(_) | ProviderError::Unsupported(_) => ErrorType::NotFound,
             ProviderError::ServerError { .. } => ErrorType::ServerError,
             _ => ErrorType::Other,
         }
@@ -259,6 +286,7 @@ impl ProviderError {
             }
             ProviderError::Authentication(_) => false,
             ProviderError::NotFound(_) => false,
+            ProviderError::Unsupported(_) => false,
             ProviderError::Other(_) => true,
         }
     }

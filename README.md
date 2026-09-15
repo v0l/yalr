@@ -206,6 +206,46 @@ See [AGENTS.md](AGENTS.md) for full design philosophy, theme system rules, and i
 - `GET /health` - Health check
 - `POST /v1/chat/completions` - Chat completion endpoint
 - `GET /v1/models` - List available models
+- `POST /v1/audio/transcriptions` - Speech to text (multipart upload)
+- `POST /v1/audio/translations` - Speech to English text (multipart upload)
+- `POST /v1/audio/speech` - Text to speech, audio streamed back
+
+### Audio (STT / TTS)
+
+The audio endpoints take the same shapes as OpenAI's, so any OpenAI-compatible
+client works, and so does any OpenAI-compatible backend: OpenAI itself, Groq,
+Speaches, whisper.cpp's server, Kokoro-FastAPI.
+
+```bash
+curl http://localhost:3000/v1/audio/transcriptions \
+  -H "Authorization: Bearer $YALR_KEY" \
+  -F model=whisper-1 -F file=@clip.wav
+
+curl http://localhost:3000/v1/audio/speech \
+  -H "Authorization: Bearer $YALR_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"tts-1","input":"hello","voice":"alloy"}' --output out.mp3
+```
+
+Routing works exactly as it does for chat: a prefixed model
+(`local-whisper/whisper-1`) goes straight to that provider, an unprefixed one
+is load balanced across the providers configured for it. A provider with no
+audio endpoint answers `Unsupported` and is skipped without any hit to its
+health, so chat-only and audio backends can share a routing config. If no
+healthy candidate can serve audio, a filtered-out (degraded or unhealthy)
+audio provider is tried rather than failing the request.
+
+Transcription bodies are passed through verbatim, so `response_format` values
+of `json`, `verbose_json`, `text`, `srt` and `vtt` all work. Speech audio is
+streamed to the client as it arrives from the backend. Uploads are capped at
+256 MB.
+
+The admin chat page picks up audio models automatically: a mic button appears
+in the composer when a transcription model is reachable, and a read-aloud
+button on assistant messages when a speech model is. Models are recognised by
+name (`whisper`, `parakeet`, `tts`, `kokoro`, and similar).
+
+Billing still meters chat tokens only, so audio requests are charged the flat
+per-request fee and nothing else.
 
 ## Architecture
 
