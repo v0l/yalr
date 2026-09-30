@@ -102,6 +102,22 @@ pub fn metrics_user(authenticated: &AuthenticatedUser) -> crate::metrics::Metric
     }
 }
 
+#[derive(serde::Deserialize)]
+struct UpstreamError {
+    error: UpstreamErrorDetail,
+}
+
+#[derive(serde::Deserialize)]
+struct UpstreamErrorDetail {
+    message: String,
+}
+
+fn upstream_message(body: &str) -> String {
+    serde_json::from_str::<UpstreamError>(body)
+        .map(|e| e.error.message)
+        .unwrap_or_else(|_| body.to_string())
+}
+
 pub fn router_error(e: RouterError, capability: &str) -> HandlerError {
     match &e {
         RouterError::NoAvailableProvider => (
@@ -120,11 +136,25 @@ pub fn router_error(e: RouterError, capability: &str) -> HandlerError {
             status_code: Some(code @ (400 | 413 | 422)),
         }) => (
             StatusCode::from_u16(*code).unwrap_or(StatusCode::BAD_REQUEST),
-            error_body(message, "invalid_request_error"),
+            error_body(&upstream_message(message), "invalid_request_error"),
         ),
         _ => (
             StatusCode::BAD_GATEWAY,
             error_body(&e.to_string(), "router_error"),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upstream_error_envelope_is_unwrapped() {
+        assert_eq!(
+            upstream_message(r#"{"error":{"message":"Model x does not exist","code":400}}"#),
+            "Model x does not exist"
+        );
+        assert_eq!(upstream_message("plain text"), "plain text");
     }
 }
