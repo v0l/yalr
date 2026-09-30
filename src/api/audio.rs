@@ -8,71 +8,9 @@ use bytes::Bytes;
 use std::sync::Arc;
 
 use crate::auth::admin::AuthenticatedUser;
-use crate::db::ModelAccess;
+use crate::api::shared::{check_model_access, error_body, metrics_user, router_error, HandlerError as ApiError};
 use crate::providers::audio::{SpeechRequest, TranscriptionRequest};
 use crate::state::AppState;
-
-type ApiError = (StatusCode, String);
-
-fn error_body(message: &str, kind: &str) -> String {
-    serde_json::json!({ "error": { "message": message, "type": kind } }).to_string()
-}
-
-async fn check_model_access(
-    state: &AppState,
-    user_id: i64,
-    model: &str,
-) -> Result<(), ApiError> {
-    let access = state.db.check_model_access(user_id, model).await.map_err(|e| {
-        tracing::error!(error = %e, "Failed to check model access");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error_body(&format!("Failed to check model access: {e}"), "internal_error"),
-        )
-    })?;
-    if access == ModelAccess::Deny {
-        return Err((
-            StatusCode::FORBIDDEN,
-            error_body(
-                &format!("User does not have access to model '{model}'"),
-                "model_access_denied",
-            ),
-        ));
-    }
-    Ok(())
-}
-
-fn metrics_user(authenticated: &AuthenticatedUser) -> crate::metrics::MetricsUser {
-    crate::metrics::MetricsUser {
-        id: Some(authenticated.user.id),
-        name: authenticated.user.username.clone(),
-        api_key_id: authenticated.api_key.as_ref().map(|k| k.id),
-        api_key_name: authenticated.api_key.as_ref().map(|k| k.name.clone()),
-    }
-}
-
-fn router_error(e: crate::router::RouterError) -> ApiError {
-    use crate::router::RouterError;
-    use crate::ProviderError;
-
-    match &e {
-        RouterError::NoAvailableProvider => (
-            StatusCode::NOT_FOUND,
-            error_body(&e.to_string(), "router_error"),
-        ),
-        RouterError::ProviderError(ProviderError::Unsupported(_)) => (
-            StatusCode::NOT_FOUND,
-            error_body(
-                "No configured provider can serve audio for this model",
-                "model_not_supported",
-            ),
-        ),
-        _ => (
-            StatusCode::BAD_GATEWAY,
-            error_body(&e.to_string(), "router_error"),
-        ),
-    }
-}
 
 pub async fn transcriptions(
     state: State<Arc<AppState>>,
@@ -112,7 +50,7 @@ async fn audio_stt(
         .router
         .transcriptions(&request, Some(metrics_user(&authenticated)))
         .await
-        .map_err(router_error)?;
+        .map_err(|e| router_error(e, "audio"))?;
 
     Ok((
         [(header::CONTENT_TYPE, response.content_type)],
@@ -169,7 +107,7 @@ pub async fn speech(
         .router
         .speech(&request, Some(metrics_user(&authenticated)))
         .await
-        .map_err(router_error)?;
+        .map_err(|e| router_error(e, "audio"))?;
 
     let body = axum::body::Body::from_stream(response.stream);
     Ok(([(header::CONTENT_TYPE, response.content_type)], body).into_response())

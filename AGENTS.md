@@ -57,6 +57,11 @@ failure event or consuming a retry. When every healthy candidate is
 unsupported, the loop retries against `candidate_backends()` so capability
 wins over health filtering.
 
+**Decisions**: `src/api/decisions.rs` (`/v1/systemone`), `src/router/decision.rs`,
+`src/providers/decision.rs` (types), `src/providers/openai_decision.rs`. Decision
+models (Jev) share the capability failover in `src/router/failover.rs` with
+audio.
+
 **Metrics**: `src/metrics.rs` - Shared metrics store for health/load tracking
 
 **Database**: `src/db/mod.rs` - SQLite via sqlx with migrations in `./migrations/`

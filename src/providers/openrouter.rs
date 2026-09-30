@@ -259,6 +259,13 @@ impl Provider for OpenRouterProvider {
         self.inner.speech(request).await
     }
 
+    async fn decide(
+        &self,
+        request: &crate::providers::decision::DecisionRequest,
+    ) -> Result<crate::providers::decision::DecisionResponse, ProviderError> {
+        self.inner.decide(request).await
+    }
+
     async fn get_runtime_info(&self, model_id: &str) -> Result<Option<ModelRuntimeInfo>, ProviderError> {
         self.inner.get_runtime_info(model_id).await
     }

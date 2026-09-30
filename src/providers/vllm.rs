@@ -212,6 +212,13 @@ impl Provider for VllmProvider {
     ) -> Result<crate::providers::audio::SpeechResponse, ProviderError> {
         self.inner.speech(request).await
     }
+
+    async fn decide(
+        &self,
+        request: &crate::providers::decision::DecisionRequest,
+    ) -> Result<crate::providers::decision::DecisionResponse, ProviderError> {
+        self.inner.decide(request).await
+    }
 }
 
 #[cfg(test)]

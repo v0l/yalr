@@ -268,6 +268,13 @@ impl Provider for OpenAiProvider {
         self.audio_speech(request).await
     }
 
+    async fn decide(
+        &self,
+        request: &crate::providers::decision::DecisionRequest,
+    ) -> Result<crate::providers::decision::DecisionResponse, ProviderError> {
+        self.systemone(request).await
+    }
+
     async fn chat_completions(
         &self,
         request: &ChatRequest,

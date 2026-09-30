@@ -305,6 +305,13 @@ impl Provider for PpqProvider {
         self.inner.speech(request).await
     }
 
+    async fn decide(
+        &self,
+        request: &crate::providers::decision::DecisionRequest,
+    ) -> Result<crate::providers::decision::DecisionResponse, ProviderError> {
+        self.inner.decide(request).await
+    }
+
     async fn fetch_balance(&self) -> Option<CurrencyAmount> {
         match self.fetch_balance_from_api().await {
             Ok(balance_usd_micro) => Some(CurrencyAmount::UsdMicro(balance_usd_micro)),

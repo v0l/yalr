@@ -1,6 +1,8 @@
 pub mod audio;
+pub mod decision;
 pub mod detector;
 pub mod engine;
+mod failover;
 pub mod model_info;
 pub mod strategies;
 

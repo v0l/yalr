@@ -209,6 +209,7 @@ See [AGENTS.md](AGENTS.md) for full design philosophy, theme system rules, and i
 - `POST /v1/audio/transcriptions` - Speech to text (multipart upload)
 - `POST /v1/audio/translations` - Speech to English text (multipart upload)
 - `POST /v1/audio/speech` - Text to speech, audio streamed back
+- `POST /v1/systemone` - Decision models (Jev), also at `POST /api/alpha/decisions`
 
 ### Audio (STT / TTS)
 
@@ -252,6 +253,31 @@ name (`whisper`, `parakeet`, `tts`, `kokoro`, and similar).
 
 Billing still meters chat tokens only, so audio requests are charged the flat
 per-request fee and nothing else.
+
+### Decision models (Jev)
+
+Decision models such as TypeSafe Jev and NeoHorse-Jev-4B answer typed
+questions (`choice`, `noul`, `score`) about a `state` and return probabilities
+instead of text. YALR serves them on `POST /v1/systemone`, the System One shape
+that TypeSafe, OpenRouter and the NeoHorse runtime all accept, so the TypeSafe
+SDK works with `TYPESAFE_BASE_URL` pointed at YALR.
+
+```bash
+curl http://localhost:3000/v1/systemone \
+  -H "Authorization: Bearer $YALR_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"openrouter/typesafe/jev-1.13","state":"I was charged twice",
+       "questions":{"team":{"type":"choice","instructions":"Which team?",
+       "criteria":{"billing":"Charges and refunds","other":"Anything else"}}}}'
+```
+
+Any OpenAI-compatible provider can serve them: the request goes to
+`{base_url}/systemone`, so an OpenRouter provider (`https://openrouter.ai/api/v1`)
+reaches Jev, and a local NeoHorse runtime is added with base URL
+`http://host:8080/v1`. Routing and failover match audio: a backend without the
+route is skipped without touching its health. The response body is passed
+through unchanged, and `usage` feeds token metrics and billing. `model`,
+`state`, `questions` and the NeoHorse `image` field are forwarded; OpenRouter
+extras such as `provider` and `session_id` are dropped.
 
 ## Architecture
 

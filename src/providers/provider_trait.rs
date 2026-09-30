@@ -11,6 +11,7 @@ use crate::router::ModelRuntimeInfo;
 use crate::providers::StreamingChunk;
 use crate::providers::ChatRequest;
 use crate::providers::audio::{SpeechRequest, SpeechResponse, TranscriptionRequest, TranscriptionResponse};
+use crate::providers::decision::{DecisionRequest, DecisionResponse};
 
 /// A monetary amount with an explicit currency unit.
 /// All amounts use the smallest indivisible unit of the currency:
@@ -138,6 +139,13 @@ pub trait Provider: Send + Sync {
         let _ = request;
         Err(ProviderError::Unsupported(
             "This provider does not support audio speech".to_string(),
+        ))
+    }
+
+    async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResponse, ProviderError> {
+        let _ = request;
+        Err(ProviderError::Unsupported(
+            "This provider does not serve decision models".to_string(),
         ))
     }
 

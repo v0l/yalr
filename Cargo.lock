@@ -4864,6 +4864,7 @@ dependencies = [
  "config",
  "futures",
  "hex",
+ "indexmap",
  "nostr",
  "payments-rs",
  "rand 0.8.6",

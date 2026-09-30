@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod chat;
 pub mod config;
+pub mod decisions;
 pub mod health;
 pub mod model_cache;
 pub mod model_pricing;

@@ -220,6 +220,12 @@ pub async fn run_with_shutdown<F>(
         .layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT_BYTES))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let decision_routes = Router::new()
+        .route("/v1/systemone", post(crate::api::decisions::decide))
+        .route("/api/alpha/decisions", post(crate::api::decisions::decide))
+        .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
     let routstr_protected_routes = Router::new()
         .route("/v1/balance/info", get(crate::payments::routstr::balance_info))
         .route("/v1/balance/refund", post(crate::payments::routstr::balance_refund))
@@ -238,6 +244,7 @@ pub async fn run_with_shutdown<F>(
         .merge(chat_completions_routes)
         .merge(responses_routes)
         .merge(audio_routes)
+        .merge(decision_routes)
         .merge(routstr_protected_routes)
         .nest("/v1/models", models_route)
         .route("/v1/info", get(crate::payments::routstr::routstr_info))
@@ -353,6 +360,12 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT_BYTES))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let decision_routes = Router::new()
+        .route("/v1/systemone", post(crate::api::decisions::decide))
+        .route("/api/alpha/decisions", post(crate::api::decisions::decide))
+        .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
     let routstr_protected_routes = Router::new()
         .route("/v1/balance/info", get(crate::payments::routstr::balance_info))
         .route("/v1/balance/refund", post(crate::payments::routstr::balance_refund))
@@ -368,6 +381,7 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .merge(chat_completions_routes)
         .merge(responses_routes)
         .merge(audio_routes)
+        .merge(decision_routes)
         .merge(routstr_protected_routes)
         .nest("/v1/models", models_route)
         .route("/v1/info", get(crate::payments::routstr::routstr_info))

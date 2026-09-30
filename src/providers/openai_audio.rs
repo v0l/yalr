@@ -8,7 +8,7 @@ use super::audio::{
 use super::{OpenAiProvider, ProviderError};
 
 /// Classify an upstream audio error response.
-fn http_error(status: reqwest::StatusCode, retry_after: Option<u64>, body: String) -> ProviderError {
+pub(super) fn http_error(status: reqwest::StatusCode, retry_after: Option<u64>, body: String) -> ProviderError {
     match status.as_u16() {
         429 => ProviderError::RateLimit {
             retry_after_ms: retry_after.map(|s| s * 1000).unwrap_or(30_000),
@@ -26,7 +26,7 @@ fn http_error(status: reqwest::StatusCode, retry_after: Option<u64>, body: Strin
     }
 }
 
-fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+pub(super) fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     headers
         .get(reqwest::header::RETRY_AFTER)?
         .to_str()
@@ -140,7 +140,7 @@ impl OpenAiProvider {
     }
 }
 
-fn map_reqwest_error(e: reqwest::Error) -> ProviderError {
+pub(super) fn map_reqwest_error(e: reqwest::Error) -> ProviderError {
     if e.is_timeout() {
         ProviderError::Timeout
     } else {
