@@ -42,6 +42,7 @@ mod tests {
     struct FakeDecider {
         name: String,
         supported: bool,
+        client_error: bool,
         seen_models: Arc<Mutex<Vec<String>>>,
     }
 
@@ -76,6 +77,12 @@ mod tests {
         }
         async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResponse, ProviderError> {
             self.seen_models.lock().unwrap().push(request.model.clone());
+            if self.client_error {
+                return Err(ProviderError::ServerError {
+                    message: "state exceeds 2048 tokens".into(),
+                    status_code: Some(422),
+                });
+            }
             if !self.supported {
                 return Err(ProviderError::Unsupported("chat only".into()));
             }
@@ -89,7 +96,12 @@ mod tests {
     fn fake(name: &str, supported: bool) -> (Arc<dyn Provider>, Arc<Mutex<Vec<String>>>) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         (
-            Arc::new(FakeDecider { name: name.into(), supported, seen_models: seen.clone() }),
+            Arc::new(FakeDecider {
+                name: name.into(),
+                supported,
+                client_error: false,
+                seen_models: seen.clone(),
+            }),
             seen,
         )
     }
@@ -144,5 +156,23 @@ mod tests {
             matches!(err, RouterError::ProviderError(ProviderError::Unsupported(_))),
             "got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn rejected_request_leaves_provider_health_alone() {
+        let provider: Arc<dyn Provider> = Arc::new(FakeDecider {
+            name: "jev".into(),
+            supported: true,
+            client_error: true,
+            seen_models: Default::default(),
+        });
+        let router = router().await;
+        router.register_route("jev", vec![provider]).await;
+
+        for _ in 0..6 {
+            assert!(router.decide(&request("jev"), None).await.is_err());
+        }
+        assert_eq!(router.metrics_store.get_recent_failures("jev").await, 0);
+        assert!(router.metrics_store.is_provider_available("jev").await);
     }
 }

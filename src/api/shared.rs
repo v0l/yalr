@@ -131,10 +131,12 @@ pub fn router_error(e: RouterError, capability: &str) -> HandlerError {
                 "model_not_supported",
             ),
         ),
-        RouterError::ProviderError(ProviderError::ServerError {
-            message,
-            status_code: Some(code @ (400 | 413 | 422)),
-        }) => (
+        RouterError::ProviderError(
+            error @ ProviderError::ServerError {
+                message,
+                status_code: Some(code),
+            },
+        ) if error.is_client_error() => (
             StatusCode::from_u16(*code).unwrap_or(StatusCode::BAD_REQUEST),
             error_body(&upstream_message(message), "invalid_request_error"),
         ),

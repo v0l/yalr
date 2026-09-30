@@ -277,6 +277,16 @@ impl ProviderError {
         }
     }
 
+    pub fn is_client_error(&self) -> bool {
+        matches!(
+            self,
+            ProviderError::ServerError {
+                status_code: Some(400 | 413 | 422),
+                ..
+            }
+        )
+    }
+
     pub fn is_recoverable(&self) -> bool {
         matches!(
             self,

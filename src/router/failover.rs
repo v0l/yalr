@@ -149,16 +149,7 @@ impl Router {
                 }
                 Err(e) => {
                     attempt += 1;
-                    self.metrics_store.emitter().emit_failure_with_details(
-                        &provider_name,
-                        model,
-                        e.error_type(),
-                        None,
-                        &e.to_string(),
-                        e.retry_after_ms(),
-                        e.status_code(),
-                        user.clone(),
-                    );
+                    self.metrics_store.emitter().emit_provider_error(&provider_name, model, &e, user.clone());
 
                     last_error = Some(RouterError::ProviderError(e.clone()));
 

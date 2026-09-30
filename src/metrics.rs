@@ -296,6 +296,28 @@ impl MetricsEmitter {
         );
     }
 
+    pub fn emit_provider_error(
+        &self,
+        provider: &str,
+        model: &str,
+        error: &crate::ProviderError,
+        user: Option<MetricsUser>,
+    ) {
+        if error.is_client_error() {
+            return;
+        }
+        self.emit_failure_with_details(
+            provider,
+            model,
+            error.error_type(),
+            None,
+            &error.to_string(),
+            error.retry_after_ms(),
+            error.status_code(),
+            user,
+        );
+    }
+
     pub fn emit_rate_limit(
         &self,
         provider: &str,
@@ -1198,6 +1220,29 @@ mod tests {
             len <= max_events,
             "deque should stay bounded at {max_events}, got {len}"
         );
+    }
+
+    #[tokio::test]
+    async fn client_errors_do_not_count_against_the_provider() {
+        let store = create_test_metrics_store();
+        let emitter = store.emitter().clone();
+        for status in [400, 413, 422] {
+            let error = crate::ProviderError::ServerError {
+                message: "bad request".into(),
+                status_code: Some(status),
+            };
+            emitter.emit_provider_error("p", "m", &error, None);
+        }
+        assert_eq!(store.get_recent_failures("p").await, 0);
+
+        for error in [
+            crate::ProviderError::ServerError { message: "down".into(), status_code: Some(502) },
+            crate::ProviderError::ServerError { message: "no funds".into(), status_code: Some(402) },
+            crate::ProviderError::Authentication("bad key".into()),
+        ] {
+            emitter.emit_provider_error("p", "m", &error, None);
+        }
+        assert_eq!(store.get_recent_failures("p").await, 3);
     }
 
     fn create_test_metrics_store() -> MetricsStore {

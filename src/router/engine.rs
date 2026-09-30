@@ -1000,16 +1000,7 @@ impl Router {
 
                     last_error = Some(RouterError::ProviderError(e.clone()));
 
-                    self.metrics_store.emitter().emit_failure_with_details(
-                        &provider_name,
-                        &original_model,
-                        e.error_type(),
-                        None,
-                        &e.to_string(),
-                        e.retry_after_ms(),
-                        e.status_code(),
-                        user.clone(),
-                    );
+                    self.metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
 
                     if e.is_transient() {
                         tracing::warn!(
@@ -1198,16 +1189,7 @@ impl Router {
                                     yield Ok(chunk);
                                 }
                                 Err(e) => {
-                                    metrics_store.emitter().emit_failure_with_details(
-                                        &provider_name,
-                                        &original_model,
-                                        e.error_type(),
-                                        None,
-                                        &e.to_string(),
-                                        e.retry_after_ms(),
-                                        e.status_code(),
-                                        user.clone(),
-                                    );
+                                    metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
 
                                     // Log detailed error context for debugging
                                     tracing::error!(
@@ -1375,16 +1357,7 @@ impl Router {
 
                         last_error = Some(RouterError::ProviderError(e.clone()));
 
-                        metrics_store.emitter().emit_failure_with_details(
-                            &provider_name,
-                            &original_model,
-                            e.error_type(),
-                            None,
-                            &e.to_string(),
-                            e.retry_after_ms(),
-                            e.status_code(),
-                            user.clone(),
-                        );
+                        metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
 
                         if e.is_transient() {
                             tracing::warn!(
@@ -1555,16 +1528,7 @@ impl Router {
 
                     last_error = Some(RouterError::ProviderError(e.clone()));
 
-                    self.metrics_store.emitter().emit_failure_with_details(
-                        &provider_name,
-                        &original_model,
-                        e.error_type(),
-                        None,
-                        &e.to_string(),
-                        e.retry_after_ms(),
-                        e.status_code(),
-                        user.clone(),
-                    );
+                    self.metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
 
                     if e.is_transient() {
                         tracing::warn!(
