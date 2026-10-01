@@ -29,6 +29,9 @@ async fn provider_input_modalities(
     provider: &Arc<dyn Provider>,
     model_id: &str,
 ) -> Option<Vec<String>> {
+    if let Some(listed) = provider.listed_modalities(model_id).await {
+        return Some(listed.input_modalities);
+    }
     if !provider.reports_modalities() {
         return None;
     }
@@ -103,12 +106,35 @@ pub async fn provider_architecture(
     provider: &Arc<dyn Provider>,
     model_id: &str,
 ) -> Option<ModelArchitecture> {
-    provider_input_modalities(state, provider, model_id)
+    let output = provider
+        .listed_modalities(model_id)
         .await
-        .map(|input_modalities| ModelArchitecture {
-            input_modalities,
-            output_modalities: Vec::new(),
-        })
+        .map(|listed| listed.output_modalities);
+    let input = provider_input_modalities(state, provider, model_id).await;
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    Some(ModelArchitecture {
+        input_modalities: input.unwrap_or_default(),
+        output_modalities: output.unwrap_or_default(),
+    })
+}
+
+async fn listed_output_modalities(state: &AppState, model: &str) -> Option<Vec<String>> {
+    let mut output: Vec<String> = Vec::new();
+    let mut listed = false;
+    for (provider, resolved_model) in state.config.router.candidate_backends(model).await {
+        let Some(modalities) = provider.listed_modalities(&resolved_model).await else {
+            continue;
+        };
+        listed = true;
+        for modality in modalities.output_modalities {
+            if !output.contains(&modality) {
+                output.push(modality);
+            }
+        }
+    }
+    listed.then_some(output)
 }
 
 pub async fn routing_architecture(state: &AppState, rc: &RoutingConfig) -> Option<ModelArchitecture> {
@@ -117,7 +143,10 @@ pub async fn routing_architecture(state: &AppState, rc: &RoutingConfig) -> Optio
         Some(names) => Some(names),
         None => probed_input_modalities(state, &rc.name).await,
     };
-    let output = DeclaredModalities::names(&declared.output);
+    let output = match DeclaredModalities::names(&declared.output) {
+        Some(names) => Some(names),
+        None => listed_output_modalities(state, &rc.name).await,
+    };
     if input.is_none() && output.is_none() {
         return None;
     }
@@ -408,5 +437,41 @@ mod tests {
             r#"{"model":"m","modalities":["image","text"],"messages":[{"role":"user","content":"draw"}]}"#,
         );
         assert_eq!(chat_modalities(&request).1, vec![Modality::Image]);
+    }
+
+    #[tokio::test]
+    async fn openrouter_listing_publishes_both_modalities() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                r#"{"data":[{"id":"openai/gpt-5.4-image-2","architecture":{"input_modalities":["image","text","file"],"output_modalities":["image","text"]}},{"id":"plain/text"}]}"#,
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider: Arc<dyn Provider> = Arc::new(crate::providers::OpenRouterProvider::new(
+            "OpenRouter",
+            Some("openrouter"),
+            &server.uri(),
+            Some("k"),
+        ));
+        provider.list_models().await.unwrap();
+        let state = state_with(provider.clone(), "painter").await;
+
+        let architecture = provider_architecture(&state, &provider, "openai/gpt-5.4-image-2")
+            .await
+            .unwrap();
+        assert_eq!(architecture.input_modalities, vec!["image", "text", "file"]);
+        assert_eq!(architecture.output_modalities, vec!["image", "text"]);
+        assert!(provider_architecture(&state, &provider, "plain/text").await.is_none());
+
+        let rc = declare(&state, "painter", DeclaredModalities::default()).await;
+        let routed = routing_architecture(&state, &rc).await;
+        assert!(routed.is_none(), "painter routes to no listed model");
     }
 }

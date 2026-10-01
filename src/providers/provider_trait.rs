@@ -81,6 +81,14 @@ pub struct QuotaSnapshot {
     pub status: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct ListedModalities {
+    #[serde(default)]
+    pub input_modalities: Vec<String>,
+    #[serde(default)]
+    pub output_modalities: Vec<String>,
+}
+
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn name(&self) -> &str;
@@ -182,6 +190,11 @@ pub trait Provider: Send + Sync {
     /// modalities from an upstream capabilities endpoint return true.
     fn reports_modalities(&self) -> bool {
         false
+    }
+
+    async fn listed_modalities(&self, model: &str) -> Option<ListedModalities> {
+        let _ = model;
+        None
     }
 
     /// Fetch the current balance from the upstream provider.

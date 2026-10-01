@@ -43,6 +43,7 @@ pub struct OpenRouterProvider {
     /// Voice names per model, harvested from the same listing. Voices are
     /// model-specific and a client cannot guess them.
     voices: Arc<tokio::sync::RwLock<HashMap<String, Vec<String>>>>,
+    modalities: Arc<tokio::sync::RwLock<HashMap<String, ListedModalities>>>,
 }
 
 impl OpenRouterProvider {
@@ -70,6 +71,7 @@ impl OpenRouterProvider {
             api_key: api_key.map(String::from),
             models_cache: ModelsCache::new(),
             voices: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            modalities: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -113,10 +115,18 @@ impl OpenRouterProvider {
         let body: ModelListResponse = response.json().await.map_err(|e| ProviderError::Other(e.into()))?;
 
         let mut voices = HashMap::new();
+        let mut modalities = HashMap::new();
         let models: Vec<Model> = body
             .data
             .into_iter()
             .map(|item| {
+                if let Some(listed) = item
+                    .extra
+                    .get("architecture")
+                    .and_then(|a| serde_json::from_value::<ListedModalities>(a.clone()).ok())
+                {
+                    modalities.insert(item.id.clone(), listed);
+                }
                 if let Some(list) = item.extra.get("supported_voices").and_then(|v| v.as_array()) {
                     let names: Vec<String> = list
                         .iter()
@@ -136,6 +146,7 @@ impl OpenRouterProvider {
             .collect();
 
         *self.voices.write().await = voices;
+        *self.modalities.write().await = modalities;
         self.models_cache.store(models.clone()).await;
         Ok(models)
     }
@@ -243,6 +254,10 @@ impl Provider for OpenRouterProvider {
             self.fetch_models().await?;
         }
         Ok(self.voices.read().await.get(model).cloned())
+    }
+
+    async fn listed_modalities(&self, model: &str) -> Option<ListedModalities> {
+        self.modalities.read().await.get(model).cloned()
     }
 
     async fn transcriptions(
