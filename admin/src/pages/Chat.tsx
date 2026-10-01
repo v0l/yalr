@@ -175,11 +175,11 @@ function DictationButton() {
 function UserMessage() {
   return (
     <div className="flex justify-end">
-      <MessagePrimitive.Root className="flex flex-col items-end gap-1.5">
+      <MessagePrimitive.Root className="flex max-w-[80%] flex-col items-end gap-1.5">
         <div className="flex flex-wrap justify-end gap-1.5 empty:hidden">
           <MessagePrimitive.Attachments>{() => <MessageAttachment />}</MessagePrimitive.Attachments>
         </div>
-        <div className="bg-secondary border border-border px-4 py-2.5 max-w-[80%] text-right">
+        <div className="bg-secondary border border-border px-4 py-2.5">
           <div className="text-foreground whitespace-pre-wrap text-[13px]">
             <MessagePrimitive.Content components={mediaComponents} />
           </div>
