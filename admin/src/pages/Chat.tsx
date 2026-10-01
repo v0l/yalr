@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { ThreadPrimitive, ComposerPrimitive, MessagePrimitive, ActionBarPrimitive, AssistantRuntimeProvider, useLocalRuntime, AuiIf, type ChatModelAdapter, type ChatModelRunResult, type ThreadAssistantMessagePart, type DictationAdapter, type SpeechSynthesisAdapter } from '@assistant-ui/react'
+import { ThreadPrimitive, ComposerPrimitive, MessagePrimitive, MessagePartPrimitive, ActionBarPrimitive, AssistantRuntimeProvider, useLocalRuntime, AuiIf, type ChatModelAdapter, type ChatModelRunResult, type ThreadAssistantMessagePart, type DictationAdapter, type SpeechSynthesisAdapter } from '@assistant-ui/react'
 import { api } from '../api/client'
 import type { Model } from '../types'
 import { ArrowUpIcon, Loader2Icon, MicIcon, PaperclipIcon, SquareIcon, Volume2Icon } from 'lucide-react'
@@ -8,10 +8,11 @@ import VoiceSettings from '../components/VoiceSettings'
 import { loadChatModel, loadVoiceSelection, saveChatModel, saveVoiceSelection, splitAudioModels, type VoiceModelSelection } from '../lib/audio'
 import { RouterDictationAdapter, RouterSpeechAdapter } from '../lib/voice-adapters'
 import VoiceStatus, { useVoicePhase } from '../components/VoiceStatus'
+import PendingReply from '../components/chat/PendingReply'
 import { ComposerAttachment, FilePart, ImagePart, MessageAttachment } from '../components/chat/MediaParts'
 import { chatAttachments, collectMedia, outputFields, pcm16ToWavDataUrl, toWireMessages, type StreamedMedia } from '../lib/chat-media'
 
-const mediaComponents = { Image: ImagePart, File: FilePart }
+const mediaComponents = { Text: () => <MessagePartPrimitive.Text />, Image: ImagePart, File: FilePart }
 
 async function errorMessage(response: Response) {
   const body = await response.text()
@@ -77,10 +78,12 @@ function ChatInterface({
   adapter,
   speech,
   dictation,
+  pendingLabel,
 }: {
   adapter: ChatModelAdapter
   speech?: SpeechSynthesisAdapter
   dictation?: DictationAdapter
+  pendingLabel: string
 }) {
   const attachments = useMemo(() => chatAttachments(), [])
   const runtime = useLocalRuntime(adapter, { adapters: { speech, dictation, attachments } })
@@ -103,7 +106,7 @@ function ChatInterface({
           <ThreadPrimitive.Messages>
             {({ message }) => {
               if (message.role === 'user') return <UserMessage />
-              return <AssistantMessage />
+              return <AssistantMessage pendingLabel={pendingLabel} />
             }}
           </ThreadPrimitive.Messages>
 
@@ -189,7 +192,7 @@ function UserMessage() {
   )
 }
 
-function AssistantMessage() {
+function AssistantMessage({ pendingLabel }: { pendingLabel: string }) {
   return (
     <div className="flex justify-start">
       <MessagePrimitive.Root>
@@ -204,6 +207,7 @@ function AssistantMessage() {
             <div className="text-foreground whitespace-pre-wrap text-[13px] leading-relaxed">
               <MessagePrimitive.Content components={mediaComponents} />
             </div>
+            <PendingReply label={pendingLabel} />
             <div className="flex gap-2 mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <ActionBarPrimitive.Copy asChild>
                 <button className="p-1 hover:bg-secondary transition-colors" title="Copy">
@@ -279,6 +283,9 @@ export default function Chat() {
   }
 
   const outputModalities = models.find(m => m.id === selectedModel)?.architecture?.output_modalities
+  const pendingLabel = outputModalities?.includes('image')
+    ? 'Generating image, this can take a few minutes'
+    : outputModalities?.includes('audio') ? 'Generating audio' : 'Waiting for the model'
   const adapter: ChatModelAdapter | undefined = useMemo(
     () => selectedModel ? createChatModelAdapter(selectedModel, outputModalities) : undefined,
     [selectedModel, outputModalities],
@@ -344,7 +351,7 @@ export default function Chat() {
       </div>
       <div className="flex-1 px-6 pb-6">
         <div className="h-full border border-border bg-background">
-          <ChatInterface adapter={adapter} speech={speechAdapter} dictation={dictationAdapter} />
+          <ChatInterface adapter={adapter} speech={speechAdapter} dictation={dictationAdapter} pendingLabel={pendingLabel} />
         </div>
       </div>
     </div>
