@@ -47,7 +47,7 @@ impl RoutingStrategy for RoundRobinStrategy {
 mod tests {
     use super::*;
     use crate::providers::{
-        ChatRequest, CreateChatCompletionResponse,
+        ChatRequest,
         StreamingChunk, ProviderError, Model,
     };
     use futures::{stream, StreamExt, stream::BoxStream};
@@ -83,7 +83,7 @@ mod tests {
         async fn chat_completions(
             &self,
             _request: &ChatRequest,
-        ) -> Result<CreateChatCompletionResponse, ProviderError> {
+        ) -> Result<crate::providers::ChatResponse, ProviderError> {
             unimplemented!()
         }
 

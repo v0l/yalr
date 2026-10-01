@@ -146,6 +146,11 @@ fn map_openai_error(err: async_openai::error::OpenAIError) -> ProviderError {
 fn to_wire_value(request: &ChatRequest) -> Result<serde_json::Value, crate::providers::ProviderError> {
     let mut value = serde_json::to_value(request.inner())
         .map_err(|e| crate::providers::ProviderError::Other(e.into()))?;
+    if let Some(object) = value.as_object_mut() {
+        for (key, field) in request.output_fields() {
+            object.insert(key.clone(), field.clone());
+        }
+    }
 
     let is_v4 = request
         .model
@@ -292,7 +297,7 @@ impl Provider for OpenAiProvider {
     async fn chat_completions(
         &self,
         request: &ChatRequest,
-    ) -> Result<CreateChatCompletionResponse, ProviderError> {
+    ) -> Result<crate::providers::ChatResponse, ProviderError> {
         let request_value = to_wire_value(request)?;
         let response = self
             .client

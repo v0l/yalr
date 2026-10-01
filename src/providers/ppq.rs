@@ -1,5 +1,4 @@
 use super::*;
-use async_openai::types::chat::CreateChatCompletionResponse;
 use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use futures::stream::BoxStream;
 use reqwest::Client as HttpClient;
@@ -196,7 +195,7 @@ impl Provider for PpqProvider {
     async fn chat_completions(
         &self,
         request: &ChatRequest,
-    ) -> Result<CreateChatCompletionResponse, ProviderError> {
+    ) -> Result<crate::providers::ChatResponse, ProviderError> {
         self.inner.chat_completions(request).await
     }
 

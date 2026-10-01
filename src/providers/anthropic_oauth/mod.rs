@@ -175,7 +175,7 @@ impl Provider for AnthropicOAuthProvider {
     async fn chat_completions(
         &self,
         request: &ChatRequest,
-    ) -> Result<CreateChatCompletionResponse, ProviderError> {
+    ) -> Result<crate::providers::ChatResponse, ProviderError> {
         let token = self
             .session
             .access_token()
@@ -240,7 +240,8 @@ impl Provider for AnthropicOAuthProvider {
             #[allow(deprecated)]
             system_fingerprint: None,
             object: "chat.completion".to_string(),
-        })
+        }
+        .into())
     }
 
     fn chat_completions_stream(

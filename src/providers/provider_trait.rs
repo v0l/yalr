@@ -1,5 +1,4 @@
 use async_openai::error::OpenAIError;
-use async_openai::types::chat::CreateChatCompletionResponse;
 use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use async_openai::types::models::Model;
 use async_trait::async_trait;
@@ -93,7 +92,7 @@ pub trait Provider: Send + Sync {
     async fn chat_completions(
         &self,
         request: &ChatRequest,
-    ) -> Result<CreateChatCompletionResponse, ProviderError>;
+    ) -> Result<crate::providers::ChatResponse, ProviderError>;
 
     fn chat_completions_stream(
         &self,

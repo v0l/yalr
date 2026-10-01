@@ -8,7 +8,7 @@ use crate::db::{DeclaredModalities, RoutingConfig};
 use crate::providers::{
     ChatCompletionRequestMessage, ChatCompletionRequestUserMessageContent, ChatRequest, Provider,
 };
-use async_openai::types::chat::{ChatCompletionRequestUserMessageContentPart, ResponseModalities};
+use async_openai::types::chat::ChatCompletionRequestUserMessageContentPart;
 use crate::router::Modality;
 use crate::state::AppState;
 
@@ -176,11 +176,12 @@ pub fn chat_modalities(request: &ChatRequest) -> (Vec<Modality>, Vec<Modality>) 
             }
         }
     }
-    let wants_audio = request
-        .modalities
-        .as_ref()
-        .is_some_and(|m| m.contains(&ResponseModalities::Audio));
-    let output = if wants_audio { vec![Modality::Audio] } else { Vec::new() };
+    let output = request
+        .output_modalities()
+        .iter()
+        .filter_map(|m| Modality::parse(m))
+        .filter(|m| *m != Modality::Text)
+        .collect();
     (input, output)
 }
 
@@ -420,5 +421,13 @@ mod tests {
             r#"{"model":"m","modalities":["text","audio"],"messages":[{"role":"user","content":"hi"}]}"#,
         );
         assert_eq!(chat_modalities(&request).1, vec![Modality::Audio]);
+    }
+
+    #[test]
+    fn image_output_is_detected_from_modalities() {
+        let request = chat(
+            r#"{"model":"m","modalities":["image","text"],"messages":[{"role":"user","content":"draw"}]}"#,
+        );
+        assert_eq!(chat_modalities(&request).1, vec![Modality::Image]);
     }
 }

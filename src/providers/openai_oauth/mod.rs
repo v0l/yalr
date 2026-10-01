@@ -86,7 +86,7 @@ impl Provider for OpenAiOAuthProvider {
     async fn chat_completions(
         &self,
         request: &ChatRequest,
-    ) -> Result<CreateChatCompletionResponse, ProviderError> {
+    ) -> Result<crate::providers::ChatResponse, ProviderError> {
         // The Codex backend streams; aggregate the stream into a single response.
         let mut stream = self.chat_completions_stream(request)?;
         let mut text = String::new();
@@ -131,7 +131,8 @@ impl Provider for OpenAiOAuthProvider {
             #[allow(deprecated)]
             system_fingerprint: None,
             object: "chat.completion".to_string(),
-        })
+        }
+        .into())
     }
 
     fn chat_completions_stream(

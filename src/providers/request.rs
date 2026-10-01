@@ -23,10 +23,24 @@ pub struct ChatRequest {
     /// rather than position, so `developer`-to-`system` rewriting can't shift
     /// the mapping.
     assistant_extras: Vec<Map<String, Value>>,
+    output_fields: Map<String, Value>,
 }
 
+const OUTPUT_FIELDS: &[&str] = &["modalities", "image_config"];
+
 impl ChatRequest {
-    pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
+    pub fn from_value(mut value: Value) -> Result<Self, serde_json::Error> {
+        let output_fields = value
+            .as_object_mut()
+            .map(|object| {
+                OUTPUT_FIELDS
+                    .iter()
+                    .filter_map(|key| object.remove(*key).map(|v| (key.to_string(), v)))
+                    .filter(|(_, v)| !v.is_null())
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let assistant_extras = value
             .get("messages")
             .and_then(|messages| messages.as_array())
@@ -42,6 +56,28 @@ impl ChatRequest {
         Ok(Self {
             inner: serde_json::from_value(value)?,
             assistant_extras,
+            output_fields,
+        })
+    }
+
+    pub fn output_fields(&self) -> &Map<String, Value> {
+        &self.output_fields
+    }
+
+    pub fn output_modalities(&self) -> Vec<String> {
+        let raw = self
+            .output_fields
+            .get("modalities")
+            .and_then(Value::as_array)
+            .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect());
+        raw.unwrap_or_else(|| {
+            self.inner
+                .modalities
+                .iter()
+                .flatten()
+                .filter_map(|m| serde_json::to_value(m).ok())
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
         })
     }
 
@@ -60,6 +96,7 @@ impl From<ChatCompletionRequest> for ChatRequest {
         Self {
             inner,
             assistant_extras: Vec::new(),
+            output_fields: Map::new(),
         }
     }
 }
@@ -149,5 +186,34 @@ mod tests {
         let request = ChatRequest::from(inner);
         assert!(request.assistant_extras().is_empty());
         assert_eq!(request.model, "m");
+    }
+
+    #[test]
+    fn image_output_modalities_survive_the_typed_parse() {
+        let request = ChatRequest::from_value(serde_json::json!({
+            "model": "google/gemini-2.5-flash-image",
+            "modalities": ["image", "text"],
+            "image_config": {"aspect_ratio": "16:9"},
+            "messages": [{"role": "user", "content": "draw a cat"}]
+        }))
+        .unwrap();
+
+        assert_eq!(request.output_modalities(), vec!["image", "text"]);
+        assert_eq!(
+            request.output_fields().get("image_config").unwrap()["aspect_ratio"],
+            "16:9"
+        );
+        assert!(request.modalities.is_none());
+    }
+
+    #[test]
+    fn typed_modalities_are_reported_too() {
+        let inner: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "gpt-audio",
+            "modalities": ["text", "audio"],
+            "messages": []
+        }))
+        .unwrap();
+        assert_eq!(ChatRequest::from(inner).output_modalities(), vec!["text", "audio"]);
     }
 }

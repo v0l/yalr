@@ -1,4 +1,5 @@
 pub mod audio;
+mod chunk;
 pub mod decision;
 pub mod detector;
 pub mod engine;

@@ -112,7 +112,7 @@ impl Provider for VllmProvider {
     async fn chat_completions(
         &self,
         request: &ChatRequest,
-    ) -> Result<CreateChatCompletionResponse, ProviderError> {
+    ) -> Result<crate::providers::ChatResponse, ProviderError> {
         self.inner.chat_completions(request).await
     }
 

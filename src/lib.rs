@@ -16,7 +16,8 @@ pub use metrics::{HealthConfig, HealthState};
 pub use providers::{
     ChatRequest,
     CreateChatCompletionRequest as ChatCompletionRequest,
-    CreateChatCompletionResponse as ChatCompletionResponse,
+    ChatResponse,
+    ChatResponse as ChatCompletionResponse,
     StreamingChunk, StreamingChoice, StreamingDelta,
     ChatCompletionRequestMessage, ChatCompletionRequestMessage as Message,
     ChatCompletionRequestAssistantMessage,

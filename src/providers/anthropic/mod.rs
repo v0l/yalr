@@ -105,7 +105,7 @@ impl Provider for AnthropicProvider {
     async fn chat_completions(
         &self,
         request: &ChatRequest,
-    ) -> Result<CreateChatCompletionResponse, ProviderError> {
+    ) -> Result<crate::providers::ChatResponse, ProviderError> {
         let (system, messages) = convert_messages(&request.messages);
         let anthropic_request = build_anthropic_request(system, messages, request);
 
@@ -116,7 +116,7 @@ impl Provider for AnthropicProvider {
             .await
             .map_err(map_anthropic_error)?;
 
-        Ok(anthropic_response_to_openai(&response, &request.model))
+        Ok(anthropic_response_to_openai(&response, &request.model).into())
     }
 
     fn chat_completions_stream(

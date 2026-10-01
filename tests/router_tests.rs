@@ -100,7 +100,7 @@ impl Provider for MockProvider {
     async fn chat_completions(
         &self,
         request: &ChatRequest,
-    ) -> Result<CreateChatCompletionResponse, ProviderError> {
+    ) -> Result<yalr::ChatResponse, ProviderError> {
         if self.should_fail {
             return Err(ProviderError::Other("Mock failure".to_string().into()));
         }
@@ -124,7 +124,8 @@ impl Provider for MockProvider {
             }),
             system_fingerprint: None,
             service_tier: None,
-        })
+        }
+        .into())
     }
 
     fn chat_completions_stream(
@@ -273,7 +274,7 @@ async fn test_router_round_robin_distribution() {
         let request = create_test_request("test-model");
         let response = router.chat_completions(&request, None).await;
         assert!(response.is_ok());
-        results.push(response.unwrap().id);
+        results.push(response.unwrap().id.clone());
     }
 
     let unique_ids: std::collections::HashSet<_> = results.iter().collect();
@@ -596,7 +597,7 @@ async fn test_router_streaming_tool_calls_count_as_content() {
         async fn chat_completions(
             &self,
             _request: &ChatRequest,
-        ) -> Result<CreateChatCompletionResponse, ProviderError> {
+        ) -> Result<yalr::ChatResponse, ProviderError> {
             unimplemented!()
         }
         fn chat_completions_stream(
