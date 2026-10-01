@@ -100,6 +100,14 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
             <span>{config.providers.length} provider{config.providers.length !== 1 ? 's' : ''}</span>
             <span className="text-border">·</span>
             <span>health {config.health_check_enabled ? `every ${config.health_check_interval_seconds}s` : 'off'}</span>
+            {(config.input_modalities || config.output_modalities) && (
+              <>
+                <span className="text-border">·</span>
+                <span className="uppercase tracking-wider">
+                  {(config.input_modalities ?? ['any']).join('+')} → {(config.output_modalities ?? ['any']).join('+')}
+                </span>
+              </>
+            )}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">

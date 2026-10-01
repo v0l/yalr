@@ -1,6 +1,9 @@
 use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
 
+mod modalities;
+pub use modalities::DeclaredModalities;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
 #[repr(u16)]
 pub enum UserType {
@@ -142,6 +145,8 @@ pub struct RoutingConfig {
     pub health_check_timeout_seconds: i32,
     pub created_at: String,
     pub updated_at: String,
+    pub input_modalities: Option<String>,
+    pub output_modalities: Option<String>,
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]

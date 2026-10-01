@@ -18,6 +18,9 @@ pub async fn chat_handler(
     Extension(authenticated_user): Extension<crate::auth::admin::AuthenticatedUser>,
     Json(request): Json<ChatRequest>,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, String)> {
+    let (input, output) = crate::api::modalities::chat_modalities(&request);
+    crate::api::modalities::require_modalities(&state, &request.model, &input, &output).await?;
+
     if request.stream.unwrap_or(false) {
         let stream_response = chat_completions_stream(State(state), Extension(authenticated_user), Json(request)).await;
         Ok(stream_response.into_response())

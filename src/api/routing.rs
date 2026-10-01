@@ -2,6 +2,8 @@ use crate::state::AppState;
 use axum::{extract::{Path, State}, Json};
 use serde::{Deserialize, Serialize};
 
+use super::routing_modalities::{store_modalities, RequestedModalities};
+
 #[derive(Deserialize)]
 pub struct RoutingConfigCreateRequest {
     pub name: String,
@@ -9,6 +11,10 @@ pub struct RoutingConfigCreateRequest {
     pub health_check_enabled: bool,
     pub health_check_interval_seconds: i32,
     pub health_check_timeout_seconds: i32,
+    #[serde(default)]
+    pub input_modalities: Option<Vec<String>>,
+    #[serde(default)]
+    pub output_modalities: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -18,6 +24,10 @@ pub struct RoutingConfigUpdateRequest {
     pub health_check_enabled: Option<bool>,
     pub health_check_interval_seconds: Option<i32>,
     pub health_check_timeout_seconds: Option<i32>,
+    #[serde(default)]
+    pub input_modalities: Option<Vec<String>>,
+    #[serde(default)]
+    pub output_modalities: Option<Vec<String>>,
 }
 
 /// Reject health-check seconds that would break the health loop.
@@ -69,6 +79,10 @@ pub struct RoutingConfigFullResponse {
     pub health_check_timeout_seconds: i32,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_modalities: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_modalities: Option<Vec<String>>,
     pub providers: Vec<RoutingConfigProviderFullResponse>,
 }
 
@@ -84,6 +98,30 @@ pub struct RoutingConfigProviderFullResponse {
     pub is_active: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+fn provider_responses(
+    providers: &[crate::db::RoutingConfigProvider],
+    db_providers: &[crate::db::Provider],
+) -> Vec<RoutingConfigProviderFullResponse> {
+    providers
+        .iter()
+        .map(|rp| {
+            let provider = db_providers.iter().find(|p| p.id == rp.provider_id);
+            RoutingConfigProviderFullResponse {
+                id: rp.id,
+                routing_config_id: rp.routing_config_id,
+                provider_id: rp.provider_id,
+                provider_name: provider.map_or_else(|| "Unknown".to_string(), |p| p.name.clone()),
+                provider_slug: provider.map_or_else(|| "unknown".to_string(), |p| p.slug.clone()),
+                model: rp.model.clone(),
+                weight: rp.weight,
+                is_active: rp.is_active,
+                created_at: rp.created_at.clone(),
+                updated_at: rp.updated_at.clone(),
+            }
+        })
+        .collect()
 }
 
 #[axum::debug_handler]
@@ -114,37 +152,12 @@ pub async fn list_routing_configs(State(state): State<std::sync::Arc<AppState>>)
             }
         };
 
-        let provider_responses: Vec<RoutingConfigProviderFullResponse> = providers
-            .iter()
-            .map(|rp| {
-                let provider_name = db_providers
-                    .iter()
-                    .find(|p| p.id == rp.provider_id)
-                    .map(|p| p.name.clone())
-                    .unwrap_or_else(|| "Unknown".to_string());
-                let provider_slug = db_providers
-                    .iter()
-                    .find(|p| p.id == rp.provider_id)
-                    .map(|p| p.slug.clone())
-                    .unwrap_or_else(|| "unknown".to_string());
-
-                RoutingConfigProviderFullResponse {
-                    id: rp.id,
-                    routing_config_id: rp.routing_config_id,
-                    provider_id: rp.provider_id,
-                    provider_name,
-                    provider_slug,
-                    model: rp.model.clone(),
-                    weight: rp.weight,
-                    is_active: rp.is_active,
-                    created_at: rp.created_at.clone(),
-                    updated_at: rp.updated_at.clone(),
-                }
-            })
-            .collect();
+        let provider_responses = provider_responses(&providers, &db_providers);
 
         response.push(RoutingConfigFullResponse {
             id: config.id,
+            input_modalities: crate::db::DeclaredModalities::names(&config.declared_modalities().input),
+            output_modalities: crate::db::DeclaredModalities::names(&config.declared_modalities().output),
             name: config.name,
             strategy: config.strategy,
             health_check_enabled: config.health_check_enabled,
@@ -176,6 +189,12 @@ pub async fn create_routing_config(
         health_check_timeout_seconds: request.health_check_timeout_seconds,
     };
 
+    let declared = RequestedModalities::parse(
+        request.input_modalities.as_deref(),
+        request.output_modalities.as_deref(),
+    )?
+    .apply(Default::default());
+
     let created = match state.config.db.create_routing_config(config).await {
         Ok(config) => config,
         Err(e) => {
@@ -183,6 +202,7 @@ pub async fn create_routing_config(
             return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
         }
     };
+    let created = store_modalities(&state, created, &declared).await?;
 
     let full = match state.config.db.list_routing_config_providers_for_config(created.id).await {
         Ok(providers) => {
@@ -194,37 +214,12 @@ pub async fn create_routing_config(
                 }
             };
 
-            let provider_responses: Vec<RoutingConfigProviderFullResponse> = providers
-                .iter()
-                .map(|rp| {
-                    let provider_name = db_providers
-                        .iter()
-                        .find(|p| p.id == rp.provider_id)
-                        .map(|p| p.name.clone())
-                        .unwrap_or_else(|| "Unknown".to_string());
-                    let provider_slug = db_providers
-                        .iter()
-                        .find(|p| p.id == rp.provider_id)
-                        .map(|p| p.slug.clone())
-                        .unwrap_or_else(|| "unknown".to_string());
-
-                    RoutingConfigProviderFullResponse {
-                        id: rp.id,
-                        routing_config_id: rp.routing_config_id,
-                        provider_id: rp.provider_id,
-                        provider_name,
-                        provider_slug,
-                        model: rp.model.clone(),
-                        weight: rp.weight,
-                        is_active: rp.is_active,
-                        created_at: rp.created_at.clone(),
-                        updated_at: rp.updated_at.clone(),
-                    }
-                })
-                .collect();
+            let provider_responses = provider_responses(&providers, &db_providers);
 
             RoutingConfigFullResponse {
                 id: created.id,
+                input_modalities: crate::db::DeclaredModalities::names(&created.declared_modalities().input),
+                output_modalities: crate::db::DeclaredModalities::names(&created.declared_modalities().output),
                 name: created.name,
                 strategy: created.strategy,
                 health_check_enabled: created.health_check_enabled,
@@ -254,6 +249,10 @@ pub async fn update_routing_config(
         request.health_check_interval_seconds,
         request.health_check_timeout_seconds,
     )?;
+    let requested = RequestedModalities::parse(
+        request.input_modalities.as_deref(),
+        request.output_modalities.as_deref(),
+    )?;
     let updates = crate::db::UpdateRoutingConfig {
         name: request.name.clone(),
         strategy: request.strategy.clone(),
@@ -269,6 +268,8 @@ pub async fn update_routing_config(
             return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
         }
     };
+    let declared = requested.apply(updated.declared_modalities());
+    let updated = store_modalities(&state, updated, &declared).await?;
 
     state.config.router.reload_config().await
         .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -289,37 +290,12 @@ pub async fn update_routing_config(
         }
     };
 
-    let provider_responses: Vec<RoutingConfigProviderFullResponse> = providers
-        .iter()
-        .map(|rp| {
-            let provider_name = db_providers
-                .iter()
-                .find(|p| p.id == rp.provider_id)
-                .map(|p| p.name.clone())
-                .unwrap_or_else(|| "Unknown".to_string());
-            let provider_slug = db_providers
-                .iter()
-                .find(|p| p.id == rp.provider_id)
-                .map(|p| p.slug.clone())
-                .unwrap_or_else(|| "unknown".to_string());
-
-            RoutingConfigProviderFullResponse {
-                id: rp.id,
-                routing_config_id: rp.routing_config_id,
-                provider_id: rp.provider_id,
-                provider_name,
-                provider_slug,
-                model: rp.model.clone(),
-                weight: rp.weight,
-                is_active: rp.is_active,
-                created_at: rp.created_at.clone(),
-                updated_at: rp.updated_at.clone(),
-            }
-        })
-        .collect();
+    let provider_responses = provider_responses(&providers, &db_providers);
 
     Ok(Json(RoutingConfigFullResponse {
         id: updated.id,
+        input_modalities: crate::db::DeclaredModalities::names(&updated.declared_modalities().input),
+        output_modalities: crate::db::DeclaredModalities::names(&updated.declared_modalities().output),
         name: updated.name,
         strategy: updated.strategy,
         health_check_enabled: updated.health_check_enabled,

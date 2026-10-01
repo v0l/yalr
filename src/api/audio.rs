@@ -8,8 +8,10 @@ use bytes::Bytes;
 use std::sync::Arc;
 
 use crate::auth::admin::AuthenticatedUser;
+use crate::api::modalities::require_modalities;
 use crate::api::shared::{check_model_access, error_body, metrics_user, router_error, HandlerError as ApiError};
 use crate::providers::audio::{SpeechRequest, TranscriptionRequest};
+use crate::router::Modality;
 use crate::state::AppState;
 
 pub async fn transcriptions(
@@ -37,6 +39,7 @@ async fn audio_stt(
     let request = parse_transcription_form(multipart, translate).await?;
 
     check_model_access(&state, authenticated.user.id, &request.model).await?;
+    require_modalities(&state, &request.model, &[Modality::Audio], &[]).await?;
 
     tracing::info!(
         model = %request.model,
@@ -95,6 +98,7 @@ pub async fn speech(
     }
 
     check_model_access(&state, authenticated.user.id, &request.model).await?;
+    require_modalities(&state, &request.model, &[], &[Modality::Audio]).await?;
 
     tracing::info!(
         model = %request.model,

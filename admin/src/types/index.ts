@@ -306,8 +306,12 @@ export interface RoutingConfigFull {
   health_check_timeout_seconds: number
   created_at: string
   updated_at: string
+  input_modalities?: Modality[]
+  output_modalities?: Modality[]
   providers: RoutingConfigProvider[]
 }
+
+export type Modality = 'text' | 'image' | 'audio' | 'video'
 
 export interface RoutingConfigCreateRequest {
   name: string
@@ -315,6 +319,8 @@ export interface RoutingConfigCreateRequest {
   health_check_enabled: boolean
   health_check_interval_seconds: number
   health_check_timeout_seconds: number
+  input_modalities: Modality[]
+  output_modalities: Modality[]
 }
 
 export interface RoutingConfigUpdateRequest {
@@ -323,6 +329,8 @@ export interface RoutingConfigUpdateRequest {
   health_check_enabled?: boolean
   health_check_interval_seconds?: number
   health_check_timeout_seconds?: number
+  input_modalities?: Modality[]
+  output_modalities?: Modality[]
 }
 
 export interface RoutingConfigProviderCreateRequest {

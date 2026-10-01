@@ -6,6 +6,7 @@ use axum::{
 };
 use std::sync::Arc;
 
+use crate::api::modalities::require_modalities;
 use crate::api::shared::{check_model_access, error_body, metrics_user, router_error, HandlerError};
 use crate::auth::admin::AuthenticatedUser;
 use crate::payments::biller::BillingError;
@@ -23,6 +24,9 @@ pub async fn decide(
         .map_err(|message| (StatusCode::BAD_REQUEST, error_body(&message, "invalid_request_error")))?;
 
     check_model_access(&state, authenticated.user.id, &request.model).await?;
+    if request.image.is_some() {
+        require_modalities(&state, &request.model, &[crate::router::Modality::Image], &[]).await?;
+    }
 
     tracing::info!(
         model = %request.model,

@@ -6,11 +6,13 @@ use axum::{
 };
 use std::sync::Arc;
 
+use crate::api::modalities::require_modalities;
 use crate::api::shared::{check_model_access, error_body, metrics_user, router_error, HandlerError};
 use crate::auth::admin::AuthenticatedUser;
 use crate::providers::image::{
     ImageFile, ImageGenerationRequest, ImageResponse, ImageUploadKind, ImageUploadRequest,
 };
+use crate::router::Modality;
 use crate::state::AppState;
 
 fn bad_request(message: impl AsRef<str>) -> HandlerError {
@@ -35,6 +37,7 @@ pub async fn generations(
     }
 
     check_model_access(&state, authenticated.user.id, &request.model).await?;
+    require_modalities(&state, &request.model, &[], &[Modality::Image]).await?;
 
     tracing::info!(model = %request.model, n = ?request.n, "Received image generation request");
 
@@ -73,6 +76,7 @@ async fn upload(
     let request = parse_upload_form(multipart, kind).await?;
 
     check_model_access(&state, authenticated.user.id, &request.model).await?;
+    require_modalities(&state, &request.model, &[Modality::Image], &[Modality::Image]).await?;
 
     tracing::info!(
         model = %request.model,
@@ -387,5 +391,38 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn model_declared_without_image_output_is_rejected_before_routing() {
+        let upstream = MockServer::start().await;
+        let (app, token) = app(&upstream.uri()).await;
+
+        let declared = app
+            .clone()
+            .oneshot(post(
+                "/api/routing-configs",
+                &token,
+                "application/json",
+                br#"{"name":"gpt-image-1","strategy":"round_robin","health_check_enabled":false,"health_check_interval_seconds":30,"health_check_timeout_seconds":5,"output_modalities":["text"]}"#.to_vec(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(declared.status(), 200);
+
+        let response = app
+            .oneshot(post(
+                "/v1/images/generations",
+                &token,
+                "application/json",
+                br#"{"model":"gpt-image-1","prompt":"a cat"}"#.to_vec(),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 400);
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("does not produce image output"));
+        assert!(upstream.received_requests().await.unwrap().is_empty());
     }
 }

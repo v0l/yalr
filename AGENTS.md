@@ -87,6 +87,14 @@ audio.
 **Audio models** route the same way, through `Router::transcriptions()` and
 `Router::speech()`.
 
+**Declared modalities**: `routing_config.input_modalities` / `output_modalities`
+(JSON arrays, NULL = undeclared). `src/api/modalities.rs` publishes them in
+`/v1/models` (declared input wins over the llama.cpp probe) and
+`require_modalities()` rejects a request with 400 `model_not_supported` before
+routing when the config declares a list that lacks what the request needs.
+Prefixed models and undeclared lists are never gated. Every handler calls it:
+chat (image/audio parts, audio output), images, audio, decisions with `image`.
+
 **Key methods**: `ModelRequestRouter::is_prefixed()`, `extract_prefix()`, `extract_model()`, `RoutingEngine::route_by_slug()`, `RoutingEngine::route()`
 
 ## Serde &amp; API Parsing Conventions

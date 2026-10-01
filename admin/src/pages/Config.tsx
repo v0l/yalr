@@ -13,10 +13,12 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import ConfigRail from '../components/config/ConfigRail'
 import AssignmentsPanel from '../components/config/AssignmentsPanel'
+import ModalityPicker from '../components/config/ModalityPicker'
 
 const emptyConfigForm: RoutingConfigCreateRequest = {
   name: '', strategy: 'round_robin', health_check_enabled: true,
   health_check_interval_seconds: 30, health_check_timeout_seconds: 10,
+  input_modalities: [], output_modalities: [],
 }
 
 export default function Config() {
@@ -50,7 +52,7 @@ export default function Config() {
   /* ── Config CRUD ──────────────────────────────────────────────── */
   function openCreateConfig() { setConfigForm({ ...emptyConfigForm }); setConfigDialog({ open: true, editing: null }) }
   function openEditConfig(config: RoutingConfigFull) {
-    setConfigForm({ name: config.name, strategy: config.strategy, health_check_enabled: config.health_check_enabled, health_check_interval_seconds: config.health_check_interval_seconds, health_check_timeout_seconds: config.health_check_timeout_seconds })
+    setConfigForm({ name: config.name, strategy: config.strategy, health_check_enabled: config.health_check_enabled, health_check_interval_seconds: config.health_check_interval_seconds, health_check_timeout_seconds: config.health_check_timeout_seconds, input_modalities: config.input_modalities ?? [], output_modalities: config.output_modalities ?? [] })
     setConfigDialog({ open: true, editing: config })
   }
 
@@ -181,6 +183,11 @@ export default function Config() {
                 </div>
               </div>
             )}
+            <ModalityPicker
+              input={configForm.input_modalities}
+              output={configForm.output_modalities}
+              onChange={(input_modalities, output_modalities) => setConfigForm({ ...configForm, input_modalities, output_modalities })}
+            />
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setConfigDialog({ open: false, editing: null })} disabled={configSaving} className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</Button>
               <Button type="submit" disabled={configSaving} className="font-mono text-[12px] uppercase tracking-wider border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">{configSaving ? 'SAVING...' : configDialog.editing ? 'UPDATE' : 'CREATE'}</Button>

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Modality {
     Text,
     Image,
@@ -31,6 +31,16 @@ impl Modality {
             Modality::Image => "image",
             Modality::Audio => "audio",
             Modality::Video => "video",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "text" => Some(Modality::Text),
+            "image" => Some(Modality::Image),
+            "audio" => Some(Modality::Audio),
+            "video" => Some(Modality::Video),
+            _ => None,
         }
     }
 }
