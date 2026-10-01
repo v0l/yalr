@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { ThreadPrimitive, ComposerPrimitive, MessagePrimitive, MessagePartPrimitive, ActionBarPrimitive, AssistantRuntimeProvider, useLocalRuntime, AuiIf, type ChatModelAdapter, type ChatModelRunResult, type ThreadAssistantMessagePart, type DictationAdapter, type SpeechSynthesisAdapter } from '@assistant-ui/react'
+import { ThreadPrimitive, ComposerPrimitive, MessagePrimitive, MessagePartPrimitive, ErrorPrimitive, ActionBarPrimitive, AssistantRuntimeProvider, useLocalRuntime, AuiIf, type ChatModelAdapter, type ChatModelRunResult, type ThreadAssistantMessagePart, type DictationAdapter, type SpeechSynthesisAdapter } from '@assistant-ui/react'
 import { api } from '../api/client'
 import type { Model } from '../types'
 import { ArrowUpIcon, Loader2Icon, MicIcon, PaperclipIcon, SquareIcon, Volume2Icon } from 'lucide-react'
@@ -17,6 +17,13 @@ const mediaComponents = { Text: () => <MessagePartPrimitive.Text />, Image: Imag
 async function errorMessage(response: Response) {
   const body = await response.text()
   try { return JSON.parse(body).error?.message ?? body } catch { return body || `HTTP ${response.status}` }
+}
+
+function replyError(message: string | undefined, outputModalities?: readonly string[]) {
+  if (message?.includes('empty completion') && outputModalities?.includes('image')) {
+    return 'The model finished without returning an image. The provider may have filtered it, so try rewording the prompt.'
+  }
+  return message ?? 'Request failed'
 }
 
 function assistantParts(text: string, media: StreamedMedia, done: boolean): ThreadAssistantMessagePart[] {
@@ -56,7 +63,7 @@ const createChatModelAdapter = (modelId: string, outputModalities?: readonly str
             if (data === '[DONE]') break
             try {
               const parsed = JSON.parse(data)
-              if (parsed.error) throw new Error(parsed.error.message ?? 'Request failed')
+              if (parsed.error) throw new Error(replyError(parsed.error.message, outputModalities))
               const delta = parsed.choices?.[0]?.delta ?? {}
               if (delta.content) accumulatedContent += delta.content
               collectMedia(delta, media)
@@ -208,6 +215,11 @@ function AssistantMessage({ pendingLabel }: { pendingLabel: string }) {
               <MessagePrimitive.Content components={mediaComponents} />
             </div>
             <PendingReply label={pendingLabel} />
+            <MessagePrimitive.Error>
+              <ErrorPrimitive.Root className="mt-1 border border-destructive/30 bg-destructive/5 px-3 py-2 text-[12px] text-destructive">
+                <ErrorPrimitive.Message />
+              </ErrorPrimitive.Root>
+            </MessagePrimitive.Error>
             <div className="flex gap-2 mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <ActionBarPrimitive.Copy asChild>
                 <button className="p-1 hover:bg-secondary transition-colors" title="Copy">
