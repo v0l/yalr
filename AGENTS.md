@@ -95,6 +95,11 @@ routing when the config declares a list that lacks what the request needs.
 Prefixed models and undeclared lists are never gated. Every handler calls it:
 chat (image/audio parts, audio output), images, audio, decisions with `image`.
 
+**Chat input skip**: `src/router/input_filter.rs`. Inside a pool, chat passes over
+a backend whose probed runtime info lacks an input modality the request carries,
+and treats `ProviderError::Unsupported` (Anthropic given audio) as a skip, not a
+failure. Neither consumes a retry or touches health.
+
 **Key methods**: `ModelRequestRouter::is_prefixed()`, `extract_prefix()`, `extract_model()`, `RoutingEngine::route_by_slug()`, `RoutingEngine::route()`
 
 ## Serde &amp; API Parsing Conventions

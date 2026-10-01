@@ -609,6 +609,11 @@ impl MetricsStore {
         info.get(provider_name).and_then(|r| r.max_concurrency())
     }
 
+    pub async fn get_provider_modalities(&self, provider_name: &str) -> Option<Vec<crate::router::Modality>> {
+        let info = self.provider_runtime_info.read().await;
+        info.get(provider_name).map(|r| r.modalities.clone())
+    }
+
     /// Whether runtime info has already been fetched for this provider.
     ///
     /// Used to avoid re-fetching `get_runtime_info` (a network round-trip) on

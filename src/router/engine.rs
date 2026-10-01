@@ -1,6 +1,7 @@
 use crate::db::Database;
 use crate::metrics::{MetricsStore, MetricsUser};
 use crate::providers::{create_provider_from_record, ChatRequest, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
+use crate::router::input_filter;
 use crate::router::strategies::ProviderEntry;
 use crate::{ChatCompletionRequest, ChatCompletionResponse, ProviderError};
 use crate::providers::StreamingChunk;
@@ -845,10 +846,20 @@ impl Router {
 
         let mut last_error: Option<RouterError> = None;
         let mut attempt: u32 = 0;
+        let needed = request.input_modalities();
 
         for (provider, resolved_model) in candidates {
             if attempt >= self.max_retries {
                 break;
+            }
+            if let Some(modality) =
+                input_filter::missing_input(&self.metrics_store, &provider, &resolved_model, &needed).await
+            {
+                last_error.get_or_insert(RouterError::ProviderError(input_filter::skipped_error(
+                    provider.name(),
+                    modality,
+                )));
+                continue;
             }
             attempt += 1;
 
@@ -956,6 +967,12 @@ impl Router {
 
                     return Ok(response);
                 }
+                Err(ProviderError::Unsupported(message)) => {
+                    guard.decrement();
+                    attempt -= 1;
+                    tracing::debug!(provider = %provider_name, %message, "Provider cannot serve this request, skipping");
+                    last_error.get_or_insert(RouterError::ProviderError(ProviderError::Unsupported(message)));
+                }
                 Err(e) => {
                     guard.decrement();
 
@@ -1014,6 +1031,7 @@ impl Router {
         let metrics_store = self.metrics_store.clone();
         let max_retries = self.max_retries;
         let request = request.clone();
+        let needed = request.input_modalities();
 
         let stream = stream! {
             let mut last_error: Option<RouterError> = None;
@@ -1023,6 +1041,15 @@ impl Router {
             for (provider, resolved_model) in candidates {
                 if attempt >= max_retries {
                     break;
+                }
+                if let Some(modality) =
+                    input_filter::missing_input(&metrics_store, &provider, &resolved_model, &needed).await
+                {
+                    last_error.get_or_insert(RouterError::ProviderError(input_filter::skipped_error(
+                        provider.name(),
+                        modality,
+                    )));
+                    continue;
                 }
                 attempt += 1;
 
@@ -1312,6 +1339,12 @@ impl Router {
                         // defensive continue.
                         guard.decrement();
                         continue;
+                    }
+                    Err(ProviderError::Unsupported(message)) => {
+                        guard.decrement();
+                        attempt -= 1;
+                        tracing::debug!(provider = %provider_name, %message, "Provider cannot serve this stream, skipping");
+                        last_error.get_or_insert(RouterError::ProviderError(ProviderError::Unsupported(message)));
                     }
                     Err(e) => {
                         guard.decrement();

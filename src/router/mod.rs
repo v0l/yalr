@@ -4,6 +4,7 @@ pub mod decision;
 pub mod detector;
 pub mod engine;
 mod failover;
+mod input_filter;
 pub mod image;
 pub mod model_info;
 pub mod strategies;

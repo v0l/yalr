@@ -5,10 +5,7 @@ use serde::Serialize;
 
 use crate::api::shared::{error_body, HandlerError};
 use crate::db::{DeclaredModalities, RoutingConfig};
-use crate::providers::{
-    ChatCompletionRequestMessage, ChatCompletionRequestUserMessageContent, ChatRequest, Provider,
-};
-use async_openai::types::chat::ChatCompletionRequestUserMessageContentPart;
+use crate::providers::{ChatRequest, Provider};
 use crate::router::Modality;
 use crate::state::AppState;
 
@@ -157,25 +154,7 @@ pub async fn require_modalities(
 }
 
 pub fn chat_modalities(request: &ChatRequest) -> (Vec<Modality>, Vec<Modality>) {
-    let mut input = Vec::new();
-    for message in &request.messages {
-        let ChatCompletionRequestMessage::User(user) = message else {
-            continue;
-        };
-        let ChatCompletionRequestUserMessageContent::Array(parts) = &user.content else {
-            continue;
-        };
-        for part in parts {
-            let modality = match part {
-                ChatCompletionRequestUserMessageContentPart::ImageUrl(_) => Modality::Image,
-                ChatCompletionRequestUserMessageContentPart::InputAudio(_) => Modality::Audio,
-                _ => continue,
-            };
-            if !input.contains(&modality) {
-                input.push(modality);
-            }
-        }
-    }
+    let input = request.input_modalities();
     let output = request
         .output_modalities()
         .iter()

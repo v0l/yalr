@@ -64,6 +64,35 @@ impl ChatRequest {
         &self.output_fields
     }
 
+    pub fn input_modalities(&self) -> Vec<crate::router::Modality> {
+        use async_openai::types::chat::{
+            ChatCompletionRequestMessage, ChatCompletionRequestUserMessageContent,
+            ChatCompletionRequestUserMessageContentPart as Part,
+        };
+        use crate::router::Modality;
+
+        let mut input = Vec::new();
+        for message in &self.inner.messages {
+            let ChatCompletionRequestMessage::User(user) = message else {
+                continue;
+            };
+            let ChatCompletionRequestUserMessageContent::Array(parts) = &user.content else {
+                continue;
+            };
+            for part in parts {
+                let modality = match part {
+                    Part::ImageUrl(_) => Modality::Image,
+                    Part::InputAudio(_) => Modality::Audio,
+                    _ => continue,
+                };
+                if !input.contains(&modality) {
+                    input.push(modality);
+                }
+            }
+        }
+        input
+    }
+
     pub fn output_modalities(&self) -> Vec<String> {
         let raw = self
             .output_fields
