@@ -14,6 +14,7 @@ pub(super) fn chat_completions_stream(
     client: async_anthropic::Client,
     request: &CreateChatCompletionRequest,
 ) -> Result<BoxStream<'static, Result<StreamingChunk, ProviderError>>, ProviderError> {
+    crate::providers::anthropic_media::check_media(&request.messages)?;
     let (system, messages) = convert_messages(&request.messages);
     let mut anthropic_request = build_anthropic_request(system, messages, request);
     anthropic_request.stream = true;

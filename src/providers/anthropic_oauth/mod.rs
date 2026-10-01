@@ -176,6 +176,7 @@ impl Provider for AnthropicOAuthProvider {
         &self,
         request: &ChatRequest,
     ) -> Result<crate::providers::ChatResponse, ProviderError> {
+        crate::providers::anthropic_media::check_media(&request.messages)?;
         let token = self
             .session
             .access_token()
@@ -248,6 +249,7 @@ impl Provider for AnthropicOAuthProvider {
         &self,
         request: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamingChunk, ProviderError>>, ProviderError> {
+        crate::providers::anthropic_media::check_media(&request.messages)?;
         let body = build_request(request, true);
         let url = self.messages_url();
         let http = self.http.clone();

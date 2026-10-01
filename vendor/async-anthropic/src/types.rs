@@ -225,7 +225,23 @@ pub enum MessageContent {
     ToolUse(ToolUse),
     ToolResult(ToolResult),
     Text(Text),
-    // TODO: Implement images and documents
+    Image(Media),
+    Document(Media),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentSource {
+    Base64 { media_type: String, data: String },
+    Text { media_type: String, data: String },
+    Url { url: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Media {
+    pub source: ContentSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 impl MessageContent {

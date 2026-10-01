@@ -35,26 +35,13 @@ pub(super) fn convert_messages(
                     }
                 }
                 ChatCompletionRequestMessage::User(user_msg) => {
-                    let content = match &user_msg.content {
-                        ChatCompletionRequestUserMessageContent::Text(text) => text.clone(),
-                        ChatCompletionRequestUserMessageContent::Array(parts) => {
-                            parts
-                                .iter()
-                                .filter_map(|p| match p {
-                                    async_openai::types::chat::ChatCompletionRequestUserMessageContentPart::Text(t) => Some(t.text.clone()),
-                                    _ => None,
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        }
+                    let blocks = match &user_msg.content {
+                        ChatCompletionRequestUserMessageContent::Text(text) => vec![text_block(text.clone())],
+                        ChatCompletionRequestUserMessageContent::Array(parts) => user_blocks(parts),
                     };
                     let message = async_anthropic::types::Message {
                         role: async_anthropic::types::MessageRole::User,
-                        content: async_anthropic::types::MessageContentList(vec![
-                            async_anthropic::types::MessageContent::Text(
-                                async_anthropic::types::Text { text: content, ..Default::default() },
-                            ),
-                        ]),
+                        content: async_anthropic::types::MessageContentList(blocks),
                     };
                     anthropic_messages.push(message);
                 }
@@ -235,6 +222,36 @@ pub fn prompt_cache_enabled() -> bool {
 #[cfg(test)]
 pub static CACHE_TOGGLE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+fn text_block(text: String) -> async_anthropic::types::MessageContent {
+    async_anthropic::types::MessageContent::Text(async_anthropic::types::Text { text, ..Default::default() })
+}
+
+fn user_blocks(
+    parts: &[async_openai::types::chat::ChatCompletionRequestUserMessageContentPart],
+) -> Vec<async_anthropic::types::MessageContent> {
+    use crate::providers::anthropic_media::{media_block, MediaBlock};
+    use async_anthropic::types::{Media, MessageContent};
+    use async_openai::types::chat::ChatCompletionRequestUserMessageContentPart as Part;
+
+    let mut blocks = Vec::new();
+    for part in parts {
+        if let Part::Text(t) = part {
+            blocks.push(text_block(t.text.clone()));
+            continue;
+        }
+        let media = |source| Media { source, cache_control: None };
+        match media_block(part) {
+            Ok(Some(MediaBlock::Image(source))) => blocks.push(MessageContent::Image(media(source))),
+            Ok(Some(MediaBlock::Document(source))) => blocks.push(MessageContent::Document(media(source))),
+            _ => {}
+        }
+    }
+    if blocks.is_empty() {
+        blocks.push(text_block(String::new()));
+    }
+    blocks
+}
+
 /// Attach an ephemeral cache breakpoint to a message content block.
 fn set_cache_breakpoint(block: &mut async_anthropic::types::MessageContent) {
     use async_anthropic::types::{CacheControl, MessageContent};
@@ -243,6 +260,7 @@ fn set_cache_breakpoint(block: &mut async_anthropic::types::MessageContent) {
         MessageContent::Text(t) => t.cache_control = cc,
         MessageContent::ToolUse(t) => t.cache_control = cc,
         MessageContent::ToolResult(t) => t.cache_control = cc,
+        MessageContent::Image(m) | MessageContent::Document(m) => m.cache_control = cc,
     }
 }
 

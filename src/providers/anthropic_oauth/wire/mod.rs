@@ -71,6 +71,10 @@ pub enum RequestContentBlock {
         tool_use_id: String,
         content: String,
     },
+    #[serde(rename = "image")]
+    Image { source: async_anthropic::types::ContentSource },
+    #[serde(rename = "document")]
+    Document { source: async_anthropic::types::ContentSource },
 }
 
 #[derive(Debug, Serialize)]
@@ -276,5 +280,23 @@ mod tests {
         let mapped = usage_to_openai(&u);
         assert_eq!(mapped.prompt_tokens, 42);
         assert!(mapped.prompt_tokens_details.is_none());
+    }
+
+    #[test]
+    fn image_parts_become_image_blocks_and_text_only_stays_a_string() {
+        let request: crate::providers::ChatRequest = serde_json::from_str(
+            r#"{"model":"claude","messages":[
+                {"role":"user","content":[{"type":"text","text":"hi"}]},
+                {"role":"assistant","content":"hello"},
+                {"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"https://x.test/a.png"}}]}
+            ]}"#,
+        )
+        .unwrap();
+        let body = serde_json::to_value(build_request(&request, false)).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        let users: Vec<_> = messages.iter().filter(|m| m["role"] == "user").collect();
+        assert!(users[0]["content"].is_string() || users[0]["content"][0]["type"] == "text");
+        let last = users.last().unwrap()["content"].as_array().unwrap();
+        assert!(last.iter().any(|b| b["type"] == "image" && b["source"]["url"] == "https://x.test/a.png"));
     }
 }

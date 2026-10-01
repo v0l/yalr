@@ -37,6 +37,7 @@ pub mod openrouter;
 pub mod request;
 pub mod response;
 pub mod anthropic;
+pub(crate) mod anthropic_media;
 pub mod anthropic_oauth;
 pub mod openai_oauth;
 pub mod provider_trait;

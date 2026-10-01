@@ -106,6 +106,7 @@ impl Provider for AnthropicProvider {
         &self,
         request: &ChatRequest,
     ) -> Result<crate::providers::ChatResponse, ProviderError> {
+        crate::providers::anthropic_media::check_media(&request.messages)?;
         let (system, messages) = convert_messages(&request.messages);
         let anthropic_request = build_anthropic_request(system, messages, request);
 
@@ -225,5 +226,61 @@ mod tests {
 
         let result = provider.chat_completions(&request).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn image_and_pdf_parts_reach_anthropic_as_blocks() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_partial_json(serde_json::json!({
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "what is this"},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBO"}},
+                    {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBE"}}
+                ]}]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                r#"{"id":"msg_1","type":"message","role":"assistant","model":"claude","content":[{"type":"text","text":"a cat"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":2}}"#,
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = AnthropicProvider::new("Anthropic", None, &server.uri(), Some("k"));
+        let request: ChatRequest = serde_json::from_str(
+            r#"{"model":"claude","messages":[{"role":"user","content":[
+                {"type":"text","text":"what is this"},
+                {"type":"image_url","image_url":{"url":"data:image/png;base64,iVBO"}},
+                {"type":"file","file":{"filename":"a.pdf","file_data":"data:application/pdf;base64,JVBE"}}
+            ]}]}"#,
+        )
+        .unwrap();
+
+        let response = provider.chat_completions(&request).await.unwrap();
+        assert_eq!(response.choices[0].message.content.as_deref(), Some("a cat"));
+    }
+
+    #[tokio::test]
+    async fn audio_input_is_unsupported_without_a_request() {
+        let server = wiremock::MockServer::start().await;
+        let provider = AnthropicProvider::new("Anthropic", None, &server.uri(), Some("k"));
+        let request: ChatRequest = serde_json::from_str(
+            r#"{"model":"claude","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AA","format":"wav"}}]}]}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            provider.chat_completions(&request).await,
+            Err(ProviderError::Unsupported(_))
+        ));
+        assert!(matches!(
+            provider.chat_completions_stream(&request),
+            Err(ProviderError::Unsupported(_))
+        ));
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 }

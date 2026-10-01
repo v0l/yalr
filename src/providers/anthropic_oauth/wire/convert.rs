@@ -43,19 +43,12 @@ pub fn convert(
             },
             ChatCompletionRequestMessage::User(m) => {
                 let content = match &m.content {
-                    ChatCompletionRequestUserMessageContent::Text(t) => t.clone(),
-                    ChatCompletionRequestUserMessageContent::Array(parts) => parts
-                        .iter()
-                        .filter_map(|p| match p {
-                            async_openai::types::chat::ChatCompletionRequestUserMessageContentPart::Text(t) => Some(t.text.clone()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n"),
+                    ChatCompletionRequestUserMessageContent::Text(t) => MessageContent::Text(t.clone()),
+                    ChatCompletionRequestUserMessageContent::Array(parts) => user_content(parts),
                 };
                 out.push(AnthropicMessage {
                     role: "user",
-                    content: MessageContent::Text(content),
+                    content,
                 });
             }
             ChatCompletionRequestMessage::Assistant(m) => {
@@ -152,6 +145,40 @@ pub fn convert(
         });
     }
     (system, out)
+}
+
+fn user_content(
+    parts: &[async_openai::types::chat::ChatCompletionRequestUserMessageContentPart],
+) -> MessageContent {
+    use crate::providers::anthropic_media::{media_block, MediaBlock};
+    use async_openai::types::chat::ChatCompletionRequestUserMessageContentPart as Part;
+
+    let mut blocks = Vec::new();
+    let mut has_media = false;
+    for part in parts {
+        if let Part::Text(t) = part {
+            blocks.push(RequestContentBlock::Text { text: t.text.clone() });
+            continue;
+        }
+        match media_block(part) {
+            Ok(Some(MediaBlock::Image(source))) => blocks.push(RequestContentBlock::Image { source }),
+            Ok(Some(MediaBlock::Document(source))) => blocks.push(RequestContentBlock::Document { source }),
+            _ => continue,
+        }
+        has_media = true;
+    }
+    if has_media {
+        return MessageContent::Blocks(blocks);
+    }
+    let text = blocks
+        .into_iter()
+        .filter_map(|b| match b {
+            RequestContentBlock::Text { text } => Some(text),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    MessageContent::Text(text)
 }
 
 pub fn build_request(request: &CreateChatCompletionRequest, stream: bool) -> MessagesRequest {
