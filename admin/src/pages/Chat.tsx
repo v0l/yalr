@@ -2,27 +2,46 @@ import { useEffect, useState, useMemo } from 'react'
 import { ThreadPrimitive, ComposerPrimitive, MessagePrimitive, ActionBarPrimitive, AssistantRuntimeProvider, useLocalRuntime, AuiIf, type ChatModelAdapter, type ChatModelRunResult, type ThreadAssistantMessagePart, type DictationAdapter, type SpeechSynthesisAdapter } from '@assistant-ui/react'
 import { api } from '../api/client'
 import type { Model } from '../types'
-import { ArrowUpIcon, Loader2Icon, MicIcon, SquareIcon, Volume2Icon } from 'lucide-react'
+import { ArrowUpIcon, Loader2Icon, MicIcon, PaperclipIcon, SquareIcon, Volume2Icon } from 'lucide-react'
 import ModelPicker from '../components/ModelPicker'
 import VoiceSettings from '../components/VoiceSettings'
 import { loadChatModel, loadVoiceSelection, saveChatModel, saveVoiceSelection, splitAudioModels, type VoiceModelSelection } from '../lib/audio'
 import { RouterDictationAdapter, RouterSpeechAdapter } from '../lib/voice-adapters'
 import VoiceStatus, { useVoicePhase } from '../components/VoiceStatus'
+import { ComposerAttachment, FilePart, ImagePart, MessageAttachment } from '../components/chat/MediaParts'
+import { chatAttachments, collectMedia, outputFields, pcm16ToWavDataUrl, toWireMessages, type StreamedMedia } from '../lib/chat-media'
 
-const createChatModelAdapter = (modelId: string): ChatModelAdapter => {
+const mediaComponents = { Image: ImagePart, File: FilePart }
+
+async function errorMessage(response: Response) {
+  const body = await response.text()
+  try { return JSON.parse(body).error?.message ?? body } catch { return body || `HTTP ${response.status}` }
+}
+
+function assistantParts(text: string, media: StreamedMedia, done: boolean): ThreadAssistantMessagePart[] {
+  const parts: ThreadAssistantMessagePart[] = []
+  const shown = text || media.transcript
+  if (shown) parts.push({ type: 'text', text: shown })
+  for (const image of media.images) parts.push({ type: 'image', image })
+  if (done && media.audio.length > 0) parts.push({ type: 'file', data: pcm16ToWavDataUrl(media.audio), mimeType: 'audio/wav', filename: 'reply.wav' })
+  return parts
+}
+
+const createChatModelAdapter = (modelId: string, outputModalities?: readonly string[]): ChatModelAdapter => {
   return {
     async *run(options) {
       const { messages, abortSignal } = options
       const response = await fetch(`${import.meta.env.VITE_API_URL || window.location.origin}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` },
-        body: JSON.stringify({ model: modelId, messages: messages.map(m => ({ role: m.role, content: m.content })), stream: true }),
+        body: JSON.stringify({ model: modelId, messages: toWireMessages(messages), stream: true, ...outputFields(outputModalities) }),
         signal: abortSignal,
       })
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
+      if (!response.ok) throw new Error(await errorMessage(response))
       const reader = response.body?.getReader()
       if (!reader) throw new Error('No reader available')
       let buffer = '', accumulatedContent = ''
+      const media: StreamedMedia = { images: [], audio: [], transcript: '' }
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -36,16 +55,20 @@ const createChatModelAdapter = (modelId: string): ChatModelAdapter => {
             if (data === '[DONE]') break
             try {
               const parsed = JSON.parse(data)
-              const content = parsed.choices?.[0]?.delta?.content
-              if (content) {
-                accumulatedContent += content
-                const parts: ThreadAssistantMessagePart[] = [{ type: 'text', text: accumulatedContent }]
-                yield { content: parts } satisfies ChatModelRunResult
+              if (parsed.error) throw new Error(parsed.error.message ?? 'Request failed')
+              const delta = parsed.choices?.[0]?.delta ?? {}
+              if (delta.content) accumulatedContent += delta.content
+              collectMedia(delta, media)
+              if (delta.content || delta.images || delta.audio) {
+                yield { content: assistantParts(accumulatedContent, media, false) } satisfies ChatModelRunResult
               }
-            } catch {}
+            } catch (e) {
+              if (e instanceof Error && !(e instanceof SyntaxError)) throw e
+            }
           }
         }
       }
+      if (media.audio.length > 0) yield { content: assistantParts(accumulatedContent, media, true) } satisfies ChatModelRunResult
     },
   }
 }
@@ -59,7 +82,8 @@ function ChatInterface({
   speech?: SpeechSynthesisAdapter
   dictation?: DictationAdapter
 }) {
-  const runtime = useLocalRuntime(adapter, { adapters: { speech, dictation } })
+  const attachments = useMemo(() => chatAttachments(), [])
+  const runtime = useLocalRuntime(adapter, { adapters: { speech, dictation, attachments } })
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <ThreadPrimitive.Root className="flex h-full flex-col items-stretch bg-background px-4 font-mono text-foreground">
@@ -85,7 +109,16 @@ function ChatInterface({
 
           <ThreadPrimitive.ViewportFooter className="sticky bottom-0 mt-auto flex flex-col gap-2 bg-background pb-2">
             <VoiceStatus />
-            <ComposerPrimitive.Root className="mx-auto flex w-full max-w-3xl items-end border border-border bg-card">
+            <ComposerPrimitive.Root className="mx-auto flex w-full max-w-3xl flex-wrap items-end border border-border bg-card">
+              <div className="flex w-full flex-wrap gap-1.5 px-1.5 pt-1.5 empty:hidden">
+                <ComposerPrimitive.Attachments>{() => <ComposerAttachment />}</ComposerPrimitive.Attachments>
+              </div>
+              <ComposerPrimitive.AddAttachment
+                className="m-1.5 flex size-8 items-center justify-center border border-border text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                title="Attach image, audio, PDF or text"
+              >
+                <PaperclipIcon className="size-4" />
+              </ComposerPrimitive.AddAttachment>
               <ComposerPrimitive.Input
                 placeholder="Message YALR..."
                 className="h-10 max-h-40 grow resize-none bg-transparent p-3 text-[13px] text-foreground outline-none placeholder:text-muted-foreground/60 font-mono"
@@ -142,10 +175,13 @@ function DictationButton() {
 function UserMessage() {
   return (
     <div className="flex justify-end">
-      <MessagePrimitive.Root>
+      <MessagePrimitive.Root className="flex flex-col items-end gap-1.5">
+        <div className="flex flex-wrap justify-end gap-1.5 empty:hidden">
+          <MessagePrimitive.Attachments>{() => <MessageAttachment />}</MessagePrimitive.Attachments>
+        </div>
         <div className="bg-secondary border border-border px-4 py-2.5 max-w-[80%] text-right">
           <div className="text-foreground whitespace-pre-wrap text-[13px]">
-            <MessagePrimitive.Content />
+            <MessagePrimitive.Content components={mediaComponents} />
           </div>
         </div>
       </MessagePrimitive.Root>
@@ -166,7 +202,7 @@ function AssistantMessage() {
           </div>
           <div className="flex-1 group">
             <div className="text-foreground whitespace-pre-wrap text-[13px] leading-relaxed">
-              <MessagePrimitive.Content />
+              <MessagePrimitive.Content components={mediaComponents} />
             </div>
             <div className="flex gap-2 mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <ActionBarPrimitive.Copy asChild>
@@ -242,7 +278,11 @@ export default function Chat() {
     saveChatModel(next)
   }
 
-  const adapter: ChatModelAdapter | undefined = useMemo(() => selectedModel ? createChatModelAdapter(selectedModel) : undefined, [selectedModel])
+  const outputModalities = models.find(m => m.id === selectedModel)?.architecture?.output_modalities
+  const adapter: ChatModelAdapter | undefined = useMemo(
+    () => selectedModel ? createChatModelAdapter(selectedModel, outputModalities) : undefined,
+    [selectedModel, outputModalities],
+  )
   const speechAdapter = useMemo(
     () => voice.tts ? new RouterSpeechAdapter(voice.tts, voice.voice || undefined) : undefined,
     [voice.tts, voice.voice],

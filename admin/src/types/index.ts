@@ -60,6 +60,10 @@ export interface Model {
   owned_by: string
   /// Pricing per RIP-05 (present when payments enabled)
   pricing?: ModelPricingInfo
+  architecture?: {
+    input_modalities?: string[]
+    output_modalities?: string[]
+  }
 }
 
 export interface ModelPricingInfo {
