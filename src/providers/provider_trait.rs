@@ -12,6 +12,7 @@ use crate::providers::StreamingChunk;
 use crate::providers::ChatRequest;
 use crate::providers::audio::{SpeechRequest, SpeechResponse, TranscriptionRequest, TranscriptionResponse};
 use crate::providers::decision::{DecisionRequest, DecisionResponse};
+use crate::providers::image::{ImageGenerationRequest, ImageResponse, ImageUploadRequest};
 
 /// A monetary amount with an explicit currency unit.
 /// All amounts use the smallest indivisible unit of the currency:
@@ -139,6 +140,26 @@ pub trait Provider: Send + Sync {
         let _ = request;
         Err(ProviderError::Unsupported(
             "This provider does not support audio speech".to_string(),
+        ))
+    }
+
+    async fn image_generations(
+        &self,
+        request: &ImageGenerationRequest,
+    ) -> Result<ImageResponse, ProviderError> {
+        let _ = request;
+        Err(ProviderError::Unsupported(
+            "This provider does not support image generation".to_string(),
+        ))
+    }
+
+    async fn image_uploads(
+        &self,
+        request: &ImageUploadRequest,
+    ) -> Result<ImageResponse, ProviderError> {
+        let _ = request;
+        Err(ProviderError::Unsupported(
+            "This provider does not support image edits".to_string(),
         ))
     }
 

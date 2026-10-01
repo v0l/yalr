@@ -31,6 +31,8 @@ const INFERENCE_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 /// uncompressed WAV.
 const AUDIO_BODY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
 
+const IMAGE_BODY_LIMIT_BYTES: usize = 128 * 1024 * 1024;
+
 async fn serve_admin_fallback(req: Request<Body>, admin_ui_path: String) -> impl IntoResponse {
     // Only serve admin UI for GET and HEAD requests
     if req.method() != axum::http::Method::GET && req.method() != axum::http::Method::HEAD {
@@ -220,6 +222,13 @@ pub async fn run_with_shutdown<F>(
         .layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT_BYTES))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let image_routes = Router::new()
+        .route("/v1/images/generations", post(crate::api::images::generations))
+        .route("/v1/images/edits", post(crate::api::images::edits))
+        .route("/v1/images/variations", post(crate::api::images::variations))
+        .layer(DefaultBodyLimit::max(IMAGE_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
     let decision_routes = Router::new()
         .route("/v1/systemone", post(crate::api::decisions::decide))
         .route("/api/alpha/decisions", post(crate::api::decisions::decide))
@@ -244,6 +253,7 @@ pub async fn run_with_shutdown<F>(
         .merge(chat_completions_routes)
         .merge(responses_routes)
         .merge(audio_routes)
+        .merge(image_routes)
         .merge(decision_routes)
         .merge(routstr_protected_routes)
         .nest("/v1/models", models_route)
@@ -360,6 +370,13 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT_BYTES))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let image_routes = Router::new()
+        .route("/v1/images/generations", post(crate::api::images::generations))
+        .route("/v1/images/edits", post(crate::api::images::edits))
+        .route("/v1/images/variations", post(crate::api::images::variations))
+        .layer(DefaultBodyLimit::max(IMAGE_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+
     let decision_routes = Router::new()
         .route("/v1/systemone", post(crate::api::decisions::decide))
         .route("/api/alpha/decisions", post(crate::api::decisions::decide))
@@ -381,6 +398,7 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .merge(chat_completions_routes)
         .merge(responses_routes)
         .merge(audio_routes)
+        .merge(image_routes)
         .merge(decision_routes)
         .merge(routstr_protected_routes)
         .nest("/v1/models", models_route)

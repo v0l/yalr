@@ -231,6 +231,20 @@ impl Provider for LlamaCppProvider {
         self.inner.speech(request).await
     }
 
+    async fn image_generations(
+        &self,
+        request: &crate::providers::image::ImageGenerationRequest,
+    ) -> Result<crate::providers::image::ImageResponse, ProviderError> {
+        self.inner.image_generations(request).await
+    }
+
+    async fn image_uploads(
+        &self,
+        request: &crate::providers::image::ImageUploadRequest,
+    ) -> Result<crate::providers::image::ImageResponse, ProviderError> {
+        self.inner.image_uploads(request).await
+    }
+
     async fn decide(
         &self,
         request: &crate::providers::decision::DecisionRequest,

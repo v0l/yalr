@@ -26,11 +26,13 @@ pub struct ModelListResponse {
 
 pub mod audio;
 pub mod decision;
+pub mod image;
 pub mod llamacpp;
 pub mod ollama;
 pub mod openai;
 mod openai_audio;
 mod openai_decision;
+mod openai_image;
 pub mod openrouter;
 pub mod request;
 pub mod anthropic;

@@ -57,6 +57,11 @@ failure event or consuming a retry. When every healthy candidate is
 unsupported, the loop retries against `candidate_backends()` so capability
 wins over health filtering.
 
+**Images**: `src/api/images.rs` (`/v1/images/{generations,edits,variations}`),
+`src/router/image.rs`, `src/providers/image.rs` (types),
+`src/providers/openai_image.rs`. Bodies stream through verbatim and use the same
+capability failover as audio.
+
 **Decisions**: `src/api/decisions.rs` (`/v1/systemone`), `src/router/decision.rs`,
 `src/providers/decision.rs` (types), `src/providers/openai_decision.rs`. Decision
 models (Jev) share the capability failover in `src/router/failover.rs` with
