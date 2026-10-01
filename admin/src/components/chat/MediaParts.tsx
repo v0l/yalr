@@ -1,11 +1,47 @@
 import { AttachmentPrimitive, useAuiState, type ImageMessagePartComponent, type FileMessagePartComponent } from '@assistant-ui/react'
-import { FileIcon, FileAudioIcon, XIcon } from 'lucide-react'
+import { useEffect, useMemo } from 'react'
+import { DownloadIcon, ExternalLinkIcon, FileIcon, FileAudioIcon, XIcon } from 'lucide-react'
 
-export const ImagePart: ImageMessagePartComponent = ({ image, filename }) => (
-  <a href={image} target="_blank" rel="noreferrer" className="my-2 block w-fit border border-border bg-card p-1">
-    <img src={image} alt={filename ?? 'Generated image'} className="max-h-96 max-w-full object-contain" />
-  </a>
-)
+function toObjectUrl(src: string): string {
+  const match = /^data:([^;,]+);base64,(.*)$/s.exec(src)
+  if (!match) return src
+  const bytes = Uint8Array.from(atob(match[2]), c => c.charCodeAt(0))
+  return URL.createObjectURL(new Blob([bytes], { type: match[1] }))
+}
+
+function shortHash(text: string) {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193)
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+function extensionFor(src: string) {
+  return /^data:image\/(\w+)/.exec(src)?.[1]?.replace('jpeg', 'jpg') ?? 'png'
+}
+
+const imageAction = 'inline-flex items-center gap-1 border border-border bg-card px-2 py-0.5 text-[11px] uppercase tracking-wider text-muted-foreground transition-colors hover:bg-surface hover:text-foreground'
+
+export const ImagePart: ImageMessagePartComponent = ({ image, filename }) => {
+  const url = useMemo(() => toObjectUrl(image), [image])
+  useEffect(() => () => { if (url !== image) URL.revokeObjectURL(url) }, [url, image])
+  const name = filename ?? `yalr-image-${shortHash(image)}.${extensionFor(image)}`
+
+  return (
+    <div className="my-2 flex w-fit flex-col gap-1.5">
+      <a href={url} target="_blank" rel="noreferrer" className="block border border-border bg-card p-1" title="Open in new tab">
+        <img src={url} alt={filename ?? 'Generated image'} className="max-h-96 max-w-full object-contain" />
+      </a>
+      <div className="flex gap-1.5">
+        <a href={url} target="_blank" rel="noreferrer" className={imageAction}>
+          <ExternalLinkIcon className="size-3" /> Open
+        </a>
+        <a href={url} download={name} className={imageAction}>
+          <DownloadIcon className="size-3" /> Download
+        </a>
+      </div>
+    </div>
+  )
+}
 
 export const FilePart: FileMessagePartComponent = ({ data, mimeType, filename }) => {
   if (mimeType.startsWith('audio/')) {
