@@ -6,14 +6,20 @@ use std::ops::{Deref, DerefMut};
 /// An inbound chat completion request plus the raw fields that
 /// `CreateChatCompletionRequest` cannot carry.
 ///
-/// The typed message structs have no catch-all for unknown keys, so parsing a
-/// request silently discards any field we don't model. DeepSeek V4 is broken by
-/// exactly that: it rejects a multi-turn request whose assistant turns lack
+/// The typed structs have no catch-all for unknown keys, so parsing a request
+/// silently discards anything we don't model. DeepSeek V4 is broken by exactly
+/// that: it rejects a multi-turn request whose assistant turns lack
 /// `reasoning_content` ("The `reasoning_content` in the thinking mode must be
 /// passed back to the API"), and a client that streams reasoning and replays it
 /// hits that as soon as our parse drops it. Keep the raw assistant objects so
 /// the OpenAI serializer, which owns the upstream wire shape, can merge them
 /// back.
+///
+/// The same applies to top-level request fields: thinking args (`thinking`,
+/// `reasoning`, `enable_thinking`, `chat_template_kwargs`, ...) and sampling
+/// extras arrive in shapes the typed request has no room for and would vanish
+/// on the way upstream, so anything the typed parse does not consume is kept
+/// and re-applied at serialization time as well.
 ///
 /// Derefs to the typed request, so callers read and mutate fields as usual.
 #[derive(Debug, Clone, Default)]
@@ -23,17 +29,22 @@ pub struct ChatRequest {
     /// rather than position, so `developer`-to-`system` rewriting can't shift
     /// the mapping.
     assistant_extras: Vec<Map<String, Value>>,
-    output_fields: Map<String, Value>,
+    /// Top-level request fields re-applied verbatim on the upstream wire.
+    extra_fields: Map<String, Value>,
 }
 
-const OUTPUT_FIELDS: &[&str] = &["modalities", "image_config"];
+/// Fields pulled out before the typed parse because their client shapes are
+/// wider than the typed field (`modalities` accepts `"image"`, `reasoning_effort`
+/// accepts provider values the closed enum would reject with a 400), and
+/// `image_config`, which the typed request does not model at all.
+const EXTRA_FIELDS: &[&str] = &["modalities", "image_config", "reasoning_effort"];
 
 impl ChatRequest {
     pub fn from_value(mut value: Value) -> Result<Self, serde_json::Error> {
-        let output_fields = value
+        let mut extra_fields: Map<String, Value> = value
             .as_object_mut()
             .map(|object| {
-                OUTPUT_FIELDS
+                EXTRA_FIELDS
                     .iter()
                     .filter_map(|key| object.remove(*key).map(|v| (key.to_string(), v)))
                     .filter(|(_, v)| !v.is_null())
@@ -53,15 +64,33 @@ impl ChatRequest {
             })
             .unwrap_or_default();
 
+        let inner = ChatCompletionRequest::deserialize(&value)?;
+
+        // Fields the typed parse consumed are re-serialized faithfully; every
+        // other top-level key would be lost, so keep it for the wire.
+        let consumed: std::collections::HashSet<String> = serde_json::to_value(&inner)?
+            .as_object()
+            .map(|object| object.keys().cloned().collect())
+            .unwrap_or_default();
+        if let Some(object) = value.as_object() {
+            for (key, field) in object {
+                if !consumed.contains(key) && !field.is_null() {
+                    extra_fields.insert(key.clone(), field.clone());
+                }
+            }
+        }
+
         Ok(Self {
-            inner: serde_json::from_value(value)?,
+            inner,
             assistant_extras,
-            output_fields,
+            extra_fields,
         })
     }
 
-    pub fn output_fields(&self) -> &Map<String, Value> {
-        &self.output_fields
+    /// Top-level fields the typed parse could not carry, re-applied verbatim on
+    /// the upstream wire.
+    pub fn extra_fields(&self) -> &Map<String, Value> {
+        &self.extra_fields
     }
 
     pub fn input_modalities(&self) -> Vec<crate::router::Modality> {
@@ -95,7 +124,7 @@ impl ChatRequest {
 
     pub fn output_modalities(&self) -> Vec<String> {
         let raw = self
-            .output_fields
+            .extra_fields
             .get("modalities")
             .and_then(Value::as_array)
             .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect());
@@ -125,7 +154,7 @@ impl From<ChatCompletionRequest> for ChatRequest {
         Self {
             inner,
             assistant_extras: Vec::new(),
-            output_fields: Map::new(),
+            extra_fields: Map::new(),
         }
     }
 }
@@ -229,10 +258,62 @@ mod tests {
 
         assert_eq!(request.output_modalities(), vec!["image", "text"]);
         assert_eq!(
-            request.output_fields().get("image_config").unwrap()["aspect_ratio"],
+            request.extra_fields().get("image_config").unwrap()["aspect_ratio"],
             "16:9"
         );
         assert!(request.modalities.is_none());
+    }
+
+    #[test]
+    fn thinking_args_survive_the_typed_parse() {
+        let request = ChatRequest::from_value(serde_json::json!({
+            "model": "kieran/qwen3.8-27b",
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "enabled", "budget_tokens": 2048},
+            "reasoning": {"effort": "high"},
+            "enable_thinking": true,
+            "chat_template_kwargs": {"enable_thinking": true, "reasoning_effort": "xhigh"},
+            "top_k": 40
+        }))
+        .unwrap();
+
+        assert_eq!(
+            request.extra_fields().get("thinking").unwrap()["budget_tokens"],
+            2048
+        );
+        assert_eq!(request.extra_fields().get("reasoning").unwrap()["effort"], "high");
+        assert_eq!(request.extra_fields().get("enable_thinking").unwrap(), true);
+        assert_eq!(
+            request.extra_fields().get("chat_template_kwargs").unwrap()["enable_thinking"],
+            true
+        );
+        assert_eq!(request.extra_fields().get("top_k").unwrap(), 40);
+    }
+
+    #[test]
+    fn typed_fields_are_not_kept_as_extras() {
+        let request = ChatRequest::from_value(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.2,
+            "max_tokens": 100
+        }))
+        .unwrap();
+
+        assert!(request.extra_fields().is_empty());
+    }
+
+    #[test]
+    fn custom_reasoning_effort_passes_through_unparsed() {
+        let request = ChatRequest::from_value(serde_json::json!({
+            "model": "m",
+            "messages": [],
+            "reasoning_effort": "max"
+        }))
+        .unwrap();
+
+        assert_eq!(request.extra_fields().get("reasoning_effort").unwrap(), "max");
+        assert!(request.reasoning_effort.is_none());
     }
 
     #[test]

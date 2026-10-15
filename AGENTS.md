@@ -42,10 +42,12 @@ docker build -t yalr .
 
 **Chat requests over the provider trait are `providers::ChatRequest`**, not
 `async_openai`'s `CreateChatCompletionRequest`. It derefs to the typed request
-and additionally carries the raw assistant message objects, because the typed
-structs have no catch-all and would drop fields like `reasoning_content` that
-the client sent. `OpenAiProvider::to_wire_value` re-applies them at
-serialization time; add wire-shape handling there, not in the router.
+and additionally carries the raw assistant message objects and any top-level
+request fields the typed struct has no room for (thinking args like `thinking`,
+`chat_template_kwargs`, or a `reasoning_effort` value outside its closed enum),
+because the typed structs have no catch-all and would silently drop them.
+`OpenAiProvider::to_wire_value` re-applies them at serialization time; add
+wire-shape handling there, not in the router.
 
 **API**: `src/api/handlers.rs` - Chat completion handlers use both routers
 

@@ -147,7 +147,7 @@ fn to_wire_value(request: &ChatRequest) -> Result<serde_json::Value, crate::prov
     let mut value = serde_json::to_value(request.inner())
         .map_err(|e| crate::providers::ProviderError::Other(e.into()))?;
     if let Some(object) = value.as_object_mut() {
-        for (key, field) in request.output_fields() {
+        for (key, field) in request.extra_fields() {
             object.insert(key.clone(), field.clone());
         }
     }
@@ -773,6 +773,21 @@ mod tests {
             reasoning_content(&value["messages"][0]),
             Some(&serde_json::json!("thinking"))
         );
+    }
+
+    #[test]
+    fn wire_reapplies_fields_the_typed_parse_dropped() {
+        let value = wire(serde_json::json!({
+            "model": "kieran/qwen3.8-27b",
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.5,
+            "reasoning_effort": "xhigh",
+            "chat_template_kwargs": {"enable_thinking": true}
+        }));
+
+        assert_eq!(value["temperature"], 0.5);
+        assert_eq!(value["reasoning_effort"], "xhigh");
+        assert_eq!(value["chat_template_kwargs"]["enable_thinking"], true);
     }
 
     #[test]
