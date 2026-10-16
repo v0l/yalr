@@ -288,6 +288,8 @@ pub fn build_request(
         stop_sequences,
         tools,
         tool_choice: convert_tool_choice(request),
+        thinking: None,
+        output_config: None,
         stream,
     }
 }

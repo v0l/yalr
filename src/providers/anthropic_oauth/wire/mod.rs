@@ -10,12 +10,14 @@ mod cc_names;
 mod chunks;
 mod convert;
 mod shaping;
+mod thinking;
 
 pub use billing::*;
 pub use cc_names::{from_cc_name, remap_tool_defs, remap_tool_use_blocks, strip_cc_names};
 pub use chunks::*;
 pub use convert::*;
 pub use shaping::{shape_system_texts, split_assistant_tool_use_messages};
+pub use thinking::apply_thinking;
 
 use serde::{Deserialize, Serialize};
 
@@ -145,7 +147,23 @@ pub struct MessagesRequest {
     pub tools: Option<Vec<ToolDef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<OutputConfig>,
     pub stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ThinkingConfig {
+    #[serde(rename = "type")]
+    pub thinking_type: &'static str,
+    pub display: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OutputConfig {
+    pub effort: &'static str,
 }
 
 #[derive(Debug, Deserialize)]

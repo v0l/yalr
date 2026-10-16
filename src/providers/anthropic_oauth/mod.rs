@@ -200,7 +200,8 @@ impl Provider for AnthropicOAuthProvider {
             .access_token()
             .await
             .map_err(|e| ProviderError::Authentication(e.to_string()))?;
-        let body = build_request(request, false, &self.cc_version);
+        let mut body = build_request(request, false, &self.cc_version);
+        apply_thinking(&mut body, request);
         let resp = self
             .apply_oauth_headers(
                 self.http.post(self.messages_url()).json(&body),
@@ -269,7 +270,8 @@ impl Provider for AnthropicOAuthProvider {
         request: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamingChunk, ProviderError>>, ProviderError> {
         crate::providers::anthropic_media::check_media(&request.messages)?;
-        let body = build_request(request, true, &self.cc_version);
+        let mut body = build_request(request, true, &self.cc_version);
+        apply_thinking(&mut body, request);
         let user_agent = user_agent(&self.cc_version);
         let url = self.messages_url();
         let http = self.http.clone();
@@ -426,6 +428,10 @@ impl Provider for AnthropicOAuthProvider {
         };
 
         Ok(stream.boxed())
+    }
+
+    async fn listed_modalities(&self, model: &str) -> Option<ListedModalities> {
+        crate::providers::anthropic_media::claude_modalities(model)
     }
 
     async fn health_check(&self) -> Result<bool, ProviderError> {

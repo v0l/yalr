@@ -130,6 +130,10 @@ impl Provider for AnthropicProvider {
         stream::chat_completions_stream(self.client.clone(), request)
     }
 
+    async fn listed_modalities(&self, model: &str) -> Option<ListedModalities> {
+        crate::providers::anthropic_media::claude_modalities(model)
+    }
+
     async fn health_check(&self) -> Result<bool, ProviderError> {
         // Lightweight GET to /v1/models — just check if the server responds.
         // Append /v1/models if base URL doesn't already end with /v1

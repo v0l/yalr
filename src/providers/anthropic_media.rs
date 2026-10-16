@@ -4,6 +4,13 @@ use base64::Engine;
 
 use super::{ChatCompletionRequestMessage, ChatCompletionRequestUserMessageContent, ProviderError};
 
+pub fn claude_modalities(model: &str) -> Option<super::ListedModalities> {
+    model.starts_with("claude-").then(|| super::ListedModalities {
+        input_modalities: vec!["text".into(), "image".into(), "file".into()],
+        output_modalities: vec!["text".into()],
+    })
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum MediaBlock {
     Image(ContentSource),
@@ -165,6 +172,14 @@ mod tests {
         ))
         .is_err());
         assert!(media_block(&part(r#"{"type":"file","file":{"file_id":"file-abc"}}"#)).is_err());
+    }
+
+    #[test]
+    fn claude_models_list_image_input() {
+        let listed = claude_modalities("claude-opus-5-5").unwrap();
+        assert!(listed.input_modalities.iter().any(|m| m == "image"));
+        assert_eq!(listed.output_modalities, vec!["text"]);
+        assert!(claude_modalities("gpt-5").is_none());
     }
 
     #[test]
