@@ -59,28 +59,67 @@ pub enum MessageContent {
 #[serde(tag = "type")]
 pub enum RequestContentBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     #[serde(rename = "image")]
-    Image { source: async_anthropic::types::ContentSource },
+    Image {
+        source: async_anthropic::types::ContentSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
     #[serde(rename = "document")]
-    Document { source: async_anthropic::types::ContentSource },
+    Document {
+        source: async_anthropic::types::ContentSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
 }
 
 #[derive(Debug, Serialize)]
 pub struct AnthropicMessage {
     pub role: &'static str,
     pub content: MessageContent,
+}
+
+impl RequestContentBlock {
+    pub fn set_cache_control(&mut self, cache_control: Option<CacheControl>) {
+        let field = match self {
+            RequestContentBlock::Text { cache_control, .. }
+            | RequestContentBlock::ToolUse { cache_control, .. }
+            | RequestContentBlock::ToolResult { cache_control, .. }
+            | RequestContentBlock::Image { cache_control, .. }
+            | RequestContentBlock::Document { cache_control, .. } => cache_control,
+        };
+        *field = cache_control;
+    }
+
+    pub fn cache_control(&self) -> Option<&CacheControl> {
+        match self {
+            RequestContentBlock::Text { cache_control, .. }
+            | RequestContentBlock::ToolUse { cache_control, .. }
+            | RequestContentBlock::ToolResult { cache_control, .. }
+            | RequestContentBlock::Image { cache_control, .. }
+            | RequestContentBlock::Document { cache_control, .. } => cache_control.as_ref(),
+        }
+    }
 }
 
 /// Anthropic tool definition: `{ name, description, input_schema }`.

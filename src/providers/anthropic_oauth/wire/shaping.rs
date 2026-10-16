@@ -403,11 +403,13 @@ More stuff after.";
             content: MessageContent::Blocks(vec![
                 RequestContentBlock::Text {
                     text: "Let me check".to_string(),
+                    cache_control: None,
                 },
                 RequestContentBlock::ToolUse {
                     id: "call_1".to_string(),
                     name: "read".to_string(),
                     input: serde_json::json!({}),
+                    cache_control: None,
                 },
             ]),
         }];
@@ -425,9 +427,11 @@ More stuff after.";
                     id: "call_1".to_string(),
                     name: "read".to_string(),
                     input: serde_json::json!({}),
+                    cache_control: None,
                 },
                 RequestContentBlock::Text {
                     text: "Here's what I found".to_string(),
+                    cache_control: None,
                 },
             ]),
         }];
@@ -461,9 +465,11 @@ More stuff after.";
                         id: "call_1".to_string(),
                         name: "read".to_string(),
                         input: serde_json::json!({}),
+                        cache_control: None,
                     },
                     RequestContentBlock::Text {
                         text: "done".to_string(),
+                        cache_control: None,
                     },
                 ]),
             },

@@ -67,7 +67,7 @@ pub fn convert(
 
                 let mut blocks: Vec<RequestContentBlock> = Vec::new();
                 if !text.is_empty() {
-                    blocks.push(RequestContentBlock::Text { text });
+                    blocks.push(RequestContentBlock::Text { text, cache_control: None });
                 }
                 // Preserve assistant tool calls as Anthropic tool_use blocks so
                 // the following tool_result messages can reference them.
@@ -81,6 +81,7 @@ pub fn convert(
                                 id: f.id.clone(),
                                 name: f.function.name.clone(),
                                 input,
+                                cache_control: None,
                             });
                         }
                     }
@@ -107,6 +108,7 @@ pub fn convert(
                 let result = RequestContentBlock::ToolResult {
                     tool_use_id: m.tool_call_id.clone(),
                     content,
+                    cache_control: None,
                 };
                 // Anthropic requires tool_result blocks to live in a user
                 // message; merge consecutive tool results into one user turn.
@@ -157,12 +159,12 @@ fn user_content(
     let mut has_media = false;
     for part in parts {
         if let Part::Text(t) = part {
-            blocks.push(RequestContentBlock::Text { text: t.text.clone() });
+            blocks.push(RequestContentBlock::Text { text: t.text.clone(), cache_control: None });
             continue;
         }
         match media_block(part) {
-            Ok(Some(MediaBlock::Image(source))) => blocks.push(RequestContentBlock::Image { source }),
-            Ok(Some(MediaBlock::Document(source))) => blocks.push(RequestContentBlock::Document { source }),
+            Ok(Some(MediaBlock::Image(source))) => blocks.push(RequestContentBlock::Image { source, cache_control: None }),
+            Ok(Some(MediaBlock::Document(source))) => blocks.push(RequestContentBlock::Document { source, cache_control: None }),
             _ => continue,
         }
         has_media = true;
@@ -173,7 +175,7 @@ fn user_content(
     let text = blocks
         .into_iter()
         .filter_map(|b| match b {
-            RequestContentBlock::Text { text } => Some(text),
+            RequestContentBlock::Text { text, .. } => Some(text),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -235,6 +237,24 @@ pub fn build_request(
     if crate::providers::anthropic::prompt_cache_enabled() {
         if let Some(last) = system.last_mut() {
             last.cache_control = Some(CacheControl::ephemeral());
+        }
+        // Second breakpoint at the end of the conversation so every turn
+        // after the first reads the whole history from cache instead of
+        // re-sending it uncached.
+        if let Some(last) = messages.last_mut() {
+            match &mut last.content {
+                MessageContent::Text(text) => {
+                    last.content = MessageContent::Blocks(vec![RequestContentBlock::Text {
+                        text: std::mem::take(text),
+                        cache_control: Some(CacheControl::ephemeral()),
+                    }]);
+                }
+                MessageContent::Blocks(blocks) => {
+                    if let Some(block) = blocks.last_mut() {
+                        block.set_cache_control(Some(CacheControl::ephemeral()));
+                    }
+                }
+            }
         }
     }
 
@@ -571,11 +591,88 @@ mod tests {
             "ephemeral"
         );
 
-        // Disabled: no system block is marked.
+        // The growing conversation prefix gets its own breakpoint on the last
+        // message; a plain string is promoted to a block to carry it.
+        let last = body.messages.last().unwrap();
+        match &last.content {
+            MessageContent::Blocks(b) => {
+                assert_eq!(b.len(), 1);
+                assert!(b[0].cache_control().is_some());
+            }
+            _ => panic!("last message should be promoted to blocks"),
+        }
+
+        // Disabled: no system or message block is marked.
         crate::providers::anthropic::set_prompt_cache_enabled(false);
         let body = build_request(&req, false, CLAUDE_CODE_VERSION);
         assert!(body.system.iter().all(|b| b.cache_control.is_none()));
+        for m in &body.messages {
+            if let MessageContent::Blocks(b) = &m.content {
+                assert!(b.iter().all(|blk| blk.cache_control().is_none()));
+            }
+        }
         crate::providers::anthropic::set_prompt_cache_enabled(true);
+    }
+
+    #[test]
+    fn build_request_marks_tool_result_tail_for_caching() {
+        let _guard = crate::providers::anthropic::CACHE_TOGGLE_TEST_LOCK.lock().unwrap();
+        crate::providers::anthropic::set_prompt_cache_enabled(true);
+        let req = CreateChatCompletionRequest {
+            model: "claude-sonnet-4-20250514".into(),
+            messages: vec![
+                ChatCompletionRequestMessage::User(
+                    async_openai::types::chat::ChatCompletionRequestUserMessage {
+                        content: ChatCompletionRequestUserMessageContent::Text("hi".into()),
+                        name: None,
+                    },
+                ),
+                ChatCompletionRequestMessage::Assistant(
+                    async_openai::types::chat::ChatCompletionRequestAssistantMessage {
+                        content: Some(
+                            async_openai::types::chat::ChatCompletionRequestAssistantMessageContent::Text(
+                                "looking".into(),
+                            ),
+                        ),
+                        refusal: None,
+                        name: None,
+                        audio: None,
+                        function_call: None,
+                        tool_calls: Some(vec![
+                            async_openai::types::chat::ChatCompletionMessageToolCalls::Function(
+                                async_openai::types::chat::ChatCompletionMessageToolCall {
+                                    id: "call_1".into(),
+                                    function: async_openai::types::chat::FunctionCall {
+                                        name: "read".into(),
+                                        arguments: r#"{"path":"a.txt"}"#.into(),
+                                    },
+                                },
+                            ),
+                        ]),
+                    },
+                ),
+                ChatCompletionRequestMessage::Tool(
+                    async_openai::types::chat::ChatCompletionRequestToolMessage {
+                        content: async_openai::types::chat::ChatCompletionRequestToolMessageContent::Text("file contents".into()),
+                        tool_call_id: "call_1".into(),
+                    },
+                ),
+            ],
+            ..Default::default()
+        };
+        let body = build_request(&req, false, CLAUDE_CODE_VERSION);
+        let last = body.messages.last().unwrap();
+        match &last.content {
+            MessageContent::Blocks(b) => {
+                assert!(matches!(
+                    b.last().unwrap(),
+                    RequestContentBlock::ToolResult { .. }
+                ));
+                assert!(b.last().unwrap().cache_control().is_some());
+            }
+            _ => panic!("tool result should be blocks"),
+        }
+        crate::providers::anthropic::set_prompt_cache_enabled(false);
     }
 
     #[test]
