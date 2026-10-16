@@ -165,6 +165,9 @@ pub async fn run_with_shutdown<F>(
         .route("/metrics", get(health::get_metrics))
         .route("/metrics/history", get(health::get_metrics_history))
         .route("/metrics/health", get(health::get_health_overview))
+        .route("/request-log", get(crate::api::request_log::list))
+        .route("/request-log/:id", get(crate::api::request_log::detail))
+        .route("/request-log/:id/bodies", get(crate::api::request_log::bodies))
         .route("/config", get(config::get_router_config))
         .route("/routing-configs", get(routing::list_routing_configs))
         .route("/routing-configs", post(routing::create_routing_config))
@@ -271,7 +274,7 @@ pub async fn run_with_shutdown<F>(
     tracing::info!("Listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).with_graceful_shutdown(async {
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(async {
         tokio::signal::ctrl_c().await.ok();
     }).await?;
 

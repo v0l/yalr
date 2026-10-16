@@ -217,6 +217,19 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
+    fn trace_upstream(&self, request: &ChatRequest, wire: &serde_json::Value) {
+        let Some(trace) = request.trace() else { return };
+        trace.upstream_request(
+            &format!("{}/chat/completions", self.base_url),
+            vec![
+                ("authorization".to_string(), crate::request_log::redact::mask(&self.api_key)),
+                ("content-type".to_string(), "application/json".to_string()),
+                ("x-yalr-note".to_string(), "headers reconstructed, sent by async-openai".to_string()),
+            ],
+            serde_json::to_vec(wire).unwrap_or_default(),
+        );
+    }
+
     pub fn new(name: &str, slug: Option<&str>, base_url: &str, api_key: Option<&str>) -> Self {
         let slug = slug.unwrap_or(name).to_lowercase().replace(" ", "-").replace("_", "-");
         
@@ -299,6 +312,7 @@ impl Provider for OpenAiProvider {
         request: &ChatRequest,
     ) -> Result<crate::providers::ChatResponse, ProviderError> {
         let request_value = to_wire_value(request)?;
+        self.trace_upstream(request, &request_value);
         let response = self
             .client
             .chat()
@@ -325,6 +339,7 @@ impl Provider for OpenAiProvider {
 
         // Serialize request once at the start
         let request_value = to_wire_value(&request)?;
+        self.trace_upstream(&request, &request_value);
 
         let stream = async move {
             match client.chat().create_stream_byot(request_value.clone()).await {

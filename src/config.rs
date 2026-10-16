@@ -11,6 +11,35 @@ pub struct Config {
     pub payments: Option<PaymentsConfig>,
     #[serde(default)]
     pub anthropic: AnthropicConfig,
+    #[serde(default)]
+    pub request_log: RequestLogConfig,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct RequestLogConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub store_bodies: bool,
+    #[serde(default = "default_body_days")]
+    pub body_retention_days: u32,
+    #[serde(default)]
+    pub metadata_retention_days: u32,
+}
+
+fn default_body_days() -> u32 {
+    7
+}
+
+impl Default for RequestLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            store_bodies: true,
+            body_retention_days: 7,
+            metadata_retention_days: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -69,6 +98,7 @@ impl Default for Config {
             auth: None,
             payments: None,
             anthropic: AnthropicConfig::default(),
+            request_log: RequestLogConfig::default(),
         }
     }
 }
@@ -161,6 +191,7 @@ impl AppConfig {
 
         // Apply provider-level feature toggles sourced from the config file.
         crate::providers::anthropic::set_prompt_cache_enabled(config.anthropic.prompt_cache);
+        crate::request_log::settings::set(config.request_log.clone());
 
         let payments_config = config.payments;
         let admin_ui_path = config.server.admin_ui_path.clone();

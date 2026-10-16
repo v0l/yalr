@@ -10,6 +10,7 @@ pub mod model_pricing;
 pub mod models;
 pub mod oauth;
 pub mod providers;
+pub mod request_log;
 pub mod responses;
 pub mod routing;
 mod routing_modalities;

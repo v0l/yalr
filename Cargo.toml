@@ -45,6 +45,7 @@ payments-rs = { git = "https://github.com/v0l/payments-rs", default-features = f
   "tls-ring",
 ] }
 bytes = "1"
+flate2 = "1"
 
 [[bin]]
 name = "yalr-server"

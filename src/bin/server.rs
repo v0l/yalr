@@ -27,6 +27,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     metrics_store.load_history_from_db().await;
     metrics_store.start_history_snapshots(300); // 5-minute intervals
 
+    let log_settings = yalr::request_log::settings::get();
+    if log_settings.enabled {
+        yalr::request_log::recorder::spawn_pruner(
+            config.db.pool.clone(),
+            log_settings.body_retention_days,
+            log_settings.metadata_retention_days,
+        );
+    }
+
     let addr = format!("{}:{}", config.host, config.port);
 
     tracing::info!(addr = %addr, "Starting YALR");
