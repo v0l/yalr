@@ -1317,6 +1317,8 @@ impl Router {
                                     prompt_tokens = prompt_tokens,
                                     completion_tokens = completion_tokens,
                                     total_tokens = total_tokens,
+                                    cached_tokens = cached_tokens,
+                                    cache_write_tokens = cache_write_tokens,
                                     total_latency_ms = total_latency_ms,
                                     output_tokens_per_second = output_tokens_per_sec,
                                     input_tokens_per_second = input_tokens_per_sec,
