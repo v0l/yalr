@@ -271,12 +271,24 @@ pub enum ProviderError {
     Other(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
+fn with_causes(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !text.contains(&cause_text) {
+            text.push_str(": ");
+            text.push_str(&cause_text);
+        }
+        source = cause.source();
+    }
+    text
+}
+
 impl Clone for ProviderError {
     fn clone(&self) -> Self {
         match self {
-            ProviderError::OpenAIError(_) => {
-                ProviderError::Other("OpenAI error".to_string().into())
-            }
+            ProviderError::OpenAIError(e) => ProviderError::Other(format!("OpenAI error: {}", with_causes(e)).into()),
             ProviderError::RateLimit { retry_after_ms, message } => {
                 ProviderError::RateLimit {
                     retry_after_ms: *retry_after_ms,
@@ -291,7 +303,7 @@ impl Clone for ProviderError {
             ProviderError::Authentication(msg) => ProviderError::Authentication(msg.clone()),
             ProviderError::NotFound(msg) => ProviderError::NotFound(msg.clone()),
             ProviderError::Unsupported(msg) => ProviderError::Unsupported(msg.clone()),
-            ProviderError::Other(_) => ProviderError::Other("Error".to_string().into()),
+            ProviderError::Other(e) => ProviderError::Other(with_causes(e.as_ref()).into()),
         }
     }
 }
@@ -362,5 +374,28 @@ impl ProviderError {
             ProviderError::Unsupported(_) => false,
             ProviderError::Other(_) => true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn clone_keeps_the_connection_cause() {
+        let provider = crate::providers::OpenAiProvider::new("down", None, "http://127.0.0.1:9/v1", Some("k"));
+        let request: crate::providers::ChatRequest =
+            serde_json::from_str(r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#).unwrap();
+        let original = provider.chat_completions(&request).await.unwrap_err();
+        assert!(matches!(original, ProviderError::OpenAIError(_)), "{original:?}");
+        let cloned = original.clone().to_string();
+        assert!(cloned.starts_with("OpenAI error: http error: error sending request"), "{cloned}");
+        assert!(cloned.to_lowercase().contains("connect"), "{cloned}");
+    }
+
+    #[test]
+    fn clone_keeps_other_message() {
+        let original = ProviderError::Other("upstream closed the stream".to_string().into());
+        assert_eq!(original.clone().to_string(), "upstream closed the stream");
     }
 }
