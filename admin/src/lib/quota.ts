@@ -59,6 +59,9 @@ function formatMinor(amount: number, currency: string, decimals: number): string
 export function formatCredit(q: QuotaSnapshot): string | null {
   const c = q.credit
   if (!c) return null
+  if (typeof c.balance_minor === 'number') {
+    return `${formatMinor(c.balance_minor, c.currency, c.decimals)} left`
+  }
   if (typeof c.limit_minor === 'number') {
     const left = Math.max(0, c.limit_minor - c.used_minor)
     return `${formatMinor(left, c.currency, c.decimals)} left of ${formatMinor(c.limit_minor, c.currency, c.decimals)}`

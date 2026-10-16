@@ -89,7 +89,8 @@ pub struct QuotaCredit {
     pub decimals: u32,
     pub used_minor: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit_minor: Option<i64>,
+    pub limit_minor: Option<i64>,    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance_minor: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

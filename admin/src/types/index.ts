@@ -126,6 +126,7 @@ export interface QuotaCredit {
   decimals: number
   used_minor: number
   limit_minor?: number
+  balance_minor?: number
 }
 
 export interface CurrencyAmount {

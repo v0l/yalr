@@ -5,6 +5,7 @@
 //! header and, for non-Haiku models, the first system block must be exactly
 //! "You are Claude Code, Anthropic's official CLI for Claude." (see `wire`).
 
+mod credits;
 mod wire;
 
 use std::sync::{Arc, RwLock};
@@ -17,7 +18,10 @@ use super::*;
 use crate::db::Database;
 use crate::oauth::{OAuthKind, OAuthSession};
 use crate::providers::provider_trait::QuotaSnapshot;
-use crate::providers::quota::{anthropic_quotas_from_headers, anthropic_quotas_from_usage, carry_credit};
+use crate::providers::quota::{
+    anthropic_quotas_from_headers, anthropic_quotas_from_usage, apply_prepaid_balance, carry_credit,
+    has_extra_usage,
+};
 use wire::*;
 
 const BETA_HEADER: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05";
@@ -43,6 +47,7 @@ pub struct AnthropicOAuthProvider {
     quota: Arc<RwLock<Vec<QuotaSnapshot>>>,
     models_cache: ModelsCache,
     cc_version: String,
+    org_uuid: std::sync::OnceLock<String>,
 }
 
 fn user_agent(cc_version: &str) -> String {
@@ -75,6 +80,7 @@ impl AnthropicOAuthProvider {
                 .filter(|v| !v.is_empty())
                 .unwrap_or(CLAUDE_CODE_VERSION)
                 .to_string(),
+            org_uuid: std::sync::OnceLock::new(),
         }
     }
 
@@ -454,7 +460,12 @@ impl Provider for AnthropicOAuthProvider {
         {
             if resp.status().is_success() {
                 let body = resp.text().await.unwrap_or_default();
-                let quotas = anthropic_quotas_from_usage(&body);
+                let mut quotas = anthropic_quotas_from_usage(&body);
+                if has_extra_usage(&quotas) {
+                    if let Some(balance) = self.prepaid_balance(&token).await {
+                        apply_prepaid_balance(&mut quotas, balance);
+                    }
+                }
                 if !quotas.is_empty() {
                     if let Ok(mut guard) = self.quota.write() {
                         *guard = quotas.clone();

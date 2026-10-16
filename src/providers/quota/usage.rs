@@ -73,6 +73,7 @@ fn extra_usage_quota(extra: ExtraUsage) -> Option<QuotaSnapshot> {
             decimals: extra.decimal_places.unwrap_or(2),
             used_minor: used,
             limit_minor: limit,
+            balance_minor: None,
         }),
     })
 }
