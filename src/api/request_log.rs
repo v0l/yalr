@@ -43,6 +43,7 @@ pub struct DetailResponse {
     attempt_log_parsed: serde_json::Value,
     message_hashes_parsed: serde_json::Value,
     has_bodies: bool,
+    previous_log_id: Option<i64>,
 }
 
 fn parse(text: &Option<String>) -> serde_json::Value {
@@ -60,6 +61,10 @@ pub async fn detail(
         .map_err(internal)?
         .ok_or((StatusCode::NOT_FOUND, "no such request".to_string()))?;
     let has_bodies = store::bodies(&state.db.pool, id).await.map_err(internal)?.is_some();
+    let previous_log_id = match detail.previous_request_id.as_deref() {
+        Some(previous) => store::id_for_request(&state.db.pool, previous).await.map_err(internal)?,
+        None => None,
+    };
     Ok(Json(DetailResponse {
         client_headers_parsed: parse(&detail.client_headers),
         upstream_request_headers_parsed: parse(&detail.upstream_request_headers),
@@ -67,6 +72,7 @@ pub async fn detail(
         attempt_log_parsed: parse(&detail.attempt_log),
         message_hashes_parsed: parse(&detail.message_hashes),
         has_bodies,
+        previous_log_id,
         detail,
     }))
 }

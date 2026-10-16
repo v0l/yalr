@@ -568,3 +568,74 @@ export interface ModelPricingUpdateRequest {
   context_window?: number | null
   max_output_tokens?: number | null
 }
+
+export interface RequestLogSummary {
+  id: number
+  request_id: string
+  started_at_ms: number
+  model: string
+  stream: boolean
+  provider: string | null
+  status: string
+  error: string | null
+  attempts: number
+  user_name: string | null
+  client_ip: string | null
+  headers_ms: number | null
+  first_event_ms: number | null
+  first_thinking_ms: number | null
+  first_text_ms: number | null
+  total_ms: number | null
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  cached_tokens: number | null
+  cache_write_tokens: number | null
+  weighted_input_tokens: number | null
+  message_count: number | null
+  first_diverging_message: number | null
+  previous_request_id: string | null
+}
+
+export interface RequestLogAttempt {
+  provider: string
+  upstream_url: string | null
+  upstream_status: number | null
+  error: string | null
+  at_ms: number
+}
+
+export type HeaderPairs = [string, string][]
+
+export interface RequestLogDetail extends RequestLogSummary {
+  endpoint: string
+  user_id: number | null
+  api_key_id: number | null
+  api_key_name: string | null
+  upstream_url: string | null
+  upstream_status: number | null
+  finish_reason: string | null
+  system_hash: string | null
+  tools_hash: string | null
+  request_bytes: number | null
+  response_bytes: number | null
+  client_headers_parsed: HeaderPairs | null
+  upstream_request_headers_parsed: HeaderPairs | null
+  upstream_response_headers_parsed: HeaderPairs | null
+  attempt_log_parsed: RequestLogAttempt[] | null
+  message_hashes_parsed: string[] | null
+  has_bodies: boolean
+  previous_log_id: number | null
+}
+
+export interface RequestLogBodies {
+  client_request: unknown
+  upstream_request: unknown
+  response: unknown
+}
+
+export interface RequestLogQuery {
+  limit?: number
+  before?: number
+  model?: string
+  status?: string
+}

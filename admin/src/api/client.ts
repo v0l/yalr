@@ -27,6 +27,10 @@ import type {
   UserModelPermission,
   CreateUserModelPermission,
   DeleteUserModelPermissionResponse,
+  RequestLogSummary,
+  RequestLogDetail,
+  RequestLogBodies,
+  RequestLogQuery,
 } from '../types'
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL || window.location.origin
@@ -75,6 +79,23 @@ async function audioErrorMessage(response: Response, fallback: string): Promise<
 }
 
 export const api = {
+  async getRequestLog(query: RequestLogQuery = {}): Promise<RequestLogSummary[]> {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== '') params.set(key, String(value))
+    }
+    const qs = params.toString()
+    return request(`/api/request-log${qs ? `?${qs}` : ''}`)
+  },
+
+  async getRequestLogDetail(id: number): Promise<RequestLogDetail> {
+    return request(`/api/request-log/${id}`)
+  },
+
+  async getRequestLogBodies(id: number): Promise<RequestLogBodies> {
+    return request(`/api/request-log/${id}/bodies`)
+  },
+
   async getHealth(): Promise<HealthResponse> {
     return request('/api/health')
   },

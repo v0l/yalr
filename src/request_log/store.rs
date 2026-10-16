@@ -245,6 +245,13 @@ pub async fn detail(pool: &SqlitePool, id: i64) -> Result<Option<Detail>, sqlx::
         .await
 }
 
+pub async fn id_for_request(pool: &SqlitePool, request_id: &str) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar("SELECT id FROM request_log WHERE request_id = ?")
+        .bind(request_id)
+        .fetch_optional(pool)
+        .await
+}
+
 #[derive(Debug, sqlx::FromRow)]
 pub struct Bodies {
     pub client_request_gz: Option<Vec<u8>>,
@@ -303,6 +310,14 @@ mod tests {
         let stored = bodies(&pool, id).await.unwrap().unwrap();
         assert_eq!(stored.client_request_gz, Some(vec![1, 2, 3]));
         assert_eq!(stored.response_gz, Some(vec![6]));
+    }
+
+    #[tokio::test]
+    async fn request_id_resolves_to_row_id() {
+        let pool = pool().await;
+        let id = insert(&pool, record("r1", 1_000, false)).await.unwrap();
+        assert_eq!(id_for_request(&pool, "r1").await.unwrap(), Some(id));
+        assert_eq!(id_for_request(&pool, "missing").await.unwrap(), None);
     }
 
     #[tokio::test]
