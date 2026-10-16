@@ -1000,7 +1000,8 @@ impl Router {
                     let backoff = e
                         .retry_after_ms()
                         .map(Duration::from_millis)
-                        .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)));
+                        .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)))
+                        .min(Duration::from_millis(2000));
 
                     tokio::time::sleep(backoff).await;
                 }
@@ -1369,7 +1370,8 @@ impl Router {
                             let backoff = e
                                 .retry_after_ms()
                                 .map(Duration::from_millis)
-                                .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)));
+                                .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)))
+                                .min(Duration::from_millis(2000));
                             tokio::time::sleep(backoff).await;
                         } else {
                             tracing::warn!(
@@ -1548,7 +1550,8 @@ impl Router {
                     let backoff = e
                         .retry_after_ms()
                         .map(Duration::from_millis)
-                        .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)));
+                        .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)))
+                        .min(Duration::from_millis(2000));
 
                     tokio::time::sleep(backoff).await;
                 }
