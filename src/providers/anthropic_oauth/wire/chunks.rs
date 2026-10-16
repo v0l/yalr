@@ -150,6 +150,33 @@ pub fn text_chunk(id: &str, model: &str, text: String) -> StreamingChunk {
     }
 }
 
+pub fn reasoning_chunk(id: &str, model: &str, thinking: String) -> StreamingChunk {
+    StreamingChunk {
+        id: id.to_string(),
+        object: "chat.completion.chunk".to_string(),
+        created: now_secs(),
+        model: model.to_string(),
+        choices: vec![StreamingChoice {
+            index: 0,
+            delta: StreamingDelta {
+                content: None,
+                role: None,
+                refusal: None,
+                tool_calls: None,
+                reasoning_content: Some(thinking),
+                extra_fields: Default::default(),
+            },
+            finish_reason: None,
+            logprobs: None,
+        }],
+        service_tier: None,
+        #[allow(deprecated)]
+        system_fingerprint: None,
+        usage: None,
+        extra_fields: Default::default(),
+    }
+}
+
 pub fn final_chunk(
     id: &str,
     model: &str,
@@ -226,5 +253,21 @@ mod tests {
             }
             _ => panic!("expected function tool call"),
         }
+    }
+
+    #[test]
+    fn stream_delta_parses_thinking_delta() {
+        let d: StreamDelta = serde_json::from_str(r#"{"type":"thinking_delta","thinking":"hmm"}"#)
+            .unwrap();
+        assert_eq!(d.thinking.as_deref(), Some("hmm"));
+        assert!(d.text.is_none());
+    }
+
+    #[test]
+    fn reasoning_chunk_carries_thinking_as_reasoning_content() {
+        let chunk = reasoning_chunk("msg_1", "claude", "thinking out loud".into());
+        let delta = &chunk.choices[0].delta;
+        assert_eq!(delta.reasoning_content.as_deref(), Some("thinking out loud"));
+        assert!(delta.content.is_none());
     }
 }

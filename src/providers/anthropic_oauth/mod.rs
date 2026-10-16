@@ -391,6 +391,8 @@ impl Provider for AnthropicOAuthProvider {
                                         tool_index,
                                         partial_json,
                                     ));
+                                } else if let Some(thinking) = delta.thinking {
+                                    yield Ok(wire::reasoning_chunk(&message_id, &model, thinking));
                                 }
                             }
                         }

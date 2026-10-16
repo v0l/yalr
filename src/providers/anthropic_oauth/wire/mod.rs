@@ -244,6 +244,8 @@ pub struct StreamDelta {
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
+    pub thinking: Option<String>,
+    #[serde(default)]
     pub stop_reason: Option<String>,
     #[serde(default)]
     pub partial_json: Option<String>,

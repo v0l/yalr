@@ -183,6 +183,14 @@ fn user_content(
     MessageContent::Text(text)
 }
 
+fn default_max_tokens(model: &str) -> u32 {
+    if model.contains("-5-5") {
+        32768
+    } else {
+        4096
+    }
+}
+
 pub fn build_request(
     request: &CreateChatCompletionRequest,
     stream: bool,
@@ -270,7 +278,9 @@ pub fn build_request(
     }
     MessagesRequest {
         model: request.model.clone(),
-        max_tokens: request.max_completion_tokens.unwrap_or(4096),
+        max_tokens: request
+            .max_completion_tokens
+            .unwrap_or_else(|| default_max_tokens(&request.model)),
         messages,
         system,
         temperature: request.temperature,
@@ -612,6 +622,29 @@ mod tests {
             }
         }
         crate::providers::anthropic::set_prompt_cache_enabled(true);
+    }
+
+    #[test]
+    fn build_request_default_max_tokens_by_generation() {
+        let base = CreateChatCompletionRequest {
+            model: "claude-sonnet-5-5".into(),
+            messages: vec![ChatCompletionRequestMessage::User(
+                async_openai::types::chat::ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Text("hi".into()),
+                    name: None,
+                },
+            )],
+            ..Default::default()
+        };
+        assert_eq!(build_request(&base, false, CLAUDE_CODE_VERSION).max_tokens, 32768);
+
+        let mut older = base.clone();
+        older.model = "claude-3-5-haiku-20241022".into();
+        assert_eq!(build_request(&older, false, CLAUDE_CODE_VERSION).max_tokens, 4096);
+
+        let mut explicit = base.clone();
+        explicit.max_completion_tokens = Some(128);
+        assert_eq!(build_request(&explicit, false, CLAUDE_CODE_VERSION).max_tokens, 128);
     }
 
     #[test]
