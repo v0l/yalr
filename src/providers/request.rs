@@ -31,6 +31,7 @@ pub struct ChatRequest {
     assistant_extras: Vec<Map<String, Value>>,
     /// Top-level request fields re-applied verbatim on the upstream wire.
     extra_fields: Map<String, Value>,
+    trace: Option<crate::request_log::Trace>,
 }
 
 /// Fields pulled out before the typed parse because their client shapes are
@@ -84,6 +85,7 @@ impl ChatRequest {
             inner,
             assistant_extras,
             extra_fields,
+            trace: None,
         })
     }
 
@@ -155,6 +157,7 @@ impl From<ChatCompletionRequest> for ChatRequest {
             inner,
             assistant_extras: Vec::new(),
             extra_fields: Map::new(),
+            trace: None,
         }
     }
 }
@@ -180,6 +183,15 @@ impl DerefMut for ChatRequest {
 }
 
 impl ChatRequest {
+    pub fn with_trace(mut self, trace: crate::request_log::Trace) -> Self {
+        self.trace = Some(trace);
+        self
+    }
+
+    pub fn trace(&self) -> Option<&crate::request_log::Trace> {
+        self.trace.as_ref()
+    }
+
     /// Assistant message at `ordinal`, if it exists.
     pub fn assistant_extras_at(&self, ordinal: usize) -> Option<&Map<String, Value>> {
         self.assistant_extras.get(ordinal)

@@ -206,14 +206,33 @@ impl Provider for AnthropicOAuthProvider {
         let mut body = build_request(request, false, &self.cc_version);
         apply_thinking(&mut body, request);
         sanitize(&mut body);
-        let resp = self
+        let body_bytes = serde_json::to_vec(&body).map_err(|e| ProviderError::Other(e.into()))?;
+        let upstream = self
             .apply_oauth_headers(
-                self.http.post(self.messages_url()).json(&body),
+                self.http
+                    .post(self.messages_url())
+                    .header("content-type", "application/json")
+                    .body(body_bytes.clone()),
                 &token,
             )
-            .send()
+            .build()
+            .map_err(|e| ProviderError::Other(e.into()))?;
+        let trace = request.trace().cloned();
+        if let Some(trace) = &trace {
+            trace.upstream_request(
+                upstream.url().as_str(),
+                crate::request_log::redact::headers(upstream.headers()),
+                body_bytes,
+            );
+        }
+        let resp = self
+            .http
+            .execute(upstream)
             .await
             .map_err(|e| ProviderError::Other(e.into()))?;
+        if let Some(trace) = &trace {
+            trace.upstream_response(resp.status().as_u16(), crate::request_log::redact::headers(resp.headers()));
+        }
 
         let status = resp.status();
         let quotas = anthropic_quotas_from_headers(resp.headers());
@@ -234,6 +253,14 @@ impl Provider for AnthropicOAuthProvider {
 
         let (text, tool_calls) = split_content_blocks(&parsed.content);
         let usage = parsed.usage.as_ref().map(usage_to_openai);
+        if let (Some(trace), Some(raw)) = (&trace, parsed.usage.as_ref()) {
+            trace.set_usage(crate::request_log::trace::Usage {
+                prompt_tokens: raw.input_tokens + raw.cache_creation_input_tokens + raw.cache_read_input_tokens,
+                completion_tokens: raw.output_tokens,
+                cached_tokens: raw.cache_read_input_tokens,
+                cache_write_tokens: raw.cache_creation_input_tokens,
+            });
+        }
 
         let message = async_openai::types::chat::ChatCompletionResponseMessage {
             content: Some(text),
@@ -271,6 +298,7 @@ impl Provider for AnthropicOAuthProvider {
         let mut body = build_request(request, true, &self.cc_version);
         apply_thinking(&mut body, request);
         sanitize(&mut body);
+        let trace = request.trace().cloned();
         let user_agent = user_agent(&self.cc_version);
         let url = self.messages_url();
         let http = self.http.clone();
@@ -286,7 +314,11 @@ impl Provider for AnthropicOAuthProvider {
                     return;
                 }
             };
-            let resp = http
+            let body_bytes = match serde_json::to_vec(&body) {
+                Ok(b) => b,
+                Err(e) => { yield Err(ProviderError::Other(e.into())); return; }
+            };
+            let upstream = match http
                 .post(&url)
                 .bearer_auth(&token)
                 .header("anthropic-version", ANTHROPIC_VERSION)
@@ -295,13 +327,27 @@ impl Provider for AnthropicOAuthProvider {
                 .header("x-app", "cli")
                 .header("anthropic-dangerous-direct-browser-access", "true")
                 .header("accept", "text/event-stream")
-                .json(&body)
-                .send()
-                .await;
-            let resp = match resp {
+                .header("content-type", "application/json")
+                .body(body_bytes.clone())
+                .build()
+            {
                 Ok(r) => r,
                 Err(e) => { yield Err(ProviderError::Other(e.into())); return; }
             };
+            if let Some(trace) = &trace {
+                trace.upstream_request(
+                    upstream.url().as_str(),
+                    crate::request_log::redact::headers(upstream.headers()),
+                    body_bytes,
+                );
+            }
+            let resp = match http.execute(upstream).await {
+                Ok(r) => r,
+                Err(e) => { yield Err(ProviderError::Other(e.into())); return; }
+            };
+            if let Some(trace) = &trace {
+                trace.upstream_response(resp.status().as_u16(), crate::request_log::redact::headers(resp.headers()));
+            }
             let status = resp.status();
             let quotas = anthropic_quotas_from_headers(resp.headers());
             if !quotas.is_empty() {
@@ -347,6 +393,9 @@ impl Provider for AnthropicOAuthProvider {
                         Ok(e) => e,
                         Err(_) => continue,
                     };
+                    if let Some(trace) = &trace {
+                        trace.first_event();
+                    }
                     match event.event_type.as_str() {
                         "error" => {
                             yield Err(stream_error(event.error));
@@ -371,6 +420,7 @@ impl Provider for AnthropicOAuthProvider {
                                         // name the caller registered, so upstream sees its
                                         // own tool names.
                                         let original_name = wire::from_cc_name(&name);
+                                        if let Some(trace) = &trace { trace.first_text(); }
                                         yield Ok(tool_call_start_chunk(
                                             &message_id,
                                             &model,
@@ -385,6 +435,7 @@ impl Provider for AnthropicOAuthProvider {
                         "content_block_delta" => {
                             if let Some(delta) = event.delta {
                                 if let Some(text) = delta.text {
+                                    if let Some(trace) = &trace { trace.first_text(); }
                                     yield Ok(text_chunk(&message_id, &model, text));
                                 } else if let Some(partial_json) = delta.partial_json {
                                     let tool_index = event
@@ -398,6 +449,7 @@ impl Provider for AnthropicOAuthProvider {
                                         partial_json,
                                     ));
                                 } else if let Some(thinking) = delta.thinking {
+                                    if let Some(trace) = &trace { trace.first_thinking(); }
                                     yield Ok(wire::reasoning_chunk(&message_id, &model, thinking));
                                 }
                             }
@@ -507,5 +559,132 @@ impl Provider for AnthropicOAuthProvider {
             }
             Err(_) => cached(),
         }
+    }
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+    use crate::providers::provider_trait::Provider as _;
+    use crate::request_log::Trace;
+    use futures::StreamExt;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const SSE: &str = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":5,\"cache_creation_input_tokens\":20,\"cache_read_input_tokens\":70,\"output_tokens\":1}}}\n\n\
+event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n\
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hmm\"}}\n\n\
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n\
+event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n\
+event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+
+    async fn provider(server: &MockServer) -> AnthropicOAuthProvider {
+        let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+        let record = crate::db::Provider {
+            id: 1,
+            name: "Claude Max".into(),
+            slug: "claude-max".into(),
+            base_url: format!("{}/v1", server.uri()),
+            api_key: None,
+            provider_type: crate::db::ProviderType::AnthropicOauth,
+            oauth_access_token: Some("sk-ant-oat01-supersecrettokenvalue".into()),
+            oauth_refresh_token: Some("refresh".into()),
+            oauth_expires_at: Some(i64::MAX / 2),
+            oauth_account_id: None,
+            client_version: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        AnthropicOAuthProvider::new(&record, db)
+    }
+
+    fn request(trace: &Trace) -> ChatRequest {
+        let request: ChatRequest = serde_json::from_str(
+            r#"{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hello"}]}"#,
+        )
+        .unwrap();
+        request.with_trace(trace.clone())
+    }
+
+    #[tokio::test]
+    async fn stream_fills_the_trace_with_wire_details_and_timings() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .insert_header("anthropic-ratelimit-unified-5h-utilization", "0.42")
+                    .set_body_string(SSE),
+            )
+            .mount(&server)
+            .await;
+        let provider = provider(&server).await;
+        let trace = Trace::new();
+        trace.begin_attempt("Claude Max");
+        let mut stream = provider.chat_completions_stream(&request(&trace)).unwrap();
+        while stream.next().await.is_some() {}
+
+        let upstream = trace.upstream();
+        assert!(upstream.url.unwrap().ends_with("/v1/messages"));
+        assert_eq!(upstream.status, Some(200));
+        let auth = upstream.request_headers.iter().find(|(k, _)| k == "authorization").unwrap();
+        assert!(auth.1.contains("..."), "token must be masked: {}", auth.1);
+        assert!(!auth.1.contains("supersecrettokenvalue"));
+        assert!(upstream.request_headers.iter().any(|(k, v)| k == "x-app" && v == "cli"));
+        assert!(upstream
+            .response_headers
+            .iter()
+            .any(|(k, v)| k == "anthropic-ratelimit-unified-5h-utilization" && v == "0.42"));
+        let sent: serde_json::Value = serde_json::from_slice(&upstream.request_body.unwrap()).unwrap();
+        assert_eq!(sent["stream"], true);
+        assert_eq!(sent["model"], "claude-sonnet-5-5");
+        assert!(upstream.headers_ms.is_some());
+        assert!(upstream.first_event_ms.is_some());
+        assert!(upstream.first_thinking_ms.is_some());
+        assert!(upstream.first_text_ms.is_some());
+        assert!(upstream.first_thinking_ms <= upstream.first_text_ms);
+    }
+
+    #[tokio::test]
+    async fn non_stream_records_the_exact_bytes_it_sent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"id":"msg_1","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":3}}"#,
+            ))
+            .mount(&server)
+            .await;
+        let provider = provider(&server).await;
+        let trace = Trace::new();
+        trace.begin_attempt("Claude Max");
+        provider.chat_completions(&request(&trace)).await.unwrap();
+        let upstream = trace.upstream();
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(upstream.request_body.unwrap(), received[0].body);
+        assert_eq!(upstream.status, Some(200));
+        let usage = trace.usage().unwrap();
+        assert_eq!((usage.prompt_tokens, usage.cached_tokens, usage.cache_write_tokens), (5, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_response_is_still_traced() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("retry-after", "120")
+                    .set_body_string(r#"{"error":{"type":"rate_limit_error","message":"slow down"}}"#),
+            )
+            .mount(&server)
+            .await;
+        let provider = provider(&server).await;
+        let trace = Trace::new();
+        trace.begin_attempt("Claude Max");
+        assert!(provider.chat_completions(&request(&trace)).await.is_err());
+        let upstream = trace.upstream();
+        assert_eq!(upstream.status, Some(429));
+        assert!(upstream.response_headers.iter().any(|(k, v)| k == "retry-after" && v == "120"));
     }
 }

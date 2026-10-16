@@ -894,12 +894,18 @@ impl Router {
                 .emitter()
                 .emit_provider_load(&provider_name, in_flight, max_concurrency, user.clone());
 
+            if let Some(trace) = actual_request.trace() {
+                trace.begin_attempt(&provider_name);
+            }
             let result = provider.chat_completions(&actual_request).await;
             let total_latency = start.elapsed();
 
             match result {
                 Ok(response) => {
                     guard.decrement();
+                    if let Some(trace) = actual_request.trace() {
+                        trace.end_attempt(None);
+                    }
 
                     let latency_ms = total_latency.as_millis() as u32;
                     self.metrics_store
@@ -975,6 +981,9 @@ impl Router {
                 }
                 Err(e) => {
                     guard.decrement();
+                    if let Some(trace) = actual_request.trace() {
+                        trace.end_attempt(Some(e.to_string()));
+                    }
 
                     last_error = Some(RouterError::ProviderError(e.clone()));
 
@@ -1106,6 +1115,9 @@ impl Router {
                     .emitter()
                     .emit_provider_load(&provider_name, in_flight, max_concurrency, user.clone());
 
+                if let Some(trace) = actual_request.trace() {
+                    trace.begin_attempt(&provider_name);
+                }
                 match provider.chat_completions_stream(&actual_request) {
                     Ok(provider_stream) => {
                         let start = Instant::now();
@@ -1136,6 +1148,10 @@ impl Router {
                         while let Some(result) = stream.next().await {
                             match result {
                                 Ok(mut chunk) => {
+                                    if let Some(trace) = actual_request.trace() {
+                                        trace.first_event();
+                                        crate::request_log::trace::mark_chunk(trace, &chunk);
+                                    }
                                     if first_token {
                                         first_token = false;
                                         ttft_ms = start.elapsed().as_millis() as u32;
@@ -1203,6 +1219,9 @@ impl Router {
                                             error = %e,
                                             "Transient stream error before any data, failing over to another provider"
                                         );
+                                        if let Some(trace) = actual_request.trace() {
+                                            trace.end_attempt(Some(e.to_string()));
+                                        }
                                         last_error = Some(RouterError::ProviderError(e));
                                         guard.decrement();
 
@@ -1239,6 +1258,9 @@ impl Router {
                                             error = %e,
                                             "Transient stream error after data already sent, cannot fail over"
                                         );
+                                    }
+                                    if let Some(trace) = actual_request.trace() {
+                                        trace.end_attempt(Some(e.to_string()));
                                     }
                                     yield Err(RouterError::ProviderError(e));
                                     guard.decrement();
@@ -1280,6 +1302,9 @@ impl Router {
                                 empty_err.status_code(),
                                 user.clone(),
                             );
+                            if let Some(trace) = actual_request.trace() {
+                                trace.end_attempt(Some(empty_err.to_string()));
+                            }
                             last_error = Some(RouterError::ProviderError(empty_err));
                             // Only (empty) chunks were yielded, no content — so
                             // failing over is safe for the client. Reset
@@ -1337,6 +1362,15 @@ impl Router {
                                 metrics_store.emitter().emit_output_tokens(&provider_name, &original_model, completion_tokens, user.clone());
                             }
 
+                            if let Some(trace) = actual_request.trace() {
+                                trace.set_usage(crate::request_log::trace::Usage {
+                                    prompt_tokens,
+                                    completion_tokens,
+                                    cached_tokens,
+                                    cache_write_tokens,
+                                });
+                                trace.end_attempt(None);
+                            }
                             guard.decrement();
                             break; // Stream completed successfully, don't try more providers
                         }
@@ -1355,6 +1389,9 @@ impl Router {
                     }
                     Err(e) => {
                         guard.decrement();
+                        if let Some(trace) = actual_request.trace() {
+                            trace.end_attempt(Some(e.to_string()));
+                        }
 
                         last_error = Some(RouterError::ProviderError(e.clone()));
 

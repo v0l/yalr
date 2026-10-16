@@ -42,6 +42,7 @@ mod tests {
             auth: None,
             payments: None,
             anthropic: Default::default(),
+            request_log: Default::default(),
         };
 
         let app_config = crate::config::AppConfig {
