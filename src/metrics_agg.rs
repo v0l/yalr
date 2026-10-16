@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::metrics::{ErrorType, HealthState, MetricsEvent};
 use crate::providers::provider_trait::{CurrencyAmount, QuotaSnapshot};
-use crate::providers::quota::quota_exhausted;
+use crate::providers::quota::blocking_quotas;
 
 /// Health/backoff window (matches the legacy full-scan behavior).
 const WINDOW_MS: u64 = 300_000; // 5 minutes
@@ -201,9 +201,8 @@ fn exponential_backoff_ms(failure_count: u32) -> u64 {
 
 /// Latest-blocking reset across exhausted quota windows (`None` if none block).
 pub(crate) fn quota_snapshot_issue_reset(quotas: &[QuotaSnapshot], now_ms: i64) -> Option<i64> {
-    quotas
-        .iter()
-        .filter(|q| quota_exhausted(q))
+    blocking_quotas(quotas)
+        .into_iter()
         .filter_map(|q| match q.resets_at {
             Some(reset) if reset <= now_ms => None, // already recovered
             Some(reset) => Some(reset),
@@ -287,11 +286,37 @@ mod tests {
                 resets_at: Some(reset),
                 window: Some("unified".into()),
                 status: None,
+                credit: None,
             }]),
             now,
             now,
         );
         assert_eq!(a.health(now), HealthState::Degraded);
         assert!(a.backoff(now) > Duration::from_secs(60));
+    }
+
+    #[test]
+    fn extra_usage_keeps_exhausted_plan_healthy() {
+        let now = 1_000_000_000u64;
+        let mut a = ProviderAgg::default();
+        a.apply(
+            &MetricsEvent::Quota(vec![
+                QuotaSnapshot {
+                    used_pct: Some(100.0),
+                    resets_at: Some(now as i64 + 3_600_000),
+                    window: Some("7d".into()),
+                    status: Some("rejected".into()),
+                    ..Default::default()
+                },
+                QuotaSnapshot {
+                    window: Some("extra".into()),
+                    status: Some("allowed".into()),
+                    ..Default::default()
+                },
+            ]),
+            now,
+            now,
+        );
+        assert_eq!(a.health(now), HealthState::Healthy);
     }
 }

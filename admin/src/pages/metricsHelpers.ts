@@ -1,6 +1,6 @@
 import type { WsProviderMetrics, CurrencyAmount, MetricsUser, QuotaSnapshot } from '../types'
 import { formatBalance } from '@/lib/utils'
-import { worstQuota } from '@/lib/quota'
+import { worstQuota, formatCredit, quotaExhausted } from '@/lib/quota'
 
 export const MAXL = 500, MAXA = 500
 
@@ -40,11 +40,11 @@ export function fmt(e: WsProviderMetrics['event']): { label: string; value: stri
     const all = (e.Quota ?? []) as QuotaSnapshot[]
     const q = worstQuota(all)
     if (!q) return { label: 'QUOTA', value: '—', kind: 'info' }
-    const usage = typeof q.used_pct === 'number'
+    const usage = formatCredit(q) ?? (typeof q.used_pct === 'number'
       ? `${q.used_pct.toFixed(0)}% used`
-      : (typeof q.remaining === 'number' ? `${q.remaining.toLocaleString()} left` : (q.status ?? '?'))
+      : (typeof q.remaining === 'number' ? `${q.remaining.toLocaleString()} left` : (q.status ?? '?')))
     const v = q.window ? `${q.window} · ${usage}` : usage
-    const exhausted = q.status === 'rejected' || q.status === 'exceeded' || q.status === 'rate_limited' || (typeof q.used_pct === 'number' && q.used_pct >= 100)
+    const exhausted = quotaExhausted(q)
     return { label: 'QUOTA', value: v, kind: exhausted ? 'err' : (q.status === 'allowed_warning' ? 'warn' : 'info') }
   }
   return { label: '?', value: JSON.stringify(e), kind: 'info' }

@@ -1340,6 +1340,7 @@ mod tests {
             resets_at,
             window: Some("unified".to_string()),
             status: status.map(|s| s.to_string()),
+            credit: None,
         }]
     }
 

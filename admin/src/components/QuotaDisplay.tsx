@@ -1,5 +1,5 @@
 import type { ProviderHealthEntry, QuotaSnapshot } from '../types'
-import { quotaExhausted, quotaUsedPct, quotaWindowLabel, formatResetsIn, worstQuota } from '@/lib/quota'
+import { quotaExhausted, quotaUsedPct, quotaWindowLabel, formatResetsIn, worstQuota, formatCredit, isExtraUsage } from '@/lib/quota'
 
 export interface QuotaDisplayProps {
   health?: ProviderHealthEntry
@@ -26,9 +26,10 @@ export function QuotaDisplay({ health, className, onClick }: QuotaDisplayProps) 
   const barColor = warn ? 'var(--destructive)' : caution ? 'var(--warning)' : 'var(--brand)'
   const textColor = warn ? 'text-destructive' : caution ? 'text-warning' : 'text-muted-foreground'
 
-  const usage = pct !== null
+  const onCredit = isExtraUsage(q) && !exhausted
+  const usage = formatCredit(q) ?? (pct !== null
     ? `${pct.toFixed(0)}% used`
-    : (typeof q.remaining === 'number' ? `${q.remaining.toLocaleString()} left` : null)
+    : (typeof q.remaining === 'number' ? `${q.remaining.toLocaleString()} left` : null))
 
   const extra = all.length - 1
   const clickable = !!onClick
@@ -44,8 +45,8 @@ export function QuotaDisplay({ health, className, onClick }: QuotaDisplayProps) 
     >
       <div className="flex items-center justify-between gap-2">
         <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
-          {exhausted ? 'QUOTA REACHED' : 'QUOTA'}
-          {q.window ? ` · ${quotaWindowLabel(q.window)}` : ''}
+          {exhausted ? 'QUOTA REACHED' : onCredit ? 'PLAN LIMIT · ON CREDIT' : 'QUOTA'}
+          {q.window && !onCredit ? ` · ${quotaWindowLabel(q.window)}` : ''}
           {extra > 0 ? ` +${extra}` : ''}
         </span>
         {usage && <span className={`font-mono text-[10px] tabular-nums ${textColor}`}>{usage}</span>}

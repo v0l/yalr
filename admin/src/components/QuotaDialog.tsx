@@ -6,7 +6,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog'
-import { quotaExhausted, quotaUsedPct, quotaWindowLabel, formatResetsIn } from '@/lib/quota'
+import { quotaExhausted, quotaUsedPct, quotaWindowLabel, formatResetsIn, formatCredit } from '@/lib/quota'
 
 export interface QuotaDialogProps {
   open: boolean
@@ -33,11 +33,11 @@ function QuotaRow({ q }: { q: QuotaSnapshot }) {
   const textColor = warn ? 'text-destructive' : caution ? 'text-warning' : 'text-muted-foreground'
   const resetsIn = formatResetsIn(q.resets_at)
 
-  const detail = pct !== null
+  const detail = formatCredit(q) ?? (pct !== null
     ? `${pct.toFixed(0)}% used`
     : (typeof q.remaining === 'number' && typeof q.limit === 'number'
         ? `${q.remaining.toLocaleString()} / ${q.limit.toLocaleString()} left`
-        : (typeof q.remaining === 'number' ? `${q.remaining.toLocaleString()} left` : null))
+        : (typeof q.remaining === 'number' ? `${q.remaining.toLocaleString()} left` : null)))
 
   return (
     <div className="panel p-3 flex flex-col gap-2">

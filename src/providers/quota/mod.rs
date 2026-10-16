@@ -3,10 +3,33 @@
 //! whose usage quota is reported via headers on each API response rather than a
 //! dedicated balance endpoint.
 
+mod usage;
+
 use reqwest::header::HeaderMap;
-use serde::Deserialize;
 
 use crate::providers::provider_trait::QuotaSnapshot;
+
+pub use usage::anthropic_quotas_from_usage;
+
+pub const EXTRA_USAGE_WINDOW: &str = "extra";
+
+fn is_extra_usage(q: &QuotaSnapshot) -> bool {
+    q.window.as_deref() == Some(EXTRA_USAGE_WINDOW)
+}
+
+pub fn extra_usage_available(quotas: &[QuotaSnapshot]) -> bool {
+    quotas.iter().any(|q| is_extra_usage(q) && !quota_exhausted(q))
+}
+
+pub fn blocking_quotas(quotas: &[QuotaSnapshot]) -> Vec<&QuotaSnapshot> {
+    if extra_usage_available(quotas) {
+        return Vec::new();
+    }
+    quotas
+        .iter()
+        .filter(|q| !is_extra_usage(q) && quota_exhausted(q))
+        .collect()
+}
 
 fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
@@ -46,7 +69,13 @@ fn quota_severity(q: &QuotaSnapshot) -> f32 {
 /// Pick the most-consumed quota window — the one most likely to throttle next.
 /// This is what the provider card surfaces ("first to stop").
 pub fn worst_quota(quotas: &[QuotaSnapshot]) -> Option<QuotaSnapshot> {
-    quotas.iter().cloned().max_by(|a, b| {
+    let plan_exhausted = quotas.iter().any(|q| !is_extra_usage(q) && quota_exhausted(q));
+    if plan_exhausted && extra_usage_available(quotas) {
+        return quotas.iter().find(|q| is_extra_usage(q)).cloned();
+    }
+    let plan: Vec<&QuotaSnapshot> = quotas.iter().filter(|q| !is_extra_usage(q)).collect();
+    let candidates = if plan.is_empty() { quotas.iter().collect() } else { plan };
+    candidates.into_iter().cloned().max_by(|a, b| {
         quota_severity(a)
             .partial_cmp(&quota_severity(b))
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -153,12 +182,26 @@ pub fn anthropic_quotas_from_headers(headers: &HeaderMap) -> Vec<QuotaSnapshot> 
                 resets_at: reset.as_deref().and_then(parse_reset_to_epoch_ms),
                 window: Some((*win).to_string()),
                 status,
+                credit: None,
             });
         }
     }
 
+    let overage_status = header_str(headers, "anthropic-ratelimit-unified-overage-status");
+    if overage_status.is_some() {
+        let util = header_f64(headers, "anthropic-ratelimit-unified-overage-utilization");
+        let reset = header_str(headers, "anthropic-ratelimit-unified-overage-reset");
+        out.push(QuotaSnapshot {
+            used_pct: util.map(|u| (u * 100.0) as f32),
+            resets_at: reset.as_deref().and_then(parse_reset_to_epoch_ms),
+            window: Some(EXTRA_USAGE_WINDOW.to_string()),
+            status: overage_status,
+            ..Default::default()
+        });
+    }
+
     // Legacy single unified limit (no per-window suffix).
-    if out.is_empty() {
+    if out.iter().all(is_extra_usage) {
         let unified_status = header_str(headers, "anthropic-ratelimit-unified-status");
         let unified_remaining = header_i64(headers, "anthropic-ratelimit-unified-remaining");
         let unified_limit = header_i64(headers, "anthropic-ratelimit-unified-limit");
@@ -171,6 +214,7 @@ pub fn anthropic_quotas_from_headers(headers: &HeaderMap) -> Vec<QuotaSnapshot> 
                 resets_at: unified_reset.as_deref().and_then(parse_reset_to_epoch_ms),
                 window: Some("unified".to_string()),
                 status: unified_status,
+                credit: None,
             });
         }
     }
@@ -193,6 +237,7 @@ pub fn anthropic_quotas_from_headers(headers: &HeaderMap) -> Vec<QuotaSnapshot> 
                 resets_at: reset.as_deref().and_then(parse_reset_to_epoch_ms),
                 window: Some(win.to_string()),
                 status: None,
+                credit: None,
             });
         }
     }
@@ -229,81 +274,9 @@ pub fn openai_quotas_from_headers(headers: &HeaderMap) -> Vec<QuotaSnapshot> {
                 resets_at: reset.as_deref().and_then(parse_reset_to_epoch_ms),
                 window: Some(win.to_string()),
                 status: None,
+                credit: None,
             });
         }
-    }
-    out
-}
-
-/// A single rate-limit window in the Anthropic OAuth usage endpoint response.
-/// Both `claude.ai/api/organizations/{org}/usage` and
-/// `api.anthropic.com/api/oauth/usage` return the same shape.
-#[derive(Debug, Deserialize)]
-struct UsageWindow {
-    /// Percentage of the window consumed, as a float in `[0, 100]`.
-    #[serde(default)]
-    utilization: Option<f64>,
-    /// RFC 3339 UTC timestamp when the window rolls over (may be null).
-    #[serde(default)]
-    resets_at: Option<String>,
-}
-
-/// Response body of the Anthropic OAuth usage endpoint. Each field is an
-/// independent rate-limit bucket; any may be absent or `null`.
-#[derive(Debug, Deserialize)]
-struct AnthropicUsageResponse {
-    #[serde(default)]
-    five_hour: Option<UsageWindow>,
-    #[serde(default)]
-    seven_day: Option<UsageWindow>,
-    #[serde(default)]
-    seven_day_sonnet: Option<UsageWindow>,
-    #[serde(default)]
-    seven_day_opus: Option<UsageWindow>,
-}
-
-/// Derive a status hint from a utilization percentage, since the usage endpoint
-/// does not report one directly. Mirrors the `status` values Anthropic sends on
-/// rate-limit headers so downstream display/exhaustion logic behaves uniformly.
-fn status_from_pct(pct: f32) -> String {
-    if pct >= 100.0 {
-        "rejected".to_string()
-    } else if pct >= 80.0 {
-        "allowed_warning".to_string()
-    } else {
-        "allowed".to_string()
-    }
-}
-
-/// Parse the Anthropic OAuth usage endpoint JSON body into quota windows.
-///
-/// This is the dedicated usage endpoint (`GET .../api/oauth/usage` for OAuth
-/// tokens, or `GET .../api/organizations/{org}/usage` for web sessions) which
-/// reports per-window `utilization` (0–100) plus a reset timestamp — richer and
-/// more reliable than scraping rate-limit response headers. Windows that are
-/// absent or `null` are skipped. Returns empty on parse failure.
-pub fn anthropic_quotas_from_usage(body: &str) -> Vec<QuotaSnapshot> {
-    let resp: AnthropicUsageResponse = match serde_json::from_str(body) {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
-    let mut out = Vec::new();
-    for (win, window) in [
-        ("5h", resp.five_hour),
-        ("7d", resp.seven_day),
-        ("7d_sonnet", resp.seven_day_sonnet),
-        ("7d_opus", resp.seven_day_opus),
-    ] {
-        let Some(window) = window else { continue };
-        let used_pct = window.utilization.map(|u| u as f32);
-        out.push(QuotaSnapshot {
-            remaining: None,
-            limit: None,
-            used_pct,
-            resets_at: window.resets_at.as_deref().and_then(parse_reset_to_epoch_ms),
-            window: Some(win.to_string()),
-            status: used_pct.map(status_from_pct),
-        });
     }
     out
 }
@@ -417,58 +390,39 @@ mod tests {
     #[test]
     fn test_worst_quota_prefers_exhausted() {
         let qs = vec![
-            QuotaSnapshot { remaining: None, limit: None, used_pct: Some(50.0), resets_at: None, window: Some("5h".into()), status: Some("allowed".into()) },
-            QuotaSnapshot { remaining: None, limit: None, used_pct: Some(20.0), resets_at: None, window: Some("7d".into()), status: Some("rejected".into()) },
+            QuotaSnapshot { remaining: None, limit: None, used_pct: Some(50.0), resets_at: None, window: Some("5h".into()), status: Some("allowed".into()), credit: None },
+            QuotaSnapshot { remaining: None, limit: None, used_pct: Some(20.0), resets_at: None, window: Some("7d".into()), status: Some("rejected".into()), credit: None },
         ];
         assert_eq!(worst_quota(&qs).unwrap().window.as_deref(), Some("7d"));
     }
 
     #[test]
-    fn test_anthropic_usage_endpoint() {
-        let body = r#"{
-            "five_hour": { "utilization": 17.0, "resets_at": "2026-01-01T00:00:00Z" },
-            "seven_day": { "utilization": 85.0, "resets_at": "2026-01-01T00:00:00Z" },
-            "seven_day_sonnet": { "utilization": 0.0, "resets_at": null },
-            "seven_day_opus": { "utilization": 100.0, "resets_at": "2026-01-01T00:00:00Z" },
-            "seven_day_oauth_apps": null,
-            "extra_usage": null
-        }"#;
-        let qs = anthropic_quotas_from_usage(body);
-        assert_eq!(qs.len(), 4);
-
-        let five = qs.iter().find(|q| q.window.as_deref() == Some("5h")).unwrap();
-        assert_eq!(five.used_pct, Some(17.0));
-        assert_eq!(five.status.as_deref(), Some("allowed"));
-        assert_eq!(five.resets_at, Some(1_767_225_600_000));
-
-        let week = qs.iter().find(|q| q.window.as_deref() == Some("7d")).unwrap();
-        assert_eq!(week.used_pct, Some(85.0));
-        assert_eq!(week.status.as_deref(), Some("allowed_warning"));
-
-        let sonnet = qs.iter().find(|q| q.window.as_deref() == Some("7d_sonnet")).unwrap();
-        assert_eq!(sonnet.resets_at, None);
-        assert_eq!(sonnet.status.as_deref(), Some("allowed"));
-
-        let opus = qs.iter().find(|q| q.window.as_deref() == Some("7d_opus")).unwrap();
-        assert_eq!(opus.status.as_deref(), Some("rejected"));
-        assert!(quota_exhausted(opus));
-
-        // Worst window is the exhausted opus bucket.
-        assert_eq!(worst_quota(&qs).unwrap().window.as_deref(), Some("7d_opus"));
+    fn test_anthropic_overage_headers() {
+        let h = hm(&[
+            ("anthropic-ratelimit-unified-7d-status", "rejected"),
+            ("anthropic-ratelimit-unified-7d-utilization", "1.0"),
+            ("anthropic-ratelimit-unified-5h-status", "allowed"),
+            ("anthropic-ratelimit-unified-5h-utilization", "0.0"),
+            ("anthropic-ratelimit-unified-overage-status", "allowed"),
+            ("anthropic-ratelimit-unified-overage-utilization", "0.0"),
+            ("anthropic-ratelimit-unified-overage-reset", "1793491200"),
+        ]);
+        let qs = anthropic_quotas_from_headers(&h);
+        assert_eq!(qs.len(), 3);
+        assert!(blocking_quotas(&qs).is_empty());
+        assert_eq!(worst_quota(&qs).unwrap().window.as_deref(), Some(EXTRA_USAGE_WINDOW));
     }
 
     #[test]
-    fn test_anthropic_usage_partial_and_invalid() {
-        // Only some buckets present.
-        let qs = anthropic_quotas_from_usage(
-            r#"{ "five_hour": { "utilization": 6.0, "resets_at": "2026-01-01T00:00:00Z" } }"#,
-        );
-        assert_eq!(qs.len(), 1);
-        assert_eq!(qs[0].window.as_deref(), Some("5h"));
-
-        // Invalid JSON yields an empty vec rather than panicking.
-        assert!(anthropic_quotas_from_usage("not json").is_empty());
-        assert!(anthropic_quotas_from_usage("{}").is_empty());
+    fn test_rejected_overage_does_not_block_healthy_plan() {
+        let h = hm(&[
+            ("anthropic-ratelimit-unified-5h-status", "allowed"),
+            ("anthropic-ratelimit-unified-5h-utilization", "0.2"),
+            ("anthropic-ratelimit-unified-overage-status", "rejected"),
+        ]);
+        let qs = anthropic_quotas_from_headers(&h);
+        assert!(blocking_quotas(&qs).is_empty());
+        assert_eq!(worst_quota(&qs).unwrap().window.as_deref(), Some("5h"));
     }
 
     #[test]

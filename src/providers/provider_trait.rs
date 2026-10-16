@@ -59,7 +59,7 @@ impl CurrencyAmount {
 ///
 /// All fields are optional because different upstreams expose different subsets
 /// of rate-limit information (usually via response headers).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct QuotaSnapshot {
     /// Remaining units (requests or tokens) in the current window.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,6 +79,17 @@ pub struct QuotaSnapshot {
     /// Upstream status hint, e.g. "allowed", "allowed_warning", "rejected".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit: Option<QuotaCredit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QuotaCredit {
+    pub currency: String,
+    pub decimals: u32,
+    pub used_minor: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_minor: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

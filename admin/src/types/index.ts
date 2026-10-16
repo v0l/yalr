@@ -118,6 +118,14 @@ export interface QuotaSnapshot {
   resets_at?: number
   window?: string
   status?: string
+  credit?: QuotaCredit
+}
+
+export interface QuotaCredit {
+  currency: string
+  decimals: number
+  used_minor: number
+  limit_minor?: number
 }
 
 export interface CurrencyAmount {

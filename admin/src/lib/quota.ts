@@ -27,10 +27,43 @@ function severity(q: QuotaSnapshot): number {
   return quotaUsedPct(q) ?? 0
 }
 
+export const EXTRA_USAGE_WINDOW = 'extra'
+
+export function isExtraUsage(q: QuotaSnapshot): boolean {
+  return q.window === EXTRA_USAGE_WINDOW
+}
+
+export function extraUsageAvailable(quotas: QuotaSnapshot[]): boolean {
+  return quotas.some(q => isExtraUsage(q) && !quotaExhausted(q))
+}
+
 /** Pick the most-consumed window — the one most likely to throttle next. */
 export function worstQuota(quotas?: QuotaSnapshot[] | null): QuotaSnapshot | null {
   if (!quotas || quotas.length === 0) return null
-  return quotas.reduce((worst, q) => (severity(q) > severity(worst) ? q : worst))
+  const planExhausted = quotas.some(q => !isExtraUsage(q) && quotaExhausted(q))
+  if (planExhausted && extraUsageAvailable(quotas)) return quotas.find(isExtraUsage) ?? null
+  const plan = quotas.filter(q => !isExtraUsage(q))
+  const candidates = plan.length > 0 ? plan : quotas
+  return candidates.reduce((worst, q) => (severity(q) > severity(worst) ? q : worst))
+}
+
+function formatMinor(amount: number, currency: string, decimals: number): string {
+  const value = amount / 10 ** decimals
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency, minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(value)
+  } catch {
+    return `${value.toFixed(decimals)} ${currency}`
+  }
+}
+
+export function formatCredit(q: QuotaSnapshot): string | null {
+  const c = q.credit
+  if (!c) return null
+  if (typeof c.limit_minor === 'number') {
+    const left = Math.max(0, c.limit_minor - c.used_minor)
+    return `${formatMinor(left, c.currency, c.decimals)} left of ${formatMinor(c.limit_minor, c.currency, c.decimals)}`
+  }
+  return `${formatMinor(c.used_minor, c.currency, c.decimals)} used`
 }
 
 /** Human-friendly window label. */
@@ -41,6 +74,7 @@ export function quotaWindowLabel(window?: string): string {
     case '7d': return '7-day'
     case '7d_sonnet': return '7-day (Sonnet)'
     case '7d_opus': return '7-day (Opus)'
+    case EXTRA_USAGE_WINDOW: return 'Extra usage'
     default: return window
   }
 }
