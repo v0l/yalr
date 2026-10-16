@@ -226,12 +226,24 @@ pub fn finish_reason(stop: Option<&str>) -> Option<String> {
     }
 }
 
-pub fn map_status_error(status: u16, body: String) -> ProviderError {
+pub fn retry_after_ms(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|secs| secs.saturating_mul(1000))
+}
+
+pub fn map_status_error(
+    status: u16,
+    retry_after: Option<u64>,
+    body: String,
+) -> ProviderError {
     match status {
         401 | 403 => ProviderError::Authentication(body),
         404 => ProviderError::NotFound(body),
         429 => ProviderError::RateLimit {
-            retry_after_ms: 2000,
+            retry_after_ms: retry_after.unwrap_or(2000),
             message: body,
         },
         _ => ProviderError::ServerError {
@@ -250,6 +262,36 @@ mod tests {
         assert_eq!(finish_reason(Some("end_turn")), Some("stop".to_string()));
         assert_eq!(finish_reason(Some("tool_use")), Some("tool_calls".to_string()));
         assert_eq!(finish_reason(None), None);
+    }
+
+    #[test]
+    fn retry_after_ms_parses_seconds_header() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("15561"),
+        );
+        assert_eq!(retry_after_ms(&headers), Some(15_561_000));
+    }
+
+    #[test]
+    fn retry_after_ms_none_when_absent_or_date_form() {
+        let headers = reqwest::header::HeaderMap::new();
+        assert_eq!(retry_after_ms(&headers), None);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("Wed, 21 Oct 2026 07:28:00 GMT"),
+        );
+        assert_eq!(retry_after_ms(&headers), None);
+    }
+
+    #[test]
+    fn map_status_error_429_uses_header_retry_after() {
+        let err = map_status_error(429, Some(15_561_000), "rate limit".into());
+        assert_eq!(err.retry_after_ms(), Some(15_561_000));
+        let err = map_status_error(429, None, "rate limit".into());
+        assert_eq!(err.retry_after_ms(), Some(2000));
     }
 
     #[test]

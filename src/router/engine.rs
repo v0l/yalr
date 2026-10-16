@@ -1130,6 +1130,7 @@ impl Router {
                         // the client? Distinct from `chunks_yielded`, which spans
                         // the whole failover loop.
                         let mut attempt_yielded = false;
+                        let mut stream_errored = false;
 
                         while let Some(result) = stream.next().await {
                             match result {
@@ -1178,6 +1179,7 @@ impl Router {
                                 }
                                 Err(e) => {
                                     metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
+                                    stream_errored = true;
 
                                     // Log detailed error context for debugging
                                     tracing::error!(
@@ -1211,7 +1213,8 @@ impl Router {
                                                 None
                                             }
                                         }).map(Duration::from_millis)
-                                          .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)));
+                                          .unwrap_or_else(|| Duration::from_millis(200 * (attempt as u64)))
+                                          .min(Duration::from_millis(2000));
                                         tokio::time::sleep(backoff).await;
 
                                         break; // Continue to next provider in the outer loop
@@ -1249,8 +1252,9 @@ impl Router {
                         // chunks, or only role/usage/finish-reason chunks with a
                         // clean stop). Treat as a transient failure and fail over
                         // to another provider rather than surfacing an empty
-                        // completion to the client.
-                        if !saw_content {
+                        // completion to the client. A stream that already errored
+                        // is reported with its real error, not as empty.
+                        if !saw_content && !stream_errored {
                             let empty_err = ProviderError::Other(
                                 format!(
                                     "provider '{}' returned an empty completion (no content, reasoning, or tool calls)",

@@ -218,8 +218,9 @@ impl Provider for AnthropicOAuthProvider {
             }
         }
         if !status.is_success() {
+            let retry_after = wire::retry_after_ms(resp.headers());
             let text = resp.text().await.unwrap_or_default();
-            return Err(map_status_error(status.as_u16(), text));
+            return Err(map_status_error(status.as_u16(), retry_after, text));
         }
         let parsed: MessagesResponse = resp
             .json()
@@ -308,8 +309,9 @@ impl Provider for AnthropicOAuthProvider {
                 }
             }
             if !status.is_success() {
+                let retry_after = wire::retry_after_ms(resp.headers());
                 let text = resp.text().await.unwrap_or_default();
-                yield Err(map_status_error(status.as_u16(), text));
+                yield Err(map_status_error(status.as_u16(), retry_after, text));
                 return;
             }
 

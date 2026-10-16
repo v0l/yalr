@@ -22,6 +22,8 @@ enum StreamMode {
     /// Role-only + usage-only chunks, then a clean stop — mimics upstream
     /// models (e.g. kimi on OpenRouter) that return an empty completion.
     Empty,
+    /// A transient rate-limit error before any data, then end of stream.
+    RateLimitBeforeData,
 }
 
 struct MockProvider {
@@ -65,6 +67,11 @@ impl MockProvider {
 
     fn with_empty_stream(mut self) -> Self {
         self.stream_mode = StreamMode::Empty;
+        self
+    }
+
+    fn with_rate_limit_before_data(mut self) -> Self {
+        self.stream_mode = StreamMode::RateLimitBeforeData;
         self
     }
 
@@ -192,6 +199,10 @@ impl Provider for MockProvider {
                 });
                 vec![Ok(role_chunk), Ok(stop_chunk)]
             }
+            StreamMode::RateLimitBeforeData => vec![Err(ProviderError::RateLimit {
+                retry_after_ms: 15_561_000,
+                message: "rate limit".to_string(),
+            })],
         };
 
         Ok(Box::pin(stream::iter(chunks)))
@@ -578,6 +589,43 @@ async fn test_router_streaming_all_providers_empty_errors() {
         err.to_string().contains("empty completion"),
         "error should mention empty completion, got: {}",
         err
+    );
+}
+
+#[tokio::test]
+async fn test_router_streaming_rate_limit_before_data_surfaces_real_error() {
+    // A stream that dies with a 429 before any data must surface the rate
+    // limit error, not the synthetic empty-completion error.
+    let db = create_test_db().await;
+    let (router, _metrics) = create_test_router_with_db(db);
+
+    let limited = Arc::new(MockProvider::new("limited").with_rate_limit_before_data());
+    router.add_provider(limited.clone()).await;
+    router
+        .register_route("test-model", vec![limited.clone()])
+        .await;
+
+    let request = create_test_stream_request("test-model");
+    let mut stream = router.chat_completions_stream(&request, None).await.unwrap();
+
+    let mut last_error: Option<RouterError> = None;
+    while let Some(chunk_result) = stream.next().await {
+        if let Err(e) = chunk_result {
+            last_error = Some(e);
+        }
+    }
+
+    let err = last_error.expect("stream should surface an error");
+    let msg = err.to_string();
+    assert!(
+        !msg.contains("empty completion"),
+        "429 before data must not be reported as an empty completion, got: {}",
+        msg
+    );
+    assert!(
+        msg.to_lowercase().contains("rate limit"),
+        "error should mention the rate limit, got: {}",
+        msg
     );
 }
 
