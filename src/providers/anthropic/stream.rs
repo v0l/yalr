@@ -171,13 +171,7 @@ pub(super) fn chat_completions_stream(
                         }
                     }
                     async_anthropic::types::MessagesStreamEvent::MessageDelta { delta, usage } => {
-                        let finish_reason = match delta.stop_reason.as_deref() {
-                            Some("end_turn") | Some("max_tokens") | Some("stop_sequence") => {
-                                Some("stop".to_string())
-                            }
-                            Some("tool_use") => Some("tool_calls".to_string()),
-                            _ => None,
-                        };
+                        let finish_reason = crate::providers::anthropic_oauth::finish_reason(delta.stop_reason.as_deref());
 
                         // Combine the prompt/cache counts seen on `message_start`
                         // with the output count on this `message_delta`, then map

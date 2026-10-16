@@ -285,10 +285,14 @@ pub(super) fn build_anthropic_request(
     }
 
     builder.messages(messages);
-    builder.max_tokens(request.max_completion_tokens.unwrap_or(4096) as i32);
+    #[allow(deprecated)]
+    let max_tokens = request.max_completion_tokens.or(request.max_tokens).unwrap_or(4096);
+    builder.max_tokens(max_tokens as i32);
 
     if let Some(temp) = request.temperature {
-        builder.temperature(temp);
+        if !crate::providers::anthropic_oauth::rejects_sampling_params(&request.model) {
+            builder.temperature(temp);
+        }
     }
 
     if let Some(ref stop) = request.stop {

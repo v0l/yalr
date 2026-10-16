@@ -9,6 +9,7 @@ mod billing;
 mod cc_names;
 mod chunks;
 mod convert;
+mod sanitize;
 mod shaping;
 mod thinking;
 
@@ -17,6 +18,7 @@ pub use cc_names::{from_cc_name, remap_tool_defs, remap_tool_use_blocks, strip_c
 pub use chunks::*;
 pub use convert::*;
 pub use shaping::{shape_system_texts, split_assistant_tool_use_messages};
+pub use sanitize::{clean_messages, rejects_sampling_params, sanitize};
 pub use thinking::apply_thinking;
 
 use serde::{Deserialize, Serialize};
@@ -163,7 +165,17 @@ pub struct ThinkingConfig {
 
 #[derive(Debug, Serialize)]
 pub struct OutputConfig {
-    pub effort: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<OutputFormat>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OutputFormat {
+    #[serde(rename = "type")]
+    pub format_type: &'static str,
+    pub schema: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -237,6 +249,8 @@ pub struct StreamEvent {
     #[serde(rename = "type")]
     pub event_type: String,
     #[serde(default)]
+    pub error: Option<StreamError>,
+    #[serde(default)]
     pub message: Option<StreamMessage>,
     #[serde(default)]
     pub delta: Option<StreamDelta>,
@@ -246,6 +260,42 @@ pub struct StreamEvent {
     pub index: Option<usize>,
     #[serde(default)]
     pub content_block: Option<ContentBlock>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StreamError {
+    #[serde(rename = "type", default)]
+    pub error_type: String,
+    #[serde(default)]
+    pub message: String,
+}
+
+pub fn stream_error(error: Option<StreamError>) -> ProviderError {
+    let error = error.unwrap_or(StreamError {
+        error_type: "api_error".into(),
+        message: "stream error".into(),
+    });
+    let status = match error.error_type.as_str() {
+        "overloaded_error" => 529,
+        "rate_limit_error" => 429,
+        "invalid_request_error" => 400,
+        "authentication_error" => 401,
+        "permission_error" => 403,
+        "not_found_error" => 404,
+        "request_too_large" => 413,
+        _ => 500,
+    };
+    map_status_error(status, None, format!("{}: {}", error.error_type, error.message))
+}
+
+pub fn finish_reason_enum(stop: Option<&str>) -> Option<async_openai::types::chat::FinishReason> {
+    use async_openai::types::chat::FinishReason;
+    match finish_reason(stop)?.as_str() {
+        "length" => Some(FinishReason::Length),
+        "tool_calls" => Some(FinishReason::ToolCalls),
+        "content_filter" => Some(FinishReason::ContentFilter),
+        _ => Some(FinishReason::Stop),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -279,8 +329,10 @@ pub fn now_secs() -> u32 {
 
 pub fn finish_reason(stop: Option<&str>) -> Option<String> {
     match stop {
-        Some("end_turn") | Some("max_tokens") | Some("stop_sequence") => Some("stop".to_string()),
+        Some("end_turn") | Some("stop_sequence") | Some("pause_turn") => Some("stop".to_string()),
+        Some("max_tokens") | Some("model_context_window_exceeded") => Some("length".to_string()),
         Some("tool_use") => Some("tool_calls".to_string()),
+        Some("refusal") => Some("content_filter".to_string()),
         _ => None,
     }
 }
@@ -319,8 +371,26 @@ mod tests {
     #[test]
     fn finish_reason_mapping() {
         assert_eq!(finish_reason(Some("end_turn")), Some("stop".to_string()));
+        assert_eq!(finish_reason(Some("max_tokens")), Some("length".to_string()));
+        assert_eq!(finish_reason(Some("refusal")), Some("content_filter".to_string()));
         assert_eq!(finish_reason(Some("tool_use")), Some("tool_calls".to_string()));
         assert_eq!(finish_reason(None), None);
+    }
+
+    #[test]
+    fn stream_error_event_keeps_overload_retryable() {
+        let event: StreamEvent = serde_json::from_str(
+            r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+        )
+        .unwrap();
+        let err = stream_error(event.error);
+        assert!(err.is_transient());
+        assert_eq!(err.status_code(), Some(529));
+        assert!(!stream_error(Some(StreamError {
+            error_type: "invalid_request_error".into(),
+            message: "bad".into(),
+        }))
+        .is_transient());
     }
 
     #[test]

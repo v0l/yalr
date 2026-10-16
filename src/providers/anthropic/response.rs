@@ -58,14 +58,7 @@ pub(super) fn anthropic_response_to_openai(
         }
     };
 
-    let finish_reason = match response.stop_reason.as_deref() {
-        Some("end_turn") | Some("max_tokens") => {
-            Some(async_openai::types::chat::FinishReason::Stop)
-        }
-        Some("stop_sequence") => Some(async_openai::types::chat::FinishReason::Stop),
-        Some("tool_use") => Some(async_openai::types::chat::FinishReason::ToolCalls),
-        _ => None,
-    };
+    let finish_reason = crate::providers::anthropic_oauth::finish_reason_enum(response.stop_reason.as_deref());
 
     let usage = response.usage.as_ref().map(|u| anthropic_usage_to_openai(u));
 

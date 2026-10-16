@@ -6,6 +6,8 @@
 //! "You are Claude Code, Anthropic's official CLI for Claude." (see `wire`).
 
 mod credits;
+#[cfg(test)]
+mod stream_tests;
 mod wire;
 
 use std::sync::{Arc, RwLock};
@@ -23,6 +25,7 @@ use crate::providers::quota::{
     has_extra_usage,
 };
 use wire::*;
+pub use wire::{finish_reason, finish_reason_enum, rejects_sampling_params};
 
 const BETA_HEADER: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -202,6 +205,7 @@ impl Provider for AnthropicOAuthProvider {
             .map_err(|e| ProviderError::Authentication(e.to_string()))?;
         let mut body = build_request(request, false, &self.cc_version);
         apply_thinking(&mut body, request);
+        sanitize(&mut body);
         let resp = self
             .apply_oauth_headers(
                 self.http.post(self.messages_url()).json(&body),
@@ -247,13 +251,7 @@ impl Provider for AnthropicOAuthProvider {
             choices: vec![async_openai::types::chat::ChatChoice {
                 index: 0,
                 message,
-                finish_reason: match parsed.stop_reason.as_deref() {
-                    Some("end_turn") | Some("max_tokens") | Some("stop_sequence") => {
-                        Some(async_openai::types::chat::FinishReason::Stop)
-                    }
-                    Some("tool_use") => Some(async_openai::types::chat::FinishReason::ToolCalls),
-                    _ => None,
-                },
+                finish_reason: finish_reason_enum(parsed.stop_reason.as_deref()),
                 logprobs: None,
             }],
             usage,
@@ -272,6 +270,7 @@ impl Provider for AnthropicOAuthProvider {
         crate::providers::anthropic_media::check_media(&request.messages)?;
         let mut body = build_request(request, true, &self.cc_version);
         apply_thinking(&mut body, request);
+        sanitize(&mut body);
         let user_agent = user_agent(&self.cc_version);
         let url = self.messages_url();
         let http = self.http.clone();
@@ -318,7 +317,7 @@ impl Provider for AnthropicOAuthProvider {
             }
 
             let mut bytes_stream = resp.bytes_stream();
-            let mut buffer = String::new();
+            let mut buffer: Vec<u8> = Vec::new();
             let mut message_id = String::new();
             // Prompt + cache token counts arrive on message_start; output on
             // message_delta. Hold the former to report both together at the end.
@@ -333,11 +332,12 @@ impl Provider for AnthropicOAuthProvider {
                     Ok(c) => c,
                     Err(e) => { yield Err(ProviderError::Other(e.into())); return; }
                 };
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                buffer.extend_from_slice(&chunk);
 
-                while let Some(pos) = buffer.find('\n') {
-                    let line = buffer[..pos].trim_end_matches('\r').to_string();
-                    buffer.drain(..=pos);
+                while let Some(pos) = buffer.iter().position(|b| *b == b'\n') {
+                    let raw: Vec<u8> = buffer.drain(..=pos).collect();
+                    let line = String::from_utf8_lossy(&raw);
+                    let line = line.trim_end_matches(['\n', '\r']);
                     let data = match line.strip_prefix("data:") {
                         Some(d) => d.trim(),
                         None => continue,
@@ -348,6 +348,10 @@ impl Provider for AnthropicOAuthProvider {
                         Err(_) => continue,
                     };
                     match event.event_type.as_str() {
+                        "error" => {
+                            yield Err(stream_error(event.error));
+                            return;
+                        }
                         "message_start" => {
                             if let Some(m) = event.message {
                                 message_id = m.id.unwrap_or_default();

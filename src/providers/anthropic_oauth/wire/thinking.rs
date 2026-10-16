@@ -40,7 +40,7 @@ pub fn apply_thinking(body: &mut MessagesRequest, request: &ChatRequest) {
         thinking_type: "adaptive",
         display: "summarized",
     });
-    body.output_config = request
+    let effort = request
         .extra_fields()
         .get("reasoning_effort")
         .and_then(|v| v.as_str().map(str::to_string))
@@ -51,8 +51,12 @@ pub fn apply_thinking(body: &mut MessagesRequest, request: &ChatRequest) {
                 .and_then(|e| serde_json::to_value(e).ok())
                 .and_then(|v| v.as_str().map(str::to_string))
         })
-        .and_then(|e| anthropic_effort(&e))
-        .map(|effort| OutputConfig { effort });
+        .and_then(|e| anthropic_effort(&e));
+    if effort.is_some() {
+        body.output_config
+            .get_or_insert(OutputConfig { effort: None, format: None })
+            .effort = effort;
+    }
 }
 
 #[cfg(test)]

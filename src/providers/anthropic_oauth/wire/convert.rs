@@ -219,6 +219,7 @@ pub fn build_request(
     // Anthropic's classifier checks that tool names match expected Claude Code
     // conventions. Upstream callers see the original names in responses.
     remap_tool_use_blocks(&mut messages);
+    clean_messages(&mut messages);
 
     // Prepend the Claude Code billing header block (de-duplicated) so the
     // request is accepted/counted like Claude Code rather than rejected as
@@ -279,8 +280,10 @@ pub fn build_request(
     }
     MessagesRequest {
         model: request.model.clone(),
+        #[allow(deprecated)]
         max_tokens: request
             .max_completion_tokens
+            .or(request.max_tokens)
             .unwrap_or_else(|| default_max_tokens(&request.model)),
         messages,
         system,
@@ -289,7 +292,10 @@ pub fn build_request(
         tools,
         tool_choice: convert_tool_choice(request),
         thinking: None,
-        output_config: None,
+        output_config: output_format(request).map(|format| OutputConfig {
+            effort: None,
+            format: Some(format),
+        }),
         stream,
     }
 }
@@ -317,6 +323,16 @@ fn convert_tools(request: &CreateChatCompletionRequest) -> Option<Vec<ToolDef>> 
     }
 }
 
+fn output_format(request: &CreateChatCompletionRequest) -> Option<OutputFormat> {
+    match request.response_format.as_ref()? {
+        async_openai::types::chat::ResponseFormat::JsonSchema { json_schema } => Some(OutputFormat {
+            format_type: "json_schema",
+            schema: json_schema.schema.clone()?,
+        }),
+        _ => None,
+    }
+}
+
 /// Convert an OpenAI tool_choice option to Anthropic's tool_choice JSON.
 fn convert_tool_choice(request: &CreateChatCompletionRequest) -> Option<serde_json::Value> {
     use async_openai::types::chat::{ChatCompletionToolChoiceOption, ToolChoiceOptions};
@@ -327,7 +343,9 @@ fn convert_tool_choice(request: &CreateChatCompletionRequest) -> Option<serde_js
         ChatCompletionToolChoiceOption::Mode(ToolChoiceOptions::Required) => {
             Some(serde_json::json!({ "type": "any" }))
         }
-        ChatCompletionToolChoiceOption::Mode(ToolChoiceOptions::None) => None,
+        ChatCompletionToolChoiceOption::Mode(ToolChoiceOptions::None) => {
+            Some(serde_json::json!({ "type": "none" }))
+        }
         ChatCompletionToolChoiceOption::Function(named) => {
             Some(serde_json::json!({ "type": "tool", "name": named.function.name }))
         }
