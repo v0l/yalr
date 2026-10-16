@@ -21,6 +21,16 @@ pub fn extra_usage_available(quotas: &[QuotaSnapshot]) -> bool {
     quotas.iter().any(|q| is_extra_usage(q) && !quota_exhausted(q))
 }
 
+pub fn carry_credit(previous: &[QuotaSnapshot], mut next: Vec<QuotaSnapshot>) -> Vec<QuotaSnapshot> {
+    let credit = previous.iter().find(|q| is_extra_usage(q)).and_then(|q| q.credit.clone());
+    if let Some(credit) = credit {
+        for q in next.iter_mut().filter(|q| is_extra_usage(q) && q.credit.is_none()) {
+            q.credit = Some(credit.clone());
+        }
+    }
+    next
+}
+
 pub fn blocking_quotas(quotas: &[QuotaSnapshot]) -> Vec<&QuotaSnapshot> {
     if extra_usage_available(quotas) {
         return Vec::new();
@@ -423,6 +433,26 @@ mod tests {
         let qs = anthropic_quotas_from_headers(&h);
         assert!(blocking_quotas(&qs).is_empty());
         assert_eq!(worst_quota(&qs).unwrap().window.as_deref(), Some("5h"));
+    }
+
+    #[test]
+    fn test_carry_credit_into_header_snapshot() {
+        let credit = crate::providers::provider_trait::QuotaCredit {
+            currency: "EUR".into(),
+            decimals: 2,
+            used_minor: 5348,
+            limit_minor: None,
+        };
+        let previous = vec![QuotaSnapshot {
+            window: Some(EXTRA_USAGE_WINDOW.into()),
+            credit: Some(credit.clone()),
+            ..Default::default()
+        }];
+        let next = carry_credit(
+            &previous,
+            anthropic_quotas_from_headers(&hm(&[("anthropic-ratelimit-unified-overage-status", "allowed")])),
+        );
+        assert_eq!(next[0].credit, Some(credit));
     }
 
     #[test]

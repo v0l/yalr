@@ -17,7 +17,7 @@ use super::*;
 use crate::db::Database;
 use crate::oauth::{OAuthKind, OAuthSession};
 use crate::providers::provider_trait::QuotaSnapshot;
-use crate::providers::quota::{anthropic_quotas_from_headers, anthropic_quotas_from_usage};
+use crate::providers::quota::{anthropic_quotas_from_headers, anthropic_quotas_from_usage, carry_credit};
 use wire::*;
 
 const BETA_HEADER: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05";
@@ -208,7 +208,7 @@ impl Provider for AnthropicOAuthProvider {
         let quotas = anthropic_quotas_from_headers(resp.headers());
         if !quotas.is_empty() {
             if let Ok(mut guard) = self.quota.write() {
-                *guard = quotas;
+                *guard = carry_credit(&guard, quotas);
             }
         }
         if !status.is_success() {
@@ -298,7 +298,7 @@ impl Provider for AnthropicOAuthProvider {
             let quotas = anthropic_quotas_from_headers(resp.headers());
             if !quotas.is_empty() {
                 if let Ok(mut guard) = quota_cache.write() {
-                    *guard = quotas;
+                    *guard = carry_credit(&guard, quotas);
                 }
             }
             if !status.is_success() {
@@ -473,10 +473,9 @@ impl Provider for AnthropicOAuthProvider {
             Ok(r) => {
                 let quotas = anthropic_quotas_from_headers(r.headers());
                 if !quotas.is_empty() {
-                    if let Ok(mut guard) = self.quota.write() {
-                        *guard = quotas.clone();
-                    }
-                    Some(quotas)
+                    let mut guard = self.quota.write().ok()?;
+                    *guard = carry_credit(&guard, quotas);
+                    Some(guard.clone())
                 } else {
                     cached()
                 }
