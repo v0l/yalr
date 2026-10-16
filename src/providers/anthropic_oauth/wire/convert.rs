@@ -181,7 +181,11 @@ fn user_content(
     MessageContent::Text(text)
 }
 
-pub fn build_request(request: &CreateChatCompletionRequest, stream: bool) -> MessagesRequest {
+pub fn build_request(
+    request: &CreateChatCompletionRequest,
+    stream: bool,
+    cc_version: &str,
+) -> MessagesRequest {
     let (mut system, mut messages) = convert(&request.messages);
 
     // Shape system blocks: replace Pi's verbose preamble with the minimal
@@ -210,7 +214,7 @@ pub fn build_request(request: &CreateChatCompletionRequest, stream: bool) -> Mes
     // third-party OAuth usage. It must come before the identity block.
     let already_present = system.iter().any(|b| b.text.contains(BILLING_HEADER_MARKER));
     if !already_present {
-        if let Some(text) = first_user_text(&request.messages).and_then(|t| billing_header_value(&t)) {
+        if let Some(text) = first_user_text(&request.messages).and_then(|t| billing_header_value(&t, cc_version)) {
             system.insert(
                 0,
                 SystemBlock {
@@ -355,7 +359,7 @@ mod tests {
             ),
             ..Default::default()
         };
-        let body = build_request(&req, false);
+        let body = build_request(&req, false, CLAUDE_CODE_VERSION);
         let tools = body.tools.expect("tools set");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "get_weather");
@@ -428,7 +432,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        let body = build_request(&req, false);
+        let body = build_request(&req, false, CLAUDE_CODE_VERSION);
         assert!(body.system[0].text.starts_with(BILLING_HEADER_MARKER));
         assert_eq!(body.system[1].text, CLAUDE_CODE_SYSTEM);
     }
@@ -445,7 +449,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        let body = build_request(&req, false);
+        let body = build_request(&req, false, CLAUDE_CODE_VERSION);
         let count = body
             .system
             .iter()
@@ -487,7 +491,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let body = build_request(&req, false);
+        let body = build_request(&req, false, CLAUDE_CODE_VERSION);
 
         // System blocks: [0] = billing header, [1] = Claude Code identity, [2] = shaped system text
         let system_text = &body.system[2].text;
@@ -526,7 +530,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let body = build_request(&req, false);
+        let body = build_request(&req, false, CLAUDE_CODE_VERSION);
         assert!(
             body.system.iter().any(|b| b.text.contains("Environment context you are running in:")),
             "classifier trigger phrase should be replaced"
@@ -551,7 +555,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        let body = build_request(&req, false);
+        let body = build_request(&req, false, CLAUDE_CODE_VERSION);
         // Exactly one breakpoint, on the final system block, so tools + the whole
         // system prompt are cached as a single prefix (Anthropic allows 4 max).
         let marked: Vec<usize> = body
@@ -569,7 +573,7 @@ mod tests {
 
         // Disabled: no system block is marked.
         crate::providers::anthropic::set_prompt_cache_enabled(false);
-        let body = build_request(&req, false);
+        let body = build_request(&req, false, CLAUDE_CODE_VERSION);
         assert!(body.system.iter().all(|b| b.cache_control.is_none()));
         crate::providers::anthropic::set_prompt_cache_enabled(true);
     }
@@ -586,7 +590,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        let body = build_request(&req, true);
+        let body = build_request(&req, true, CLAUDE_CODE_VERSION);
         assert!(body.stream);
         assert_eq!(body.max_tokens, 4096);
         // system[0] is now the billing header; identity block follows.

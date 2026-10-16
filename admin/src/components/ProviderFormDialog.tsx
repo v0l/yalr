@@ -114,6 +114,17 @@ export function ProviderFormDialog({
               provider card to refresh access.
             </div>
           )}
+          {editingProvider?.default_client_version && (
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="p-client-version" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+                Client Version<span className="font-normal text-muted-foreground tracking-normal"> (blank uses {editingProvider.default_client_version})</span>
+              </Label>
+              <Input id="p-client-version" value={form.client_version ?? ''} onChange={e => setForm({ ...form, client_version: e.target.value })} placeholder={editingProvider.default_client_version} className="font-mono bg-surface border-border text-foreground" />
+              <p className="font-mono text-[10px] text-muted-foreground">
+                Claude Code version sent in the billing header and user agent. Raise it when Anthropic returns claude_code_version_too_old.
+              </p>
+            </div>
+          )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving} className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</Button>
             <Button type="submit" disabled={saving} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">

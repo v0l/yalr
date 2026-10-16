@@ -27,6 +27,10 @@ pub struct ProviderResponse {
     /// OAuth connection status (present only for OAuth providers).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oauth: Option<OAuthStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_client_version: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -99,6 +103,7 @@ pub struct ProviderUpdateRequest {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub provider_type: Option<String>,
+    pub client_version: Option<String>,
 }
 
 #[axum::debug_handler]
@@ -163,6 +168,8 @@ pub async fn list_providers(State(state): State<std::sync::Arc<AppState>>) -> Js
                 payment_options: supported_currencies,
                 is_oauth,
                 oauth,
+                default_client_version: crate::providers::default_client_version(p.provider_type),
+                client_version: p.client_version,
             }
         })
         .collect();
@@ -402,6 +409,15 @@ pub async fn update_provider(
     }).await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    let updated = match request.client_version.as_deref() {
+        Some(version) => {
+            let version = Some(version.trim()).filter(|v| !v.is_empty());
+            state.config.db.set_provider_client_version(updated.id, version).await
+                .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        }
+        None => updated,
+    };
+
     state.config.router.reload_config().await
         .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -432,5 +448,7 @@ pub async fn update_provider(
         payment_options,
         is_oauth: updated.provider_type.is_oauth(),
         oauth: None,
+        default_client_version: crate::providers::default_client_version(updated.provider_type),
+        client_version: updated.client_version,
     }))
 }

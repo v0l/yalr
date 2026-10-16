@@ -21,7 +21,7 @@ pub const CLAUDE_CODE_SYSTEM: &str =
     "You are Claude Code, Anthropic's official CLI for Claude.";
 
 /// Claude Code version string embedded in the billing header.
-pub const CLAUDE_CODE_VERSION: &str = "2.1.150";
+pub const CLAUDE_CODE_VERSION: &str = "2.1.301";
 /// Salt used in the billing header suffix hash.
 pub const BILLING_HEADER_SALT: &str = "59cf53e54c78";
 /// Entrypoint identifier included in the billing header.
@@ -39,7 +39,7 @@ fn sha256_hex(input: &str) -> String {
 
 /// Build the synthetic Claude Code billing header value from the first user
 /// message text. Returns `None` when there is no user text to sample.
-pub fn billing_header_value(first_user_text: &str) -> Option<String> {
+pub fn billing_header_value(first_user_text: &str, cc_version: &str) -> Option<String> {
     if first_user_text.is_empty() {
         return None;
     }
@@ -51,14 +51,14 @@ pub fn billing_header_value(first_user_text: &str) -> Option<String> {
         .map(|&i| chars.get(i).copied().unwrap_or('0'))
         .collect();
     let suffix: String =
-        sha256_hex(&format!("{}{}{}", BILLING_HEADER_SALT, sampled, CLAUDE_CODE_VERSION))
+        sha256_hex(&format!("{}{}{}", BILLING_HEADER_SALT, sampled, cc_version))
             .chars()
             .take(3)
             .collect();
 
     Some(format!(
         "{} cc_version={}.{}; cc_entrypoint={}; cch={};",
-        BILLING_HEADER_MARKER, CLAUDE_CODE_VERSION, suffix, CLAUDE_CODE_ENTRYPOINT, cch
+        BILLING_HEADER_MARKER, cc_version, suffix, CLAUDE_CODE_ENTRYPOINT, cch
     ))
 }
 
@@ -92,13 +92,13 @@ mod tests {
     use super::*;
 
     fn billing_value(text: &str) -> String {
-        billing_header_value(text).unwrap()
+        billing_header_value(text, CLAUDE_CODE_VERSION).unwrap()
     }
 
     #[test]
     fn billing_header_format_is_stable() {
         let v = billing_value("Please summarize this repository status.");
-        assert!(v.starts_with("x-anthropic-billing-header: cc_version=2.1.150."));
+        assert!(v.starts_with("x-anthropic-billing-header: cc_version=2.1.301."));
         assert!(v.contains("cc_entrypoint=sdk-cli;"));
         assert!(v.contains("cch="));
         // cch is the first 5 hex chars of sha256(first user text)
@@ -111,7 +111,14 @@ mod tests {
     }
 
     #[test]
+    fn billing_header_uses_given_version() {
+        let v = billing_header_value("Please summarize this repository status.", "9.9.9").unwrap();
+        assert!(v.starts_with("x-anthropic-billing-header: cc_version=9.9.9."));
+        assert_ne!(v, billing_value("Please summarize this repository status."));
+    }
+
+    #[test]
     fn billing_header_empty_text_is_none() {
-        assert!(billing_header_value("").is_none());
+        assert!(billing_header_value("", CLAUDE_CODE_VERSION).is_none());
     }
 }

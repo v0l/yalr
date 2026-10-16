@@ -10,6 +10,8 @@ export interface Provider {
   payment_options: PaymentOption[]
   is_oauth?: boolean
   oauth?: OAuthStatus
+  client_version?: string
+  default_client_version?: string
 }
 
 export interface OAuthStatus {
@@ -40,6 +42,7 @@ export interface ProviderFormData {
   base_url: string
   api_key: string
   provider_type: string
+  client_version?: string
 }
 
 export interface PaymentOption {
@@ -226,6 +229,7 @@ export interface ProviderUpdateRequest {
   base_url?: string
   api_key?: string
   provider_type?: string
+  client_version?: string
 }
 
 export interface ModelSyncReport {

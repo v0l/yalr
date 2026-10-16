@@ -108,6 +108,13 @@ pub use ppq::PpqProvider;
 use crate::db::{Database, Provider as ProviderRecord, ProviderType};
 use std::sync::Arc;
 
+pub fn default_client_version(provider_type: ProviderType) -> Option<&'static str> {
+    match provider_type {
+        ProviderType::AnthropicOauth => Some(anthropic_oauth::DEFAULT_CLIENT_VERSION),
+        _ => None,
+    }
+}
+
 
 /// Factory function to create a provider instance based on type.
 ///

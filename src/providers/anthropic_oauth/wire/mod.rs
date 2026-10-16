@@ -292,7 +292,7 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let body = serde_json::to_value(build_request(&request, false)).unwrap();
+        let body = serde_json::to_value(build_request(&request, false, CLAUDE_CODE_VERSION)).unwrap();
         let messages = body["messages"].as_array().unwrap();
         let users: Vec<_> = messages.iter().filter(|m| m["role"] == "user").collect();
         assert!(users[0]["content"].is_string() || users[0]["content"][0]["type"] == "text");

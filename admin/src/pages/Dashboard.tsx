@@ -157,7 +157,7 @@ export default function Dashboard() {
 
   function openEdit(provider: Provider) {
     setEditingProvider(provider)
-    setForm({ name: provider.name, slug: provider.slug, base_url: provider.base_url, api_key: '', provider_type: provider.provider_type })
+    setForm({ name: provider.name, slug: provider.slug, base_url: provider.base_url, api_key: '', provider_type: provider.provider_type, client_version: provider.client_version ?? '' })
     setFormError(null)
     setFormDialogOpen(true)
   }
@@ -172,6 +172,7 @@ export default function Dashboard() {
         if (form.base_url !== editingProvider.base_url) d.base_url = form.base_url
         if (form.api_key) d.api_key = form.api_key
         if (form.provider_type !== editingProvider.provider_type) d.provider_type = form.provider_type
+        if (editingProvider.default_client_version && form.client_version !== (editingProvider.client_version ?? '')) d.client_version = form.client_version ?? ''
         await api.updateProvider(editingProvider.slug, d)
         setSuccessMessage('PROVIDER UPDATED')
       } else {

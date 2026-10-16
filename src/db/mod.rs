@@ -100,6 +100,8 @@ pub struct Provider {
     pub oauth_expires_at: Option<i64>,
     #[sqlx(default)]
     pub oauth_account_id: Option<String>,
+    #[sqlx(default)]
+    pub client_version: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -388,6 +390,21 @@ impl Database {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn set_provider_client_version(
+        &self,
+        id: i64,
+        client_version: Option<&str>,
+    ) -> Result<Provider, sqlx::Error> {
+        sqlx::query_as::<_, Provider>(
+            "UPDATE providers SET client_version = ?, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ? RETURNING *",
+        )
+        .bind(client_version)
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await
     }
 
     /// Persist OAuth credentials (access/refresh tokens, expiry, account id) for a provider.
@@ -1460,6 +1477,23 @@ mod tests {
         assert_eq!(updated.slug, "updated-slug");
         assert_eq!(updated.base_url, "http://localhost:9090");
         assert_eq!(updated.api_key, Some("new-key".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_set_provider_client_version() {
+        let db = setup_test_db().await;
+        let created = db.create_provider(NewProvider {
+            name: "claude",
+            slug: "claude",
+            base_url: "https://api.anthropic.com",
+            api_key: None,
+            provider_type: Some(ProviderType::AnthropicOauth),
+        }).await.unwrap();
+        assert_eq!(created.client_version, None);
+        let set = db.set_provider_client_version(created.id, Some("2.1.301")).await.unwrap();
+        assert_eq!(set.client_version.as_deref(), Some("2.1.301"));
+        let cleared = db.set_provider_client_version(created.id, None).await.unwrap();
+        assert_eq!(cleared.client_version, None);
     }
 
     #[tokio::test]

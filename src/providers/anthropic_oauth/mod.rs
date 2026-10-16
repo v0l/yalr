@@ -22,7 +22,7 @@ use wire::*;
 
 const BETA_HEADER: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-const USER_AGENT: &str = "claude-cli/2.1.81 (external, cli)";
+pub const DEFAULT_CLIENT_VERSION: &str = CLAUDE_CODE_VERSION;
 
 /// Models advertised when the live model list cannot be fetched.
 const FALLBACK_MODELS: &[&str] = &[
@@ -42,6 +42,11 @@ pub struct AnthropicOAuthProvider {
     /// Last quota windows seen on a response, captured from rate-limit headers.
     quota: Arc<RwLock<Vec<QuotaSnapshot>>>,
     models_cache: ModelsCache,
+    cc_version: String,
+}
+
+fn user_agent(cc_version: &str) -> String {
+    format!("claude-cli/{} (external, cli)", cc_version)
 }
 
 impl AnthropicOAuthProvider {
@@ -63,6 +68,13 @@ impl AnthropicOAuthProvider {
             session: Arc::new(session),
             quota: Arc::new(RwLock::new(Vec::new())),
             models_cache: ModelsCache::new(),
+            cc_version: record
+                .client_version
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .unwrap_or(CLAUDE_CODE_VERSION)
+                .to_string(),
         }
     }
 
@@ -111,7 +123,7 @@ impl AnthropicOAuthProvider {
             .bearer_auth(token)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("anthropic-beta", BETA_HEADER)
-            .header("user-agent", USER_AGENT)
+            .header("user-agent", user_agent(&self.cc_version))
             .header("x-app", "cli")
             .header("anthropic-dangerous-direct-browser-access", "true")
     }
@@ -182,7 +194,7 @@ impl Provider for AnthropicOAuthProvider {
             .access_token()
             .await
             .map_err(|e| ProviderError::Authentication(e.to_string()))?;
-        let body = build_request(request, false);
+        let body = build_request(request, false, &self.cc_version);
         let resp = self
             .apply_oauth_headers(
                 self.http.post(self.messages_url()).json(&body),
@@ -250,7 +262,8 @@ impl Provider for AnthropicOAuthProvider {
         request: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamingChunk, ProviderError>>, ProviderError> {
         crate::providers::anthropic_media::check_media(&request.messages)?;
-        let body = build_request(request, true);
+        let body = build_request(request, true, &self.cc_version);
+        let user_agent = user_agent(&self.cc_version);
         let url = self.messages_url();
         let http = self.http.clone();
         let session = self.session.clone();
@@ -270,7 +283,7 @@ impl Provider for AnthropicOAuthProvider {
                 .bearer_auth(&token)
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .header("anthropic-beta", BETA_HEADER)
-                .header("user-agent", USER_AGENT)
+                .header("user-agent", &user_agent)
                 .header("x-app", "cli")
                 .header("anthropic-dangerous-direct-browser-access", "true")
                 .header("accept", "text/event-stream")
