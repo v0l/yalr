@@ -610,4 +610,25 @@ mod tests {
             Some(async_anthropic::types::ToolChoice::Any)
         ));
     }
+
+    #[test]
+    fn max_tokens_and_generation_five_temperature() {
+        let request: crate::providers::ChatRequest = serde_json::from_str(
+            r#"{"model":"claude-opus-5-5","max_tokens":20,"temperature":0.7,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .unwrap();
+        let (system, messages) = convert_messages(&request.messages);
+        let body = serde_json::to_value(build_anthropic_request(system, messages, &request)).unwrap();
+        assert_eq!(body["max_tokens"], 20);
+        assert!(body.get("temperature").is_none());
+
+        let request: crate::providers::ChatRequest = serde_json::from_str(
+            r#"{"model":"claude-haiku-4-5","temperature":0.7,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .unwrap();
+        let (system, messages) = convert_messages(&request.messages);
+        let body = serde_json::to_value(build_anthropic_request(system, messages, &request)).unwrap();
+        assert!((body["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+    }
+
 }

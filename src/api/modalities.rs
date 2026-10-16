@@ -273,6 +273,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn routing_engine_over_claude_advertises_vision() {
+        let provider: Arc<dyn Provider> = Arc::new(crate::providers::AnthropicProvider::new(
+            "Claude",
+            Some("claude"),
+            "http://127.0.0.1:9",
+            Some("k"),
+        ));
+        let state = state_with(provider, "claude-opus-5-5").await;
+
+        let architecture = probed_input_modalities(&state, "claude-opus-5-5").await.unwrap();
+        assert!(architecture.contains(&"image".to_string()));
+    }
+
+    #[tokio::test]
     async fn routing_engine_advertises_vision_from_its_backend() {
         let (base, _) = start_props_server(true).await;
         let state = state_with(vision_provider(&base), "code-high").await;
