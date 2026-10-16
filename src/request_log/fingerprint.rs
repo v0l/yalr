@@ -85,6 +85,10 @@ pub fn first_divergence(previous: &Fingerprint, current: &Fingerprint) -> Option
     (shared < comparable).then_some(shared as i64)
 }
 
+fn is_related(previous: &Fingerprint, current: &Fingerprint) -> bool {
+    previous.system_hash == current.system_hash || common_prefix(previous, current) > 0
+}
+
 fn score(previous: &Fingerprint, current: &Fingerprint) -> (bool, bool, usize) {
     (
         previous.system_hash == current.system_hash,
@@ -122,7 +126,8 @@ impl Tracker {
             .enumerate()
             .max_by_key(|(_, previous)| score(&previous.fingerprint, current))
             .map(|(index, _)| index);
-        let outcome = best
+        let related = best.filter(|&index| is_related(&list[index].fingerprint, current));
+        let outcome = related
             .map(|index| {
                 (
                     first_divergence(&list[index].fingerprint, current),
@@ -130,12 +135,12 @@ impl Tracker {
                 )
             })
             .unwrap_or((None, None));
-        let extends_best = best.is_some_and(|index| {
+        let extends_best = related.is_some_and(|index| {
             let previous = &list[index].fingerprint;
             outcome.0.is_none() && previous.message_hashes.len() <= current.message_hashes.len()
         });
         if extends_best {
-            if let Some(index) = best {
+            if let Some(index) = related {
                 list.remove(index);
             }
         }
@@ -216,6 +221,31 @@ mod tests {
         tracker.compare_and_store("k".into(), "b1", &b1);
         assert_eq!(tracker.compare_and_store("k".into(), "a2", &a2), (None, Some("a1".into())));
         assert_eq!(tracker.compare_and_store("k".into(), "b2", &b2), (None, Some("b1".into())));
+    }
+
+    #[test]
+    fn an_unrelated_conversation_is_not_linked() {
+        let tracker = Tracker::default();
+        let one = fingerprint(&body(json!([user("alpha", true)])));
+        let mut other_body = body(json!([user("omega", true)]));
+        other_body["system"][0]["text"] = json!("a different billing header");
+        let other = fingerprint(&other_body);
+        tracker.compare_and_store("k".into(), "r1", &one);
+        assert_eq!(tracker.compare_and_store("k".into(), "r2", &other), (None, None));
+    }
+
+    #[test]
+    fn a_changed_system_prompt_mid_conversation_is_reported() {
+        let tracker = Tracker::default();
+        let one = fingerprint(&body(json!([user("a", true)])));
+        let mut changed = body(json!([user("a", false), user("b", true)]));
+        changed["system"][0]["text"] = json!("pi edited a prompt section");
+        let two = fingerprint(&changed);
+        tracker.compare_and_store("k".into(), "r1", &one);
+        assert_eq!(
+            tracker.compare_and_store("k".into(), "r2", &two),
+            (Some(DIVERGED_SYSTEM), Some("r1".to_string()))
+        );
     }
 
     #[test]

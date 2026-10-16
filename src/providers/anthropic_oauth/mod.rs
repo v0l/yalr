@@ -248,6 +248,14 @@ impl Provider for AnthropicOAuthProvider {
 
         let (text, tool_calls) = split_content_blocks(&parsed.content);
         let usage = parsed.usage.as_ref().map(usage_to_openai);
+        if let (Some(trace), Some(raw)) = (&trace, parsed.usage.as_ref()) {
+            trace.set_usage(crate::request_log::trace::Usage {
+                prompt_tokens: raw.input_tokens + raw.cache_creation_input_tokens + raw.cache_read_input_tokens,
+                completion_tokens: raw.output_tokens,
+                cached_tokens: raw.cache_read_input_tokens,
+                cache_write_tokens: raw.cache_creation_input_tokens,
+            });
+        }
 
         let message = async_openai::types::chat::ChatCompletionResponseMessage {
             content: Some(text),
@@ -646,6 +654,8 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
         let received = server.received_requests().await.unwrap();
         assert_eq!(upstream.request_body.unwrap(), received[0].body);
         assert_eq!(upstream.status, Some(200));
+        let usage = trace.usage().unwrap();
+        assert_eq!((usage.prompt_tokens, usage.cached_tokens, usage.cache_write_tokens), (5, 0, 0));
     }
 
     #[tokio::test]
