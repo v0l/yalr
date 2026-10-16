@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn image_parts_become_image_blocks_and_text_only_stays_a_string() {
+    fn image_parts_become_image_blocks_and_text_only_stays_block_shaped() {
         let request: crate::providers::ChatRequest = serde_json::from_str(
             r#"{"model":"claude","messages":[
                 {"role":"user","content":[{"type":"text","text":"hi"}]},
@@ -378,7 +378,11 @@ mod tests {
         let body = serde_json::to_value(build_request(&request, false, CLAUDE_CODE_VERSION)).unwrap();
         let messages = body["messages"].as_array().unwrap();
         let users: Vec<_> = messages.iter().filter(|m| m["role"] == "user").collect();
-        assert!(users[0]["content"].is_string() || users[0]["content"][0]["type"] == "text");
+        // Text-only user content is a single text block, never a bare string:
+        // the shape must stay stable when this message stops being the last
+        // message on the next turn, or the prefix hash misses.
+        assert_eq!(users[0]["content"][0]["type"], "text");
+        assert_eq!(users[0]["content"][0]["text"], "hi");
         let last = users.last().unwrap()["content"].as_array().unwrap();
         assert!(last.iter().any(|b| b["type"] == "image" && b["source"]["url"] == "https://x.test/a.png"));
     }

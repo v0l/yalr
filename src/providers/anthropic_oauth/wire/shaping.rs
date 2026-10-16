@@ -387,6 +387,19 @@ More stuff after.";
     }
 
     #[test]
+    fn shape_system_texts_is_idempotent() {
+        let prompt = format!(
+            "{}\nYou help users by reading files, executing commands.\n\n{}",
+            PI_DEFAULT_PROMPT_PREFIX, PI_DEFAULT_PROMPT_TERMINATOR
+        );
+        let mut texts = vec![prompt];
+        shape_system_texts(&mut texts);
+        let once = texts[0].clone();
+        shape_system_texts(&mut texts);
+        assert_eq!(texts[0], once, "shaping an already-shaped prompt must be a no-op");
+    }
+
+    #[test]
     fn split_assistant_no_tool_use_passthrough() {
         let messages = vec![AnthropicMessage {
             role: "assistant",

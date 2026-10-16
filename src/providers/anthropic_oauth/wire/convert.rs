@@ -43,7 +43,9 @@ pub fn convert(
             },
             ChatCompletionRequestMessage::User(m) => {
                 let content = match &m.content {
-                    ChatCompletionRequestUserMessageContent::Text(t) => MessageContent::Text(t.clone()),
+                    ChatCompletionRequestUserMessageContent::Text(t) => MessageContent::Blocks(vec![
+                    RequestContentBlock::Text { text: t.clone(), cache_control: None },
+                ]),
                     ChatCompletionRequestUserMessageContent::Array(parts) => user_content(parts),
                 };
                 out.push(AnthropicMessage {
@@ -156,31 +158,30 @@ fn user_content(
     use async_openai::types::chat::ChatCompletionRequestUserMessageContentPart as Part;
 
     let mut blocks = Vec::new();
-    let mut has_media = false;
     for part in parts {
         if let Part::Text(t) = part {
-            blocks.push(RequestContentBlock::Text { text: t.text.clone(), cache_control: None });
+            blocks.push(RequestContentBlock::Text {
+                text: t.text.clone(),
+                cache_control: None,
+            });
             continue;
         }
         match media_block(part) {
-            Ok(Some(MediaBlock::Image(source))) => blocks.push(RequestContentBlock::Image { source, cache_control: None }),
-            Ok(Some(MediaBlock::Document(source))) => blocks.push(RequestContentBlock::Document { source, cache_control: None }),
+            Ok(Some(MediaBlock::Image(source))) => blocks.push(RequestContentBlock::Image {
+                source,
+                cache_control: None,
+            }),
+            Ok(Some(MediaBlock::Document(source))) => blocks.push(RequestContentBlock::Document {
+                source,
+                cache_control: None,
+            }),
             _ => continue,
         }
-        has_media = true;
     }
-    if has_media {
-        return MessageContent::Blocks(blocks);
-    }
-    let text = blocks
-        .into_iter()
-        .filter_map(|b| match b {
-            RequestContentBlock::Text { text, .. } => Some(text),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    MessageContent::Text(text)
+    // Text-only messages stay block-shaped rather than plain strings: the
+    // last message carries a cache breakpoint, and its shape must not drift
+    // when it stops being the last message on the next turn.
+    MessageContent::Blocks(blocks)
 }
 
 fn default_max_tokens(model: &str) -> u32 {
@@ -622,6 +623,161 @@ mod tests {
             }
         }
         crate::providers::anthropic::set_prompt_cache_enabled(true);
+    }
+
+    fn strip_cache_control(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(m) => {
+                m.remove("cache_control");
+                for val in m.values_mut() {
+                    strip_cache_control(val);
+                }
+            }
+            serde_json::Value::Array(a) => {
+                for val in a.iter_mut() {
+                    strip_cache_control(val);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn count_cache_control(v: &serde_json::Value) -> usize {
+        match v {
+            serde_json::Value::Object(m) => {
+                m.contains_key("cache_control") as usize
+                    + m.values().map(count_cache_control).sum::<usize>()
+            }
+            serde_json::Value::Array(a) => a.iter().map(count_cache_control).sum(),
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn build_request_conversation_prefix_is_byte_stable() {
+        let _guard = crate::providers::anthropic::CACHE_TOGGLE_TEST_LOCK.lock().unwrap();
+        crate::providers::anthropic::set_prompt_cache_enabled(true);
+
+        let system_msg = ChatCompletionRequestMessage::System(
+            async_openai::types::chat::ChatCompletionRequestSystemMessage {
+                content: ChatCompletionRequestSystemMessageContent::Text("Be terse".into()),
+                name: None,
+            },
+        );
+        let first_user = ChatCompletionRequestMessage::User(
+            async_openai::types::chat::ChatCompletionRequestUserMessage {
+                content: ChatCompletionRequestUserMessageContent::Text(
+                    "Investigate the failing build".into(),
+                ),
+                name: None,
+            },
+        );
+        let tools = Some(vec![async_openai::types::chat::ChatCompletionTools::Function(
+            async_openai::types::chat::ChatCompletionTool {
+                function: async_openai::types::chat::FunctionObject {
+                    name: "read".into(),
+                    description: Some("Read a file".into()),
+                    parameters: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": { "path": { "type": "string" } }
+                    })),
+                    strict: None,
+                },
+            },
+        )]);
+
+        let turn1 = CreateChatCompletionRequest {
+            model: "claude-sonnet-5-5".into(),
+            messages: vec![system_msg.clone(), first_user.clone()],
+            tools: tools.clone(),
+            ..Default::default()
+        };
+        let turn2 = CreateChatCompletionRequest {
+            model: "claude-sonnet-5-5".into(),
+            messages: vec![
+                system_msg,
+                first_user,
+                ChatCompletionRequestMessage::Assistant(
+                    async_openai::types::chat::ChatCompletionRequestAssistantMessage {
+                        content: Some(
+                            async_openai::types::chat::ChatCompletionRequestAssistantMessageContent::Text(
+                                "Let me check".into(),
+                            ),
+                        ),
+                        refusal: None,
+                        name: None,
+                        audio: None,
+                        function_call: None,
+                        tool_calls: Some(vec![
+                            async_openai::types::chat::ChatCompletionMessageToolCalls::Function(
+                                async_openai::types::chat::ChatCompletionMessageToolCall {
+                                    id: "call_1".into(),
+                                    function: async_openai::types::chat::FunctionCall {
+                                        name: "read".into(),
+                                        arguments: r#"{"path":"build.log"}"#.into(),
+                                    },
+                                },
+                            ),
+                        ]),
+                    },
+                ),
+                ChatCompletionRequestMessage::Tool(
+                    async_openai::types::chat::ChatCompletionRequestToolMessage {
+                        content: async_openai::types::chat::ChatCompletionRequestToolMessageContent::Text(
+                            "linker error".into(),
+                        ),
+                        tool_call_id: "call_1".into(),
+                    },
+                ),
+                ChatCompletionRequestMessage::User(
+                    async_openai::types::chat::ChatCompletionRequestUserMessage {
+                        content: ChatCompletionRequestUserMessageContent::Text(
+                            "Anything else?".into(),
+                        ),
+                        name: None,
+                    },
+                ),
+            ],
+            tools,
+            ..Default::default()
+        };
+
+        let b1 = build_request(&turn1, false, CLAUDE_CODE_VERSION);
+        let b2 = build_request(&turn2, false, CLAUDE_CODE_VERSION);
+
+        // Re-deriving the same request must be byte-identical: no timestamps,
+        // randomness, or map ordering may leak into the wire bytes.
+        let b2_again = build_request(&turn2, false, CLAUDE_CODE_VERSION);
+        assert_eq!(
+            serde_json::to_vec(&b2).unwrap(),
+            serde_json::to_vec(&b2_again).unwrap()
+        );
+
+        // System prefix (billing header, identity, shaped prompt, marker) and
+        // tools must be byte-stable across turns.
+        assert_eq!(serde_json::to_value(&b1.system).unwrap(), serde_json::to_value(&b2.system).unwrap());
+        assert_eq!(serde_json::to_value(&b1.tools).unwrap(), serde_json::to_value(&b2.tools).unwrap());
+
+        // Turn 1's conversation must be a byte-identical prefix of turn 2,
+        // modulo the breakpoint that moves to the new last message.
+        let m1 = serde_json::to_value(&b1.messages).unwrap();
+        let m2 = serde_json::to_value(&b2.messages).unwrap();
+        let n1 = m1.as_array().unwrap().len();
+        assert!(m2.as_array().unwrap().len() > n1);
+        for (i, msg) in m1.as_array().unwrap().iter().enumerate() {
+            let mut a = msg.clone();
+            let mut b = m2.as_array().unwrap()[i].clone();
+            strip_cache_control(&mut a);
+            strip_cache_control(&mut b);
+            assert_eq!(a, b, "message {i} drifted between turns");
+        }
+
+        // Exactly two breakpoints per request: last system block, last message.
+        assert_eq!(count_cache_control(&serde_json::to_value(&b1.system).unwrap()), 1);
+        assert_eq!(count_cache_control(&m1), 1);
+        assert_eq!(count_cache_control(&serde_json::to_value(&b2.system).unwrap()), 1);
+        assert_eq!(count_cache_control(&m2), 1);
+        crate::providers::anthropic::set_prompt_cache_enabled(false);
     }
 
     #[test]
