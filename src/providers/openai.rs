@@ -872,4 +872,39 @@ mod tests {
             assert!(sent.get(absent).is_none(), "{hint:?} must not set {absent}");
         }
     }
+
+    #[tokio::test]
+    async fn gzip_encoded_responses_from_the_upstream_are_decoded() {
+        use std::io::Write;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let body = r#"{"id":"c","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"unpacked"},"finish_reason":"stop"}]}"#;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(body.as_bytes()).unwrap();
+        let packed = encoder.finish().unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-encoding", "gzip")
+                    .set_body_raw(packed, "application/json"),
+            )
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::new("t", None, &format!("{}/v1", server.uri()), Some("k"));
+        let request: ChatRequest =
+            serde_json::from_str(r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#).unwrap();
+        let response = provider.chat_completions(&request).await.unwrap();
+        assert_eq!(response.choices[0].message.content.as_deref(), Some("unpacked"));
+
+        let sent = &server.received_requests().await.unwrap()[0];
+        let accepts_gzip = sent
+            .headers
+            .iter()
+            .any(|(name, value)| name.as_str().eq_ignore_ascii_case("accept-encoding") && value.to_string().contains("gzip"));
+        assert!(accepts_gzip);
+    }
 }
