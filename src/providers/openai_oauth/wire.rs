@@ -30,6 +30,8 @@ pub struct ResponsesRequest {
     pub input: Vec<InputItem>,
     pub stream: bool,
     pub store: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
 }
 
 /// Convert OpenAI chat messages into (instructions, input items).
@@ -137,6 +139,10 @@ pub fn build_request(request: &CreateChatCompletionRequest, stream: bool) -> Res
         input,
         stream,
         store: false,
+        prompt_cache_key: crate::providers::cache_key::conversation_key(
+            &request.messages,
+            request.prompt_cache_key.as_deref(),
+        ),
     }
 }
 
@@ -379,6 +385,36 @@ mod tests {
         let body = build_request(&req, true);
         assert!(body.stream);
         assert!(!body.store);
+    }
+
+    #[test]
+    fn build_request_carries_a_stable_cache_key_per_conversation() {
+        let user = |text: &str| {
+            ChatCompletionRequestMessage::User(
+                async_openai::types::chat::ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Text(text.into()),
+                    name: None,
+                },
+            )
+        };
+        let turn_one = CreateChatCompletionRequest {
+            model: "gpt-5".into(),
+            messages: vec![user("fix the bug")],
+            ..Default::default()
+        };
+        let turn_two = CreateChatCompletionRequest {
+            model: "gpt-5".into(),
+            messages: vec![user("fix the bug"), user("and now?")],
+            ..Default::default()
+        };
+        let other = CreateChatCompletionRequest {
+            model: "gpt-5".into(),
+            messages: vec![user("write docs")],
+            ..Default::default()
+        };
+        let key = |r: &CreateChatCompletionRequest| serde_json::to_value(build_request(r, true)).unwrap()["prompt_cache_key"].clone();
+        assert_eq!(key(&turn_one), key(&turn_two));
+        assert_ne!(key(&turn_one), key(&other));
     }
 
     #[test]

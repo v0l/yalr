@@ -214,9 +214,21 @@ pub struct OpenAiProvider {
     pub(crate) api_key: String,
     /// Cached model list
     models_cache: ModelsCache,
+    cache_hint: crate::providers::cache_key::CacheHint,
 }
 
 impl OpenAiProvider {
+    fn wire_with_cache_hint(&self, request: &ChatRequest) -> Result<serde_json::Value, ProviderError> {
+        let mut wire = to_wire_value(request)?;
+        crate::providers::cache_key::apply_cache_hint(
+            &mut wire,
+            self.cache_hint,
+            &request.messages,
+            request.prompt_cache_key.as_deref(),
+        );
+        Ok(wire)
+    }
+
     fn trace_upstream(&self, request: &ChatRequest, wire: &serde_json::Value) {
         let Some(trace) = request.trace() else { return };
         trace.upstream_request(
@@ -248,6 +260,7 @@ impl OpenAiProvider {
             base_url: base_url.to_string(),
             api_key: api_key.unwrap_or("").to_string(),
             models_cache: ModelsCache::new(),
+            cache_hint: crate::providers::cache_key::CacheHint::for_base_url(base_url),
         }
     }
 }
@@ -311,7 +324,7 @@ impl Provider for OpenAiProvider {
         &self,
         request: &ChatRequest,
     ) -> Result<crate::providers::ChatResponse, ProviderError> {
-        let request_value = to_wire_value(request)?;
+        let request_value = self.wire_with_cache_hint(request)?;
         self.trace_upstream(request, &request_value);
         let response = self
             .client
@@ -338,7 +351,7 @@ impl Provider for OpenAiProvider {
         let request_model = request.model.clone();
 
         // Serialize request once at the start
-        let request_value = to_wire_value(&request)?;
+        let request_value = self.wire_with_cache_hint(&request)?;
         self.trace_upstream(&request, &request_value);
 
         let stream = async move {
@@ -823,6 +836,40 @@ mod tests {
                     "model {model} must be sent the unmodified wire shape"
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_hint_reaches_the_wire_only_for_known_hosts() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let body = r#"{"id":"c","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#;
+        let request: ChatRequest = serde_json::from_str(
+            r#"{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"hello"}]}"#,
+        )
+        .unwrap();
+
+        for (hint, field, absent) in [
+            (crate::providers::cache_key::CacheHint::PromptCacheKey, "prompt_cache_key", "session_id"),
+            (crate::providers::cache_key::CacheHint::SessionId, "session_id", "prompt_cache_key"),
+            (crate::providers::cache_key::CacheHint::None, "", "prompt_cache_key"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/chat/completions"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(body))
+                .mount(&server)
+                .await;
+            let mut provider = OpenAiProvider::new("t", None, &format!("{}/v1", server.uri()), Some("k"));
+            provider.cache_hint = hint;
+            provider.chat_completions(&request).await.unwrap();
+            let sent: serde_json::Value =
+                serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+            if !field.is_empty() {
+                assert!(sent[field].as_str().unwrap().starts_with("yalr-"), "{hint:?}");
+            }
+            assert!(sent.get(absent).is_none(), "{hint:?} must not set {absent}");
         }
     }
 }

@@ -140,6 +140,10 @@ impl Provider for OpenAiOAuthProvider {
         request: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamingChunk, ProviderError>>, ProviderError> {
         let body = build_request(request, true);
+        let session_id = body
+            .prompt_cache_key
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let url = self.responses_url();
         let http = self.http.clone();
         let session = self.session.clone();
@@ -156,7 +160,7 @@ impl Provider for OpenAiOAuthProvider {
                 .bearer_auth(&token)
                 .header("OpenAI-Beta", BETA_HEADER)
                 .header("originator", ORIGINATOR)
-                .header("session_id", uuid::Uuid::new_v4().to_string())
+                .header("session_id", &session_id)
                 .header("accept", "text/event-stream")
                 .json(&body);
             if let Some(account_id) = session.account_id().await {
