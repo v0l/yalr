@@ -197,6 +197,22 @@ fn user_content(
     MessageContent::Blocks(blocks)
 }
 
+fn mark_cache_breakpoint(message: &mut AnthropicMessage) {
+    match &mut message.content {
+        MessageContent::Text(text) => {
+            message.content = MessageContent::Blocks(vec![RequestContentBlock::Text {
+                text: std::mem::take(text),
+                cache_control: Some(CacheControl::ephemeral()),
+            }]);
+        }
+        MessageContent::Blocks(blocks) => {
+            if let Some(block) = blocks.last_mut() {
+                block.set_cache_control(Some(CacheControl::ephemeral()));
+            }
+        }
+    }
+}
+
 fn default_max_tokens(model: &str) -> u32 {
     if model.contains("-5-5") {
         32768
@@ -245,23 +261,9 @@ pub fn build_request(
         if let Some(last) = system.last_mut() {
             last.cache_control = Some(CacheControl::ephemeral());
         }
-        // Second breakpoint at the end of the conversation so every turn
-        // after the first reads the whole history from cache instead of
-        // re-sending it uncached.
-        if let Some(last) = messages.last_mut() {
-            match &mut last.content {
-                MessageContent::Text(text) => {
-                    last.content = MessageContent::Blocks(vec![RequestContentBlock::Text {
-                        text: std::mem::take(text),
-                        cache_control: Some(CacheControl::ephemeral()),
-                    }]);
-                }
-                MessageContent::Blocks(blocks) => {
-                    if let Some(block) = blocks.last_mut() {
-                        block.set_cache_control(Some(CacheControl::ephemeral()));
-                    }
-                }
-            }
+        let count = messages.len();
+        for message in messages.iter_mut().skip(count.saturating_sub(2)) {
+            mark_cache_breakpoint(message);
         }
     }
 
@@ -791,11 +793,54 @@ mod tests {
             assert_eq!(a, b, "message {i} drifted between turns");
         }
 
-        // Exactly two breakpoints per request: last system block, last message.
         assert_eq!(count_cache_control(&serde_json::to_value(&b1.system).unwrap()), 1);
-        assert_eq!(count_cache_control(&m1), 1);
+        assert_eq!(count_cache_control(&m1), n1.min(2));
         assert_eq!(count_cache_control(&serde_json::to_value(&b2.system).unwrap()), 1);
-        assert_eq!(count_cache_control(&m2), 1);
+        assert_eq!(count_cache_control(&m2), 2);
+        crate::providers::anthropic::set_prompt_cache_enabled(false);
+    }
+
+    #[test]
+    fn transient_tail_message_does_not_orphan_the_cached_prefix() {
+        let _guard = crate::providers::anthropic::CACHE_TOGGLE_TEST_LOCK.lock().unwrap();
+        crate::providers::anthropic::set_prompt_cache_enabled(true);
+        let wire = |json: &str| {
+            let request: CreateChatCompletionRequest = serde_json::from_str(json).unwrap();
+            serde_json::to_value(build_request(&request, false, CLAUDE_CODE_VERSION).messages).unwrap()
+        };
+        let with_reminder = wire(
+            r#"{"model":"claude-sonnet-4-20250514","messages":[
+                {"role":"user","content":"u1"},
+                {"role":"assistant","content":"a1"},
+                {"role":"user","content":"u2"},
+                {"role":"user","content":"transient reminder"}]}"#,
+        );
+        let next_turn = wire(
+            r#"{"model":"claude-sonnet-4-20250514","messages":[
+                {"role":"user","content":"u1"},
+                {"role":"assistant","content":"a1"},
+                {"role":"user","content":"u2"},
+                {"role":"assistant","content":"a2"},
+                {"role":"user","content":"u3"},
+                {"role":"user","content":"transient reminder"}]}"#,
+        );
+        let marked: Vec<usize> = with_reminder
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| count_cache_control(m) > 0)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(marked, vec![2, 3]);
+        let stable = marked[0];
+        for i in 0..=stable {
+            let mut a = with_reminder[i].clone();
+            let mut b = next_turn[i].clone();
+            strip_cache_control(&mut a);
+            strip_cache_control(&mut b);
+            assert_eq!(a, b, "message {i} is part of the prefix the next turn reuses");
+        }
         crate::providers::anthropic::set_prompt_cache_enabled(false);
     }
 
