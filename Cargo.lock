@@ -5015,6 +5015,7 @@ dependencies = [
  "url",
  "uuid",
  "wiremock",
+ "zstd",
 ]
 
 [[package]]

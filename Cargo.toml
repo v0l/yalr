@@ -47,6 +47,7 @@ payments-rs = { git = "https://github.com/v0l/payments-rs", default-features = f
 ] }
 bytes = "1"
 flate2 = "1"
+zstd = "0.14"
 
 [[bin]]
 name = "yalr-server"

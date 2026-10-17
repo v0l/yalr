@@ -1,3 +1,4 @@
+pub mod codec;
 pub mod collector;
 pub mod fingerprint;
 pub mod recorder;

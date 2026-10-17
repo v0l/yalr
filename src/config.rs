@@ -25,6 +25,12 @@ pub struct RequestLogConfig {
     pub body_retention_days: u32,
     #[serde(default)]
     pub metadata_retention_days: u32,
+    #[serde(default = "default_max_body_bytes")]
+    pub max_body_bytes: u64,
+}
+
+fn default_max_body_bytes() -> u64 {
+    1024 * 1024 * 1024
 }
 
 fn default_body_days() -> u32 {
@@ -38,6 +44,7 @@ impl Default for RequestLogConfig {
             store_bodies: true,
             body_retention_days: 7,
             metadata_retention_days: 0,
+            max_body_bytes: default_max_body_bytes(),
         }
     }
 }

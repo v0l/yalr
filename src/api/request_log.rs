@@ -1,4 +1,4 @@
-use crate::request_log::{recorder::gunzip, store};
+use crate::request_log::{codec::unpack, store};
 use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
@@ -85,7 +85,7 @@ pub struct BodiesResponse {
 }
 
 fn decode(bytes: Option<Vec<u8>>) -> serde_json::Value {
-    let Some(raw) = bytes.as_deref().and_then(gunzip) else {
+    let Some(raw) = bytes.as_deref().and_then(unpack) else {
         return serde_json::Value::Null;
     };
     serde_json::from_slice(&raw)
@@ -101,8 +101,8 @@ pub async fn bodies(
         .map_err(internal)?
         .ok_or((StatusCode::NOT_FOUND, "no bodies stored for this request (expired or disabled)".to_string()))?;
     Ok(Json(BodiesResponse {
-        client_request: decode(bodies.client_request_gz),
-        upstream_request: decode(bodies.upstream_request_gz),
-        response: decode(bodies.response_gz),
+        client_request: decode(bodies.client_request_packed),
+        upstream_request: decode(bodies.upstream_request_packed),
+        response: decode(bodies.response_packed),
     }))
 }

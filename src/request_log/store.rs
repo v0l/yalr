@@ -42,9 +42,9 @@ pub struct Record {
     pub previous_request_id: Option<String>,
     pub request_bytes: i64,
     pub response_bytes: i64,
-    pub client_request_gz: Option<Vec<u8>>,
-    pub upstream_request_gz: Option<Vec<u8>>,
-    pub response_gz: Option<Vec<u8>>,
+    pub client_request_packed: Option<Vec<u8>>,
+    pub upstream_request_packed: Option<Vec<u8>>,
+    pub response_packed: Option<Vec<u8>>,
 }
 
 pub async fn insert(pool: &SqlitePool, r: Record) -> Result<i64, sqlx::Error> {
@@ -103,15 +103,15 @@ pub async fn insert(pool: &SqlitePool, r: Record) -> Result<i64, sqlx::Error> {
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
-    if r.client_request_gz.is_some() || r.upstream_request_gz.is_some() || r.response_gz.is_some() {
+    if r.client_request_packed.is_some() || r.upstream_request_packed.is_some() || r.response_packed.is_some() {
         sqlx::query(
-            "INSERT INTO request_log_body (log_id, client_request_gz, upstream_request_gz, response_gz)
+            "INSERT INTO request_log_body (log_id, client_request_packed, upstream_request_packed, response_packed)
              VALUES (?, ?, ?, ?)",
         )
         .bind(id)
-        .bind(&r.client_request_gz)
-        .bind(&r.upstream_request_gz)
-        .bind(&r.response_gz)
+        .bind(&r.client_request_packed)
+        .bind(&r.upstream_request_packed)
+        .bind(&r.response_packed)
         .execute(&mut *tx)
         .await?;
     }
@@ -119,27 +119,81 @@ pub async fn insert(pool: &SqlitePool, r: Record) -> Result<i64, sqlx::Error> {
     Ok(id)
 }
 
-pub async fn prune(pool: &SqlitePool, now_ms: i64, body_days: u32, metadata_days: u32) -> Result<u64, sqlx::Error> {
+pub struct Retention {
+    pub body_days: u32,
+    pub metadata_days: u32,
+    pub max_body_bytes: u64,
+}
+
+pub async fn prune(pool: &SqlitePool, now_ms: i64, retention: &Retention) -> Result<u64, sqlx::Error> {
     let day_ms = 86_400_000i64;
     let mut removed = 0;
-    if body_days > 0 {
+    if retention.body_days > 0 {
         removed += sqlx::query(
             "DELETE FROM request_log_body WHERE log_id IN
              (SELECT id FROM request_log WHERE started_at_ms < ?)",
         )
-        .bind(now_ms - i64::from(body_days) * day_ms)
+        .bind(now_ms - i64::from(retention.body_days) * day_ms)
         .execute(pool)
         .await?
         .rows_affected();
     }
-    if metadata_days > 0 {
+    if retention.max_body_bytes > 0 {
+        removed += sqlx::query(
+            "DELETE FROM request_log_body WHERE log_id IN (
+                SELECT log_id FROM (
+                    SELECT log_id,
+                           SUM(size) OVER (ORDER BY log_id DESC) AS newest_first_total
+                    FROM (
+                        SELECT log_id,
+                               COALESCE(LENGTH(client_request_packed), 0)
+                             + COALESCE(LENGTH(upstream_request_packed), 0)
+                             + COALESCE(LENGTH(response_packed), 0) AS size
+                        FROM request_log_body
+                    )
+                ) WHERE newest_first_total > ?
+            )",
+        )
+        .bind(i64::try_from(retention.max_body_bytes).unwrap_or(i64::MAX))
+        .execute(pool)
+        .await?
+        .rows_affected();
+    }
+    if retention.metadata_days > 0 {
         removed += sqlx::query("DELETE FROM request_log WHERE started_at_ms < ?")
-            .bind(now_ms - i64::from(metadata_days) * day_ms)
+            .bind(now_ms - i64::from(retention.metadata_days) * day_ms)
             .execute(pool)
             .await?
             .rows_affected();
     }
     Ok(removed)
+}
+
+pub async fn enable_incremental_vacuum(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum").fetch_one(&mut *connection).await?;
+    if mode == 2 {
+        return Ok(false);
+    }
+    sqlx::query("PRAGMA auto_vacuum = INCREMENTAL").execute(&mut *connection).await?;
+    sqlx::query("VACUUM").execute(&mut *connection).await?;
+    Ok(true)
+}
+
+pub async fn release_freed_pages(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query("PRAGMA incremental_vacuum").execute(pool).await?;
+    Ok(())
+}
+
+pub async fn body_bytes(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COALESCE(SUM(COALESCE(LENGTH(client_request_packed), 0)
+                          + COALESCE(LENGTH(upstream_request_packed), 0)
+                          + COALESCE(LENGTH(response_packed), 0)), 0)
+         FROM request_log_body",
+    )
+    .fetch_one(pool)
+    .await
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -254,14 +308,14 @@ pub async fn id_for_request(pool: &SqlitePool, request_id: &str) -> Result<Optio
 
 #[derive(Debug, sqlx::FromRow)]
 pub struct Bodies {
-    pub client_request_gz: Option<Vec<u8>>,
-    pub upstream_request_gz: Option<Vec<u8>>,
-    pub response_gz: Option<Vec<u8>>,
+    pub client_request_packed: Option<Vec<u8>>,
+    pub upstream_request_packed: Option<Vec<u8>>,
+    pub response_packed: Option<Vec<u8>>,
 }
 
 pub async fn bodies(pool: &SqlitePool, id: i64) -> Result<Option<Bodies>, sqlx::Error> {
     sqlx::query_as::<_, Bodies>(
-        "SELECT client_request_gz, upstream_request_gz, response_gz FROM request_log_body WHERE log_id = ?",
+        "SELECT client_request_packed, upstream_request_packed, response_packed FROM request_log_body WHERE log_id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -289,9 +343,9 @@ mod tests {
             total_ms: 1200,
             prompt_tokens: Some(1000),
             cached_tokens: Some(900),
-            client_request_gz: with_bodies.then(|| vec![1, 2, 3]),
-            upstream_request_gz: with_bodies.then(|| vec![4, 5]),
-            response_gz: with_bodies.then(|| vec![6]),
+            client_request_packed: with_bodies.then(|| vec![1, 2, 3]),
+            upstream_request_packed: with_bodies.then(|| vec![4, 5]),
+            response_packed: with_bodies.then(|| vec![6]),
             ..Default::default()
         }
     }
@@ -308,8 +362,8 @@ mod tests {
         assert_eq!(found.model, "code-high");
         assert!(found.stream);
         let stored = bodies(&pool, id).await.unwrap().unwrap();
-        assert_eq!(stored.client_request_gz, Some(vec![1, 2, 3]));
-        assert_eq!(stored.response_gz, Some(vec![6]));
+        assert_eq!(stored.client_request_packed, Some(vec![1, 2, 3]));
+        assert_eq!(stored.response_packed, Some(vec![6]));
     }
 
     #[tokio::test]
@@ -350,7 +404,7 @@ mod tests {
         let now = 100 * day;
         let old = insert(&pool, record("old", now - 8 * day, true)).await.unwrap();
         let fresh = insert(&pool, record("fresh", now - day, true)).await.unwrap();
-        prune(&pool, now, 7, 0).await.unwrap();
+        prune(&pool, now, &Retention { body_days: 7, metadata_days: 0, max_body_bytes: 0 }).await.unwrap();
         assert!(bodies(&pool, old).await.unwrap().is_none());
         assert!(bodies(&pool, fresh).await.unwrap().is_some());
         assert!(detail(&pool, old).await.unwrap().is_some());
@@ -362,8 +416,73 @@ mod tests {
         let day = 86_400_000;
         let now = 100 * day;
         let old = insert(&pool, record("old", now - 40 * day, true)).await.unwrap();
-        prune(&pool, now, 7, 30).await.unwrap();
+        prune(&pool, now, &Retention { body_days: 7, metadata_days: 30, max_body_bytes: 0 }).await.unwrap();
         assert!(detail(&pool, old).await.unwrap().is_none());
         assert!(bodies(&pool, old).await.unwrap().is_none());
+    }
+
+    fn sized(request_id: &str, started_at_ms: i64, bytes: usize) -> Record {
+        Record {
+            client_request_packed: Some(vec![7; bytes]),
+            upstream_request_packed: Some(vec![8; bytes]),
+            response_packed: None,
+            ..record(request_id, started_at_ms, false)
+        }
+    }
+
+    #[tokio::test]
+    async fn prune_keeps_the_newest_bodies_within_the_byte_cap() {
+        let pool = pool().await;
+        let now = 100 * 86_400_000;
+        let mut ids = Vec::new();
+        for n in 0..6 {
+            ids.push(insert(&pool, sized(&format!("r{n}"), now - (6 - n) * 1000, 1000)).await.unwrap());
+        }
+        assert_eq!(body_bytes(&pool).await.unwrap(), 12_000);
+        let keep = Retention { body_days: 7, metadata_days: 0, max_body_bytes: 5_000 };
+        prune(&pool, now, &keep).await.unwrap();
+        assert_eq!(body_bytes(&pool).await.unwrap(), 4_000);
+        for id in &ids[..4] {
+            assert!(bodies(&pool, *id).await.unwrap().is_none());
+            assert!(detail(&pool, *id).await.unwrap().is_some());
+        }
+        for id in &ids[4..] {
+            assert!(bodies(&pool, *id).await.unwrap().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_zero_byte_cap_means_unlimited() {
+        let pool = pool().await;
+        let now = 100 * 86_400_000;
+        for n in 0..3 {
+            insert(&pool, sized(&format!("r{n}"), now - 1000, 1000)).await.unwrap();
+        }
+        prune(&pool, now, &Retention { body_days: 7, metadata_days: 0, max_body_bytes: 0 }).await.unwrap();
+        assert_eq!(body_bytes(&pool).await.unwrap(), 6_000);
+    }
+
+    #[tokio::test]
+    async fn pruned_space_is_returned_to_the_file() {
+        let dir = std::env::temp_dir().join(format!("yalr-log-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("t.db");
+        let pool = Database::new(&format!("sqlite://{}?mode=rwc", file.display())).await.unwrap().pool;
+        let now = 100 * 86_400_000;
+        for n in 0..40 {
+            insert(&pool, sized(&format!("r{n}"), now - 1000 + n, 100_000)).await.unwrap();
+        }
+        assert!(enable_incremental_vacuum(&pool).await.unwrap());
+        pool.close().await;
+        let pool = Database::new(&format!("sqlite://{}?mode=rwc", file.display())).await.unwrap().pool;
+        assert!(!enable_incremental_vacuum(&pool).await.unwrap());
+        let full = std::fs::metadata(&file).unwrap().len();
+        assert!(full > 7_000_000);
+        let keep = Retention { body_days: 7, metadata_days: 0, max_body_bytes: 1_000_000 };
+        prune(&pool, now, &keep).await.unwrap();
+        release_freed_pages(&pool).await.unwrap();
+        let trimmed = std::fs::metadata(&file).unwrap().len();
+        assert!(trimmed < full / 4, "{trimmed} vs {full}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

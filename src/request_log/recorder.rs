@@ -1,10 +1,11 @@
 use super::fingerprint::{fingerprint, tracker};
 use super::store::{self, Record};
 use super::trace::Trace;
-use flate2::{write::GzEncoder, Compression};
+use super::codec::pack;
+#[cfg(test)]
+use super::codec::unpack;
 use serde_json::Value;
 use sqlx::SqlitePool;
-use std::io::Write;
 
 pub struct Inbound {
     pub request_id: String,
@@ -30,19 +31,6 @@ pub struct Outcome {
     pub cached_tokens: Option<u32>,
     pub cache_write_tokens: Option<u32>,
     pub response: Vec<u8>,
-}
-
-pub fn gzip(bytes: &[u8]) -> Option<Vec<u8>> {
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
-    encoder.write_all(bytes).ok()?;
-    encoder.finish().ok()
-}
-
-pub fn gunzip(bytes: &[u8]) -> Option<Vec<u8>> {
-    use std::io::Read;
-    let mut out = Vec::new();
-    flate2::read::GzDecoder::new(bytes).read_to_end(&mut out).ok()?;
-    Some(out)
 }
 
 pub fn weighted_input(prompt: u32, cached: u32, cache_write: u32) -> i64 {
@@ -134,9 +122,9 @@ pub fn build(inbound: Inbound, trace: &Trace, outcome: Outcome, started_at_ms: i
         previous_request_id: previous,
         request_bytes: upstream.request_body.as_ref().map_or(0, |b| b.len() as i64),
         response_bytes: outcome.response.len() as i64,
-        client_request_gz: gzip(&inbound.body),
-        upstream_request_gz: upstream.request_body.as_deref().and_then(gzip),
-        response_gz: if outcome.response.is_empty() { None } else { gzip(&outcome.response) },
+        client_request_packed: pack(&inbound.body),
+        upstream_request_packed: upstream.request_body.as_deref().and_then(pack),
+        response_packed: if outcome.response.is_empty() { None } else { pack(&outcome.response) },
     }
 }
 
@@ -244,17 +232,35 @@ impl Drop for Pending {
     }
 }
 
-pub fn spawn_pruner(pool: SqlitePool, body_days: u32, metadata_days: u32) {
+pub async fn prune_now(pool: &SqlitePool, retention: &store::Retention) {
+    let now = chrono::Utc::now().timestamp_millis();
+    match store::prune(pool, now, retention).await {
+        Ok(0) => {}
+        Ok(n) => {
+            tracing::info!(rows = n, "Pruned request log");
+            if let Err(e) = store::release_freed_pages(pool).await {
+                tracing::error!(error = %e, "Request log vacuum failed");
+            }
+        }
+        Err(e) => tracing::error!(error = %e, "Request log prune failed"),
+    }
+}
+
+pub async fn prepare_storage(pool: &SqlitePool, retention: &store::Retention) {
+    prune_now(pool, retention).await;
+    match store::enable_incremental_vacuum(pool).await {
+        Ok(true) => tracing::info!("Request log storage compacted and set to release freed pages"),
+        Ok(false) => {}
+        Err(e) => tracing::error!(error = %e, "Request log compaction failed"),
+    }
+}
+
+pub fn spawn_pruner(pool: SqlitePool, retention: store::Retention) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
         loop {
             interval.tick().await;
-            let now = chrono::Utc::now().timestamp_millis();
-            match store::prune(&pool, now, body_days, metadata_days).await {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(rows = n, "Pruned request log"),
-                Err(e) => tracing::error!(error = %e, "Request log prune failed"),
-            }
+            prune_now(&pool, &retention).await;
         }
     });
 }
@@ -262,14 +268,6 @@ pub fn spawn_pruner(pool: SqlitePool, body_days: u32, metadata_days: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn gzip_round_trips() {
-        let data = b"hello hello hello hello".repeat(50);
-        let packed = gzip(&data).unwrap();
-        assert!(packed.len() < data.len());
-        assert_eq!(gunzip(&packed).unwrap(), data);
-    }
 
     fn inbound(id: &str) -> Inbound {
         Inbound {
@@ -324,8 +322,8 @@ mod tests {
         assert_eq!(record.weighted_input_tokens, Some(50 + 90 + 63));
         assert_eq!(record.message_count, Some(1));
         assert!(record.client_headers.contains("user-agent"));
-        assert_eq!(gunzip(record.upstream_request_gz.as_deref().unwrap()).unwrap(), trace.upstream().request_body.unwrap());
-        assert_eq!(gunzip(record.response_gz.as_deref().unwrap()).unwrap(), b"{\"text\":\"hi\"}");
+        assert_eq!(unpack(record.upstream_request_packed.as_deref().unwrap()).unwrap(), trace.upstream().request_body.unwrap());
+        assert_eq!(unpack(record.response_packed.as_deref().unwrap()).unwrap(), b"{\"text\":\"hi\"}");
     }
 
     #[test]
@@ -352,8 +350,8 @@ mod tests {
         let record = build(inbound("fail-1"), &trace, outcome, 1);
         assert_eq!(record.status, "error");
         assert_eq!(record.system_hash, None);
-        assert_eq!(record.upstream_request_gz, None);
-        assert!(record.client_request_gz.is_some());
+        assert_eq!(record.upstream_request_packed, None);
+        assert!(record.client_request_packed.is_some());
     }
 
     #[test]
