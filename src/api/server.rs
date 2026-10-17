@@ -16,7 +16,8 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tower_http::{trace::TraceLayer, cors::CorsLayer};
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use super::compression::with_compression;
 
 /// Body limit for inference requests. The axum default of 2 MB is far too small
 /// for a long agent conversation: replayed reasoning content (which DeepSeek V4
@@ -269,6 +270,7 @@ pub async fn run_with_shutdown<F>(
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
+    let app = with_compression(app);
 
     let addr: SocketAddr = addr.parse()?;
     tracing::info!("Listening on {}", addr);
@@ -397,7 +399,7 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/", get(model_handlers::list_models))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
-    Router::new()
+    let app = Router::new()
         .merge(chat_completions_routes)
         .merge(responses_routes)
         .merge(audio_routes)
@@ -415,5 +417,6 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         }))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .with_state(state);
+    with_compression(app)
 }

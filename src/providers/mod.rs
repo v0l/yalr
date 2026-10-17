@@ -26,6 +26,7 @@ pub struct ModelListResponse {
 
 pub mod audio;
 pub mod cache_key;
+pub mod compress;
 pub mod decision;
 pub mod image;
 pub mod llamacpp;

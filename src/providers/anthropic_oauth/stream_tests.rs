@@ -141,3 +141,74 @@ fn multibyte_text_survives_a_split_line() {
         assert_eq!(text, "日本🎉");
     });
 }
+
+fn gzip_bytes(data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(data).unwrap();
+    encoder.finish().unwrap()
+}
+
+#[tokio::test]
+async fn gzip_encoded_event_stream_is_decoded() {
+    let events = sse(&[
+        r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":3}}}"#,
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"packed"}}"#,
+        r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}"#,
+    ]);
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-encoding", "gzip")
+                .set_body_raw(gzip_bytes(events.as_bytes()), "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+    let (text, finish, error) = collect(&server).await;
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(text, "packed");
+    assert_eq!(finish, vec!["stop".to_string()]);
+}
+
+#[tokio::test]
+async fn large_request_bodies_are_sent_gzipped_and_small_ones_are_not() {
+    let events = sse(&[
+        r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":3}}}"#,
+        r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}"#,
+    ]);
+    let server = serve(events.into_bytes()).await;
+    let provider = provider(&server.uri()).await;
+
+    let small = request();
+    let mut stream = provider.chat_completions_stream(&small).unwrap();
+    while stream.next().await.is_some() {}
+
+    let big: ChatRequest = serde_json::from_value(serde_json::json!({
+        "model": "claude-opus-5-5", "stream": true,
+        "messages": [{"role": "user", "content": "lorem ipsum dolor ".repeat(2000)}]
+    }))
+    .unwrap();
+    let mut stream = provider.chat_completions_stream(&big).unwrap();
+    while stream.next().await.is_some() {}
+
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 2);
+    let encoding = |i: usize| {
+        received[i]
+            .headers
+            .iter()
+            .find(|(name, _)| name.as_str().eq_ignore_ascii_case("content-encoding"))
+            .map(|(_, value)| value.to_string())
+    };
+    assert_eq!(encoding(0), None);
+    assert!(serde_json::from_slice::<serde_json::Value>(&received[0].body).is_ok());
+
+    assert!(encoding(1).is_some_and(|value| value.contains("gzip")));
+    let mut unpacked = Vec::new();
+    std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&received[1].body[..]), &mut unpacked).unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(&unpacked).unwrap();
+    assert_eq!(wire["model"], "claude-opus-5-5");
+    assert!(received[1].body.len() < unpacked.len() / 10);
+}

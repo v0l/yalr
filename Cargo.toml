@@ -7,8 +7,9 @@ description = "Yet another LLM router - Load balancing and routing for LLM provi
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["macros", "ws", "multipart"] }
-tower-http = { version = "0.5", features = ["trace", "cors", "fs"] }
-reqwest = { version = "0.11", features = ["json", "stream", "multipart"] }
+tower-http = { version = "0.5", features = ["trace", "cors", "fs", "compression-full", "decompression-full"] }
+reqwest = { version = "0.11", features = ["json", "stream", "multipart", "gzip"] }
+reqwest_openai = { package = "reqwest", version = "0.12", default-features = false, features = ["gzip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 indexmap = { version = "2", features = ["serde"] }

@@ -207,14 +207,16 @@ impl Provider for AnthropicOAuthProvider {
         apply_thinking(&mut body, request);
         sanitize(&mut body);
         let body_bytes = serde_json::to_vec(&body).map_err(|e| ProviderError::Other(e.into()))?;
+        let encoded = crate::providers::compress::encode_gzip_off_thread(body_bytes.clone()).await;
+        let mut upstream = self
+            .http
+            .post(self.messages_url())
+            .header("content-type", "application/json");
+        if encoded.gzipped {
+            upstream = upstream.header("content-encoding", "gzip");
+        }
         let upstream = self
-            .apply_oauth_headers(
-                self.http
-                    .post(self.messages_url())
-                    .header("content-type", "application/json")
-                    .body(body_bytes.clone()),
-                &token,
-            )
+            .apply_oauth_headers(upstream.body(encoded.bytes), &token)
             .build()
             .map_err(|e| ProviderError::Other(e.into()))?;
         let trace = request.trace().cloned();
@@ -319,8 +321,12 @@ impl Provider for AnthropicOAuthProvider {
                 Ok(b) => b,
                 Err(e) => { yield Err(ProviderError::Other(e.into())); return; }
             };
-            let upstream = match http
-                .post(&url)
+            let encoded = crate::providers::compress::encode_gzip_off_thread(body_bytes.clone()).await;
+            let mut builder = http.post(&url);
+            if encoded.gzipped {
+                builder = builder.header("content-encoding", "gzip");
+            }
+            let upstream = match builder
                 .bearer_auth(&token)
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .header("anthropic-beta", BETA_HEADER)
@@ -329,7 +335,7 @@ impl Provider for AnthropicOAuthProvider {
                 .header("anthropic-dangerous-direct-browser-access", "true")
                 .header("accept", "text/event-stream")
                 .header("content-type", "application/json")
-                .body(body_bytes.clone())
+                .body(encoded.bytes)
                 .build()
             {
                 Ok(r) => r,

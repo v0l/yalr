@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod chat;
+pub mod compression;
 pub mod config;
 pub mod decisions;
 pub mod health;
