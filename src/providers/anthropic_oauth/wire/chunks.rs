@@ -6,6 +6,7 @@ use crate::providers::*;
 /// Split response content blocks into joined text and OpenAI tool calls.
 pub fn split_content_blocks(
     blocks: &[ContentBlock],
+    registered_tools: &[String],
 ) -> (
     String,
     Option<Vec<async_openai::types::chat::ChatCompletionMessageToolCalls>>,
@@ -21,7 +22,7 @@ pub fn split_content_blocks(
         .filter(|b| b.block_type.as_deref() == Some("tool_use"))
         .filter_map(|b| {
             let id = b.id.clone()?;
-            let name = b.name.clone()?;
+            let name = restore_tool_name(b.name.as_deref()?, registered_tools);
             let arguments = b
                 .input
                 .as_ref()
@@ -241,7 +242,7 @@ mod tests {
                 input: Some(serde_json::json!({ "city": "Paris" })),
             },
         ];
-        let (text, calls) = split_content_blocks(&blocks);
+        let (text, calls) = split_content_blocks(&blocks, &["get_weather".to_string()]);
         assert_eq!(text, "hi");
         let calls = calls.expect("tool calls");
         assert_eq!(calls.len(), 1);

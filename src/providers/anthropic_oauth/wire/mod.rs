@@ -3,21 +3,23 @@
 //!
 //! - [`billing`]: Claude Code identity/billing system blocks.
 //! - [`convert`]: OpenAI request -> Anthropic request (messages, tools).
-//! - [`chunks`]: Anthropic response/stream -> OpenAI chat output.
+
 
 mod billing;
 mod cc_names;
 mod chunks;
 mod convert;
 mod sanitize;
+mod reminder;
 mod shaping;
 mod thinking;
 
 pub use billing::*;
-pub use cc_names::{from_cc_name, remap_tool_defs, remap_tool_use_blocks, strip_cc_names};
+pub use cc_names::{registered_tool_names, remap_tool_defs, remap_tool_use_blocks, restore_tool_name};
 pub use chunks::*;
 pub use convert::*;
-pub use shaping::{shape_system_texts, split_assistant_tool_use_messages};
+pub use reminder::{flush_pending_reminders, SYSTEM_REMINDER_NOTICE};
+pub use shaping::rewrite_trigger_phrases;
 pub use sanitize::{clean_messages, rejects_sampling_params, sanitize};
 pub use thinking::apply_thinking;
 

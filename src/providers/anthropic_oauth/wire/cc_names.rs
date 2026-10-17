@@ -40,14 +40,6 @@ static CC_LOOKUP: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
         .collect()
 });
 
-/// CC canonical name → lowercase.
-static CC_REVERSE: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
-    CC_TOOLS
-        .iter()
-        .map(|name| (name.to_string(), name.to_lowercase()))
-        .collect()
-});
-
 /// Convert a tool name to its Claude Code canonical casing.
 ///
 /// If the lowercase version of `name` matches a known CC tool, returns the
@@ -59,16 +51,22 @@ pub fn to_cc_name(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
-/// Convert a CC canonical tool name back to lowercase.
-///
-/// This is the reverse of [`to_cc_name`] — it reverts CC canonical names so
-/// upstream callers see the original casing. Non-CC names pass through unchanged.
-pub fn from_cc_name(name: &str) -> String {
-    // Only reverse if the name matches a CC canonical name exactly
-    // (case-insensitive check) AND is not already lowercase.
-    CC_REVERSE
-        .get(name)
-        .filter(|lower| lower != &name)
+pub fn registered_tool_names(request: &crate::providers::ChatRequest) -> Vec<String> {
+    request
+        .tools
+        .iter()
+        .flatten()
+        .filter_map(|tool| match tool {
+            async_openai::types::chat::ChatCompletionTools::Function(f) => Some(f.function.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn restore_tool_name(name: &str, original_names: &[String]) -> String {
+    original_names
+        .iter()
+        .find(|original| original.eq_ignore_ascii_case(name))
         .cloned()
         .unwrap_or_else(|| name.to_string())
 }
@@ -104,25 +102,6 @@ pub fn remap_tool_use_blocks(
     }
 }
 
-/// Strip CC canonical names from a raw SSE text buffer, reverting tool names
-/// back to their original lowercase form in the response stream.
-pub fn strip_cc_names(text: &str) -> String {
-    let mut result = text.to_string();
-    for cc_name in CC_TOOLS.iter() {
-        let lower = cc_name.to_lowercase();
-        // Normalize both spacing variants to `"name": "toolname"`.
-        result = result.replace(
-            &format!("\"name\":\"{}\"", cc_name),
-            &format!("\"name\": \"{}\"", lower),
-        );
-        result = result.replace(
-            &format!("\"name\": \"{}\"", cc_name),
-            &format!("\"name\": \"{}\"", lower),
-        );
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,50 +126,30 @@ mod tests {
     }
 
     #[test]
-    fn from_cc_reverses_known() {
-        assert_eq!(from_cc_name("Read"), "read");
-        assert_eq!(from_cc_name("Bash"), "bash");
-        assert_eq!(from_cc_name("WebFetch"), "webfetch");
+    fn restore_returns_the_name_the_caller_registered() {
+        let originals = vec!["read".to_string(), "Bash".to_string(), "custom_tool".to_string()];
+        assert_eq!(restore_tool_name("Read", &originals), "read");
+        assert_eq!(restore_tool_name("Bash", &originals), "Bash");
+        assert_eq!(restore_tool_name("custom_tool", &originals), "custom_tool");
     }
 
     #[test]
-    fn from_cc_passthrough_lowercase() {
-        assert_eq!(from_cc_name("read"), "read");
-        assert_eq!(from_cc_name("bash"), "bash");
+    fn restore_keeps_unregistered_names() {
+        let originals = vec!["read".to_string()];
+        assert_eq!(restore_tool_name("Grep", &originals), "Grep");
+        assert_eq!(restore_tool_name("Grep", &[]), "Grep");
     }
 
     #[test]
-    fn from_cc_passthrough_unknown() {
-        assert_eq!(from_cc_name("custom_tool"), "custom_tool");
-        assert_eq!(from_cc_name("MyTool"), "MyTool");
-    }
-
-    #[test]
-    fn strip_cc_names_reverts_in_sse() {
-        let sse = r#"data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\"city\":\"Paris\"}"}}"#;
-        // No name in this fragment — should be unchanged.
-        assert_eq!(strip_cc_names(sse), sse);
-    }
-
-    #[test]
-    fn strip_cc_names_reverts_tool_name_with_space() {
-        let sse = r#"data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"call_1","name": "Read"}}"#;
-        let result = strip_cc_names(sse);
-        assert!(result.contains(r#""name": "read""#));
-        assert!(!result.contains(r#""name": "Read""#));
-    }
-
-    #[test]
-    fn strip_cc_names_reverts_tool_name_no_space() {
-        let sse = r#"data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"call_1","name":"Read"}}"#;
-        let result = strip_cc_names(sse);
-        assert!(result.contains(r#""name": "read""#));
-        assert!(!result.contains(r#""name":"Read""#));
-    }
-
-    #[test]
-    fn roundtrip_preserves_unknown_names() {
-        let name = "my_custom_function";
-        assert_eq!(from_cc_name(&to_cc_name(name)), name);
+    fn roundtrip_preserves_registered_names() {
+        let originals: Vec<String> = ["read", "Read", "my_custom_function", "MyTool"]
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        for name in &originals {
+            let restored = restore_tool_name(&to_cc_name(name), &originals);
+            assert!(restored.eq_ignore_ascii_case(name));
+        }
+        assert_eq!(restore_tool_name(&to_cc_name("MyTool"), &originals), "MyTool");
     }
 }

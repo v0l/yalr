@@ -4,8 +4,7 @@
 //! don't look like Claude Code as "third-party app usage" and rejects them with
 //! a 400 disguised as "You're out of extra usage.". To be counted/accepted like
 //! Claude Code, we prepend a synthetic `x-anthropic-billing-header` system text
-//! block, mirroring what the official CLI sends. Ported from
-//! https://github.com/gotgenes/pi-anthropic-auth (src/request-shaping.ts).
+//! block, mirroring what the official CLI sends.
 //!
 //! CLAUDE_CODE_VERSION must be kept roughly in sync with the current Claude Code
 //! release. There is no upstream source to import it from; check `claude

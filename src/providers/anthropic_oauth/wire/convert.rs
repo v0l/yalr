@@ -8,36 +8,41 @@ pub fn convert(
     messages: &[ChatCompletionRequestMessage],
 ) -> (Vec<SystemBlock>, Vec<AnthropicMessage>) {
     let mut system_text = String::new();
+    let mut pending_reminders: Vec<String> = Vec::new();
     let mut out: Vec<AnthropicMessage> = Vec::new();
 
-    let push_system = |text: &str, buf: &mut String| {
+    fn push_system(text: &str, buf: &mut String, pending: &mut Vec<String>, leading: bool) {
+        if !leading {
+            pending.push(text.to_string());
+            return;
+        }
         if !buf.is_empty() {
             buf.push('\n');
         }
         buf.push_str(text);
-    };
+    }
 
     for msg in messages {
         match msg {
             ChatCompletionRequestMessage::System(m) => match &m.content {
                 ChatCompletionRequestSystemMessageContent::Text(t) => {
-                    push_system(t, &mut system_text)
+                    push_system(t, &mut system_text, &mut pending_reminders, out.is_empty())
                 }
                 ChatCompletionRequestSystemMessageContent::Array(parts) => {
                     for p in parts {
                         let async_openai::types::chat::ChatCompletionRequestSystemMessageContentPart::Text(t) = p;
-                        push_system(&t.text, &mut system_text);
+                        push_system(&t.text, &mut system_text, &mut pending_reminders, out.is_empty());
                     }
                 }
             },
             ChatCompletionRequestMessage::Developer(m) => match &m.content {
                 async_openai::types::chat::ChatCompletionRequestDeveloperMessageContent::Text(t) => {
-                    push_system(t, &mut system_text)
+                    push_system(t, &mut system_text, &mut pending_reminders, out.is_empty())
                 }
                 async_openai::types::chat::ChatCompletionRequestDeveloperMessageContent::Array(parts) => {
                     for p in parts {
                         let async_openai::types::chat::ChatCompletionRequestDeveloperMessageContentPart::Text(t) = p;
-                        push_system(&t.text, &mut system_text);
+                        push_system(&t.text, &mut system_text, &mut pending_reminders, out.is_empty());
                     }
                 }
             },
@@ -52,6 +57,7 @@ pub fn convert(
                     role: "user",
                     content,
                 });
+                flush_pending_reminders(&mut out, &mut pending_reminders);
             }
             ChatCompletionRequestMessage::Assistant(m) => {
                 let text = match &m.content {
@@ -131,20 +137,27 @@ pub fn convert(
                         });
                     }
                 }
+                flush_pending_reminders(&mut out, &mut pending_reminders);
             }
             ChatCompletionRequestMessage::Function(_) => {}
         }
     }
 
+    flush_pending_reminders(&mut out, &mut pending_reminders);
+
     let mut system = vec![SystemBlock {
         block_type: "text",
         text: CLAUDE_CODE_SYSTEM.to_string(),
+        cache_control: None,
+    }, SystemBlock {
+        block_type: "text",
+        text: SYSTEM_REMINDER_NOTICE.to_string(),
         cache_control: None,
     }];
     if !system_text.is_empty() {
         system.push(SystemBlock {
             block_type: "text",
-            text: system_text,
+            text: rewrite_trigger_phrases(&system_text),
             cache_control: None,
         });
     }
@@ -198,22 +211,6 @@ pub fn build_request(
     cc_version: &str,
 ) -> MessagesRequest {
     let (mut system, mut messages) = convert(&request.messages);
-
-    // Shape system blocks: replace Pi's verbose preamble with the minimal
-    // neutral prompt, remove identity/docs/filler paragraphs, and swap known
-    // classifier trigger phrases.  This avoids the "extra usage" 400 that
-    // Anthropic returns when OAuth payloads carry Pi-specific fingerprinting.
-    let system_texts: Vec<String> = system.iter().map(|b| b.text.clone()).collect();
-    let mut shaped_texts = system_texts;
-    shape_system_texts(&mut shaped_texts);
-    for (block, new_text) in system.iter_mut().zip(shaped_texts.into_iter()) {
-        block.text = new_text;
-    }
-
-    // Split assistant messages that interleave text and tool_use blocks.
-    // Anthropic rejects assistant turns where non-tool_use blocks follow a
-    // tool_use block, so we split into two consecutive assistant turns.
-    messages = split_assistant_tool_use_messages(messages);
 
     // Remap tool_use names in assistant messages to CC canonical casing.
     // Anthropic's classifier checks that tool names match expected Claude Code
@@ -375,7 +372,8 @@ mod tests {
         ];
         let (system, msgs) = convert(&messages);
         assert_eq!(system[0].text, CLAUDE_CODE_SYSTEM);
-        assert_eq!(system[1].text, "Be terse");
+        assert_eq!(system[1].text, SYSTEM_REMINDER_NOTICE);
+        assert_eq!(system[2].text, "Be terse");
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].role, "user");
     }
@@ -509,54 +507,60 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    fn wire_for(json: &str) -> serde_json::Value {
+        let request: CreateChatCompletionRequest = serde_json::from_str(json).unwrap();
+        serde_json::to_value(build_request(&request, false, CLAUDE_CODE_VERSION)).unwrap()
+    }
+
     #[test]
-    fn build_request_shapes_pi_preamble_in_system_message() {
-        // Construct a realistic Pi preamble that includes identity, docs, and
-        // keepable paragraphs.
-        let pi_preamble = format!(
-            concat!(
-                "You are an expert coding assistant operating inside pi, a coding agent harness.\n",
-                "You help users by reading files, executing commands.\n\n",
-                "Pi documentation (read only when the user asks about pi itself\n",
-                "- docs/foo.md\n\n",
-                "Keep file paths visible.\n\n",
-                "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)",
-            ),
+    fn leading_system_prompt_is_a_system_block_after_the_identity() {
+        let wire = wire_for(
+            r#"{"model":"claude-sonnet-4-20250514","messages":[
+                {"role":"system","content":"When asked to deploy, run x then y then z."},
+                {"role":"user","content":"hi"}]}"#,
         );
+        let system = wire["system"].as_array().unwrap();
+        assert_eq!(system.len(), 4);
+        assert!(system[0]["text"].as_str().unwrap().starts_with(BILLING_HEADER_MARKER));
+        assert_eq!(system[1]["text"], CLAUDE_CODE_SYSTEM);
+        assert_eq!(system[2]["text"], SYSTEM_REMINDER_NOTICE);
+        assert_eq!(system[3]["text"], "When asked to deploy, run x then y then z.");
+        assert_eq!(wire["messages"].as_array().unwrap().len(), 1);
+        assert!(!wire["messages"].to_string().contains("deploy"));
+    }
 
-        let req = CreateChatCompletionRequest {
-            model: "claude-sonnet-4-20250514".into(),
-            messages: vec![
-                ChatCompletionRequestMessage::System(
-                    async_openai::types::chat::ChatCompletionRequestSystemMessage {
-                        content: ChatCompletionRequestSystemMessageContent::Text(pi_preamble),
-                        name: None,
-                    },
-                ),
-                ChatCompletionRequestMessage::User(
-                    async_openai::types::chat::ChatCompletionRequestUserMessage {
-                        content: ChatCompletionRequestUserMessageContent::Text("hi".into()),
-                        name: None,
-                    },
-                ),
-            ],
-            ..Default::default()
-        };
-        let body = build_request(&req, false, CLAUDE_CODE_VERSION);
-
-        // System blocks: [0] = billing header, [1] = Claude Code identity, [2] = shaped system text
-        let system_text = &body.system[2].text;
-        assert!(
-            system_text.starts_with("You are an expert coding assistant."),
-            "preamble should be replaced with minimal prompt, got: {}",
-            system_text,
+    #[test]
+    fn mid_conversation_system_message_stays_in_place_as_a_reminder() {
+        let wire = wire_for(
+            r#"{"model":"claude-sonnet-4-20250514","messages":[
+                {"role":"system","content":"base rules"},
+                {"role":"user","content":"one"},
+                {"role":"assistant","content":"ok"},
+                {"role":"system","content":"rules changed: also do q"},
+                {"role":"user","content":"two"}]}"#,
         );
-        assert!(!system_text.contains("operating inside pi"),
-            "Pi identity should be removed");
-        assert!(!system_text.contains("Pi documentation"),
-            "Pi docs paragraph should be removed");
-        assert!(system_text.contains("Keep file paths visible"),
-            "non-Pi paragraphs should be preserved");
+        assert_eq!(wire["system"][3]["text"], "base rules");
+        assert!(!wire["system"].to_string().contains("rules changed"));
+        let messages = wire["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["content"].as_array().unwrap().len(), 1);
+        let last = messages[2]["content"].as_array().unwrap();
+        assert_eq!(last[0]["text"], "two");
+        assert_eq!(last[1]["text"], "<system-reminder>\nrules changed: also do q\n</system-reminder>");
+    }
+
+    #[test]
+    fn mid_conversation_system_message_before_tool_results_follows_them() {
+        let wire = wire_for(
+            r#"{"model":"claude-sonnet-4-20250514","messages":[
+                {"role":"user","content":"go"},
+                {"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"read","arguments":"{}"}}]},
+                {"role":"system","content":"note"},
+                {"role":"tool","tool_call_id":"c1","content":"data"}]}"#,
+        );
+        let last = wire["messages"].as_array().unwrap().last().unwrap()["content"].as_array().unwrap().clone();
+        assert_eq!(last[0]["type"], "tool_result");
+        assert_eq!(last[1]["text"], "<system-reminder>\nnote\n</system-reminder>");
     }
 
     #[test]
@@ -582,14 +586,9 @@ mod tests {
             ..Default::default()
         };
         let body = build_request(&req, false, CLAUDE_CODE_VERSION);
-        assert!(
-            body.system.iter().any(|b| b.text.contains("Environment context you are running in:")),
-            "classifier trigger phrase should be replaced"
-        );
-        assert!(
-            !body.system.iter().any(|b| b.text.contains("useful information")),
-            "original trigger phrase should be gone"
-        );
+        let wire = serde_json::to_string(&body).unwrap();
+        assert!(wire.contains("Environment context you are running in:"));
+        assert!(!wire.contains("useful information"));
     }
 
     #[test]

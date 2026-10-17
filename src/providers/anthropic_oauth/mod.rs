@@ -251,7 +251,7 @@ impl Provider for AnthropicOAuthProvider {
             .await
             .map_err(|e| ProviderError::Other(e.into()))?;
 
-        let (text, tool_calls) = split_content_blocks(&parsed.content);
+        let (text, tool_calls) = split_content_blocks(&parsed.content, &registered_tool_names(request));
         let usage = parsed.usage.as_ref().map(usage_to_openai);
         if let (Some(trace), Some(raw)) = (&trace, parsed.usage.as_ref()) {
             trace.set_usage(crate::request_log::trace::Usage {
@@ -304,6 +304,7 @@ impl Provider for AnthropicOAuthProvider {
         let http = self.http.clone();
         let session = self.session.clone();
         let model = request.model.clone();
+        let registered_tools = registered_tool_names(request);
         let quota_cache = self.quota.clone();
 
         let stream = async_stream::stream! {
@@ -419,7 +420,7 @@ impl Provider for AnthropicOAuthProvider {
                                         // Reverse CC canonical name back to the original
                                         // name the caller registered, so upstream sees its
                                         // own tool names.
-                                        let original_name = wire::from_cc_name(&name);
+                                        let original_name = wire::restore_tool_name(&name, &registered_tools);
                                         if let Some(trace) = &trace { trace.first_text(); }
                                         yield Ok(tool_call_start_chunk(
                                             &message_id,
