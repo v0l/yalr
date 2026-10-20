@@ -245,6 +245,7 @@ pub async fn run_with_shutdown<F>(
 
     let routstr_protected_routes = Router::new()
         .route("/v1/balance/info", get(crate::payments::routstr::balance_info))
+        .route("/v1/account", get(crate::payments::account::account))
         .route("/v1/balance/refund", post(crate::payments::routstr::balance_refund))
         .route("/lightning/invoice", post(crate::payments::routstr::create_lightning_invoice))
         .route("/lightning/invoice/:payment_hash/status", get(crate::payments::routstr::check_lightning_invoice))
@@ -402,6 +403,7 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
 
     let routstr_protected_routes = Router::new()
         .route("/v1/balance/info", get(crate::payments::routstr::balance_info))
+        .route("/v1/account", get(crate::payments::account::account))
         .route("/v1/balance/refund", post(crate::payments::routstr::balance_refund))
         .route("/lightning/invoice", post(crate::payments::routstr::create_lightning_invoice))
         .route("/lightning/invoice/:payment_hash/status", get(crate::payments::routstr::check_lightning_invoice))

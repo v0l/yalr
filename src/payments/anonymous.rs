@@ -473,6 +473,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn account_endpoint_shows_balance_history_and_invoices() {
+        let (state, app) = app().await;
+        let secret = state.db.server_secret().await.unwrap();
+        let public_id = random_hex();
+        let user_id = create_account(&state.db, &secret, &public_id).await.unwrap();
+        state
+            .db
+            .create_lightning_invoice(crate::db::NewLightningInvoice {
+                user_id,
+                payment_hash: "h2",
+                bolt11: "lnbc2",
+                amount_msat: 100_000,
+                amount_sats: 100,
+                expire_seconds: Some(3600),
+            })
+            .await
+            .unwrap();
+        state.db.mark_public_invoice("h2", "create", &public_id).await.unwrap();
+        let balance = state.payments_state.as_ref().unwrap().balance_service.clone();
+        crate::payments::lightning::handle_settlement(&state.db, &balance, "h2").await.unwrap();
+        let reservation_id = "req-test";
+        balance.debit_with_metadata(user_id, 7000, "reserve", reservation_id, Some("qwen")).await.unwrap();
+        balance.credit(user_id, 6000, "refund", reservation_id).await.unwrap();
+
+        let key = derive_api_key(&secret, &public_id);
+        let (code, body) = get(&app, "/v1/account", Some(&key)).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(body["balance_msat"], 99_000);
+        assert_eq!(body["lifetime_deposited_msat"], 100_000);
+        assert_eq!(body["history"][0]["kind"], "usage");
+        assert_eq!(body["history"][0]["amount_msat"], -1000);
+        assert_eq!(body["history"][0]["detail"], "qwen");
+        assert_eq!(body["history"][1]["kind"], "deposit");
+        assert_eq!(body["invoices"][0]["status"], "paid");
+        assert_eq!(body["invoices"][0]["invoice_id"], public_id);
+
+        let (code, _) = get(&app, "/v1/account", None).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn unknown_invoice_is_404_and_invoices_need_lnd() {
         use tower::util::ServiceExt;
         let (_, app) = app().await;

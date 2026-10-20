@@ -1,4 +1,5 @@
 pub mod balance;
+pub mod account;
 pub mod anonymous;
 pub mod biller;
 pub mod guard;

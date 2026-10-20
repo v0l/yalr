@@ -12,6 +12,7 @@ import Chat from './pages/Chat'
 import RequestLog from './pages/RequestLog'
 import RequestLogDetail from './pages/RequestLogDetail'
 import Payments from './pages/Payments'
+import Account from './pages/Account'
 import { api } from './api/client'
 import { API_BASE_URL } from './api/client'
 
@@ -67,6 +68,7 @@ export default function App() {
       <Routes>
         <Route path="/setup" element={<Setup />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/account" element={<Account />} />
         <Route path="/" element={
           <SetupCheckRoute>
             <PrivateRoute>

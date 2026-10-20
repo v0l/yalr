@@ -17,6 +17,7 @@ pub struct BillingEngine {
 /// Result of reserving balance for a request.
 #[derive(Debug, Clone)]
 pub struct Reservation {
+    pub request_id: String,
     pub user_id: i64,
     pub model: String,
     pub reserved_msat: i64,
@@ -85,6 +86,7 @@ impl BillingEngine {
 
         if max_cost == 0 || pricing.is_free {
             return Ok(Reservation {
+                request_id: String::new(),
                 user_id,
                 model: model_name.to_string(),
                 reserved_msat: 0,
@@ -93,10 +95,10 @@ impl BillingEngine {
             });
         }
 
-        let request_id = format!("req-{}", chrono::Utc::now().timestamp_millis());
+        let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
 
         self.balance_service
-            .debit(user_id, max_cost, "reserve", &request_id)
+            .debit_with_metadata(user_id, max_cost, "reserve", &request_id, Some(model_name))
             .await
             .map_err(|e| match e {
                 BalanceError::InsufficientFunds { required, available } => {
@@ -106,6 +108,7 @@ impl BillingEngine {
             })?;
 
         Ok(Reservation {
+            request_id,
             user_id,
             model: model_name.to_string(),
             reserved_msat: max_cost,
@@ -139,7 +142,7 @@ impl BillingEngine {
 
         let refund = reservation.reserved_msat - actual_msat;
 
-        let request_id = format!("charge-{}", chrono::Utc::now().timestamp_millis());
+        let request_id = reservation.request_id.clone();
 
         if refund < 0 {
             let available = self
@@ -184,9 +187,8 @@ impl BillingEngine {
         if reservation.is_free || reservation.reserved_msat <= 0 {
             return Ok(());
         }
-        let request_id = format!("release-{}", chrono::Utc::now().timestamp_millis());
         self.balance_service
-            .credit(reservation.user_id, reservation.reserved_msat, "refund", &request_id)
+            .credit(reservation.user_id, reservation.reserved_msat, "refund", &reservation.request_id)
             .await
             .map_err(BillingError::Balance)?;
         Ok(())

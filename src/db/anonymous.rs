@@ -7,6 +7,16 @@ pub struct PublicInvoice {
     pub public_id: String,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AccountInvoice {
+    pub public_id: String,
+    pub purpose: String,
+    pub amount_sats: i64,
+    pub status: String,
+    pub created_at: String,
+    pub paid_at: Option<String>,
+}
+
 impl Database {
     pub async fn server_secret(&self) -> Result<String, sqlx::Error> {
         sqlx::query("INSERT OR IGNORE INTO server_secret (id, secret) VALUES (1, ?)")
@@ -41,6 +51,37 @@ impl Database {
         .execute(&self.pool)
         .await?;
         Ok(done.rows_affected())
+    }
+
+    pub async fn list_account_invoices(&self, user_id: i64, limit: i64) -> Result<Vec<AccountInvoice>, sqlx::Error> {
+        sqlx::query_as::<_, AccountInvoice>(
+            "SELECT public_id, purpose, amount_sats, status, created_at, paid_at FROM lightning_invoices
+             WHERE user_id = ? AND public_id IS NOT NULL ORDER BY id DESC LIMIT ?",
+        )
+        .bind(user_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn request_models(
+        &self,
+        user_id: i64,
+        reservation_ids: Vec<String>,
+    ) -> Result<std::collections::HashMap<String, String>, sqlx::Error> {
+        let ids: Vec<String> = reservation_ids.into_iter().filter(|r| r.starts_with("req-")).collect();
+        if ids.is_empty() {
+            return Ok(Default::default());
+        }
+        let marks = vec!["?"; ids.len()].join(",");
+        let sql = format!(
+            "SELECT reference_id, metadata FROM balance_transactions WHERE user_id = ? AND reference_id IN ({marks}) AND metadata IS NOT NULL"
+        );
+        let mut q = sqlx::query_as::<_, (String, String)>(&sql).bind(user_id);
+        for id in &ids {
+            q = q.bind(id);
+        }
+        Ok(q.fetch_all(&self.pool).await?.into_iter().collect())
     }
 
     pub async fn get_public_invoice(&self, public_id: &str) -> Result<Option<PublicInvoice>, sqlx::Error> {

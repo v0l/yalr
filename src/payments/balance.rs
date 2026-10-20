@@ -77,6 +77,17 @@ impl BalanceService {
         tx_type: &str,
         reference_id: &str,
     ) -> Result<i64, BalanceError> {
+        self.debit_with_metadata(user_id, amount_msat, tx_type, reference_id, None).await
+    }
+
+    pub async fn debit_with_metadata(
+        &self,
+        user_id: i64,
+        amount_msat: i64,
+        tx_type: &str,
+        reference_id: &str,
+        metadata: Option<&str>,
+    ) -> Result<i64, BalanceError> {
         if amount_msat <= 0 {
             return Err(BalanceError::InvalidAmount(amount_msat));
         }
@@ -113,13 +124,14 @@ impl BalanceService {
         .await?;
 
         sqlx::query(
-            r#"INSERT INTO balance_transactions (user_id, amount_msat, transaction_type, reference_id)
-               VALUES (?, ?, ?, ?)"#,
+            r#"INSERT INTO balance_transactions (user_id, amount_msat, transaction_type, reference_id, metadata)
+               VALUES (?, ?, ?, ?, ?)"#,
         )
         .bind(user_id)
         .bind(negative)
         .bind(tx_type)
         .bind(reference_id)
+        .bind(metadata)
         .execute(&mut *tx)
         .await?;
 
