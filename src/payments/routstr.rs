@@ -219,39 +219,69 @@ pub async fn balance_refund(
         return error_response(StatusCode::BAD_REQUEST, "No balance to refund");
     }
 
-    // Debit the full balance first (atomic)
-    let ref_id = format!("refund-{}", chrono::Utc::now().timestamp_millis());
-    match payments.balance_service.debit(user.id, balance, "refund", &ref_id).await {
-        Ok(_) => {}
-        Err(e) => {
-            tracing::error!(user_id = user.id, error = %e, "Failed to debit balance for refund");
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to process refund");
-        }
+    let amount_msat = match invoice_amount_msat(&body.invoice) {
+        Ok(a) => a,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
+    };
+    if amount_msat > balance {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            format!("Invoice amount {} msat exceeds balance {} msat", amount_msat, balance),
+        );
     }
 
-    // Pay the user's invoice
-    match lightning.pay_invoice(&body.invoice, body.amount_sats.map(|a| a)).await {
+    let ref_id = format!("refund-{}", chrono::Utc::now().timestamp_millis());
+    if let Err(e) = payments.balance_service.debit(user.id, amount_msat, "refund", &ref_id).await {
+        tracing::error!(user_id = user.id, error = %e, "Failed to debit balance for refund");
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to process refund");
+    }
+
+    match lightning.pay_invoice(&body.invoice, None).await {
         Ok(result) => {
+            let remaining = balance - amount_msat;
+            let fee = (result.fee_msat as i64).min(remaining);
+            if fee > 0 {
+                let _ = payments
+                    .balance_service
+                    .debit(user.id, fee, "refund_fee", &ref_id)
+                    .await;
+            }
             tracing::info!(
                 user_id = user.id,
-                refunded_msat = balance,
+                refunded_msat = amount_msat,
+                fee_msat = result.fee_msat,
                 payment_hash = %result.payment_hash,
                 "Balance refunded via Lightning"
             );
             Json(RefundResponse {
-                refunded_msat: balance,
-                refunded_sats: balance / 1000,
+                refunded_msat: amount_msat,
+                refunded_sats: amount_msat / 1000,
                 payment_hash: result.payment_hash,
             })
             .into_response()
         }
         Err(e) => {
-            // Credit back the balance since the payment failed
             tracing::error!(user_id = user.id, error = %e, "Refund payment failed, crediting back balance");
-            let _ = payments.balance_service.credit(user.id, balance, "refund_reversal", &ref_id).await;
+            let _ = payments
+                .balance_service
+                .credit(user.id, amount_msat, "refund_reversal", &ref_id)
+                .await;
             error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Refund payment failed: {}", e))
         }
     }
+}
+
+fn invoice_amount_msat(invoice: &str) -> Result<i64, &'static str> {
+    let parsed = payments_rs::lightning::AddInvoiceResponse::from_invoice(invoice.trim(), None)
+        .map_err(|_| "Invalid bolt11 invoice")?;
+    let msat = parsed
+        .parsed_invoice
+        .amount_milli_satoshis()
+        .ok_or("Invoice must specify an amount")?;
+    if msat == 0 {
+        return Err("Invoice must specify an amount");
+    }
+    i64::try_from(msat).map_err(|_| "Invoice amount too large")
 }
 
 /// POST /lightning/invoice — Create a Bolt11 invoice for top-up (per RIP-08)
@@ -496,5 +526,43 @@ mod tests {
         let req: RefundRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.invoice, "lnbc...");
         assert_eq!(req.amount_sats, Some(1000));
+    }
+}
+
+#[cfg(test)]
+mod refund_tests {
+    use super::*;
+
+    use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
+    use secp256k1::{hashes::{sha256, Hash}, Secp256k1, SecretKey};
+
+    fn invoice(amount_msat: Option<u64>) -> String {
+        let key = SecretKey::from_slice(&[7u8; 32]).unwrap();
+        let hash = sha256::Hash::from_slice(&[1u8; 32]).unwrap();
+        let builder = InvoiceBuilder::new(Currency::Bitcoin)
+            .description("test".into())
+            .payment_hash(hash)
+            .payment_secret(PaymentSecret([2u8; 32]))
+            .duration_since_epoch(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap())
+            .min_final_cltv_expiry_delta(144);
+        let builder = match amount_msat {
+            Some(a) => builder.amount_milli_satoshis(a),
+            None => builder,
+        };
+        builder
+            .build_signed(|m| Secp256k1::new().sign_ecdsa_recoverable(m, &key))
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn reads_the_invoice_amount() {
+        assert_eq!(invoice_amount_msat(&invoice(Some(250_000_000))), Ok(250_000_000));
+    }
+
+    #[test]
+    fn refuses_amountless_and_garbage_invoices() {
+        assert!(invoice_amount_msat(&invoice(None)).is_err());
+        assert!(invoice_amount_msat("not an invoice").is_err());
     }
 }

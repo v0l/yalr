@@ -59,6 +59,8 @@ name = "yalr-cli"
 path = "src/bin/cli.rs"
 
 [dev-dependencies]
+lightning-invoice = "0.34"
+secp256k1 = { version = "0.29", features = ["global-context", "recovery"] }
 tokio-test = "0.4"
 wiremock = "0.5"
 tower = "0.5"
