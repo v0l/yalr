@@ -18,6 +18,7 @@ const DEFAULT_RELAYS: [&str; 3] = [
 const REFRESH: Duration = Duration::from_secs(24 * 60 * 60);
 const POLL: Duration = Duration::from_secs(60);
 const RETRY: Duration = Duration::from_secs(15);
+const PARTIAL_RETRY: Duration = Duration::from_secs(300);
 
 pub fn spawn(config: DiscoveryConfig, db: Arc<Database>) {
     if !config.enabled {
@@ -131,10 +132,15 @@ async fn run(config: DiscoveryConfig, db: Arc<Database>) -> Result<(), String> {
     tracing::info!(npub = %npub, "Nostr discovery enabled");
 
     let mut published: Option<(Listing, tokio::time::Instant)> = None;
+    let mut incomplete_since: Option<tokio::time::Instant> = None;
     loop {
         let listing = current_listing(&config, &db, urls.clone()).await;
         let due = match &published {
-            Some((last, at)) => *last != listing || at.elapsed() >= REFRESH,
+            Some((last, at)) => {
+                *last != listing
+                    || at.elapsed() >= REFRESH
+                    || incomplete_since.is_some_and(|t| t.elapsed() >= PARTIAL_RETRY)
+            }
             None => true,
         };
         if due {
@@ -146,6 +152,7 @@ async fn run(config: DiscoveryConfig, db: Arc<Database>) -> Result<(), String> {
                         models = listing.models.len(),
                         "Published Routstr provider announcement"
                     );
+                    incomplete_since = (output.success.len() < relays.len()).then(tokio::time::Instant::now);
                     published = Some((listing, tokio::time::Instant::now()));
                 }
                 Ok(output) => {
