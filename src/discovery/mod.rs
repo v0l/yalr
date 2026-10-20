@@ -84,21 +84,13 @@ fn urls(config: &DiscoveryConfig) -> Result<Vec<String>, String> {
 }
 
 async fn advertised_models(db: &Database) -> Vec<String> {
-    let hidden: std::collections::HashSet<String> = db
+    let mut names: Vec<String> = db
         .list_model_pricings()
         .await
         .unwrap_or_default()
         .into_iter()
-        .filter(|p| !p.is_advertised)
+        .filter(|p| p.is_advertised)
         .map(|p| p.model_name)
-        .collect();
-    let mut names: Vec<String> = db
-        .list_routing_configs()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|rc| rc.name)
-        .filter(|n| !hidden.contains(n))
         .collect();
     names.sort();
     names
@@ -229,23 +221,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hidden_and_pool_models() {
+    async fn only_priced_and_advertised_models_are_listed() {
         let db = Database::new("sqlite::memory:").await.unwrap();
-        for name in ["b-model", "a-model", "secret"] {
-            db.create_routing_config(crate::db::NewRoutingConfig {
-                name: name.into(),
-                strategy: "round_robin".into(),
-                health_check_enabled: false,
-                health_check_interval_seconds: 30,
-                health_check_timeout_seconds: 5,
-            })
-            .await
-            .unwrap();
+        for (name, advertised) in [("b-model", 1), ("a-model", 1), ("secret", 0)] {
+            sqlx::query("INSERT INTO model_pricing (model_name, is_advertised) VALUES (?, ?)")
+                .bind(name)
+                .bind(advertised)
+                .execute(&db.pool)
+                .await
+                .unwrap();
         }
-        sqlx::query("INSERT INTO model_pricing (model_name, is_advertised) VALUES ('secret', 0)")
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        db.create_routing_config(crate::db::NewRoutingConfig {
+            name: "unpriced".into(),
+            strategy: "round_robin".into(),
+            health_check_enabled: false,
+            health_check_interval_seconds: 30,
+            health_check_timeout_seconds: 5,
+        })
+        .await
+        .unwrap();
         assert_eq!(advertised_models(&db).await, vec!["a-model", "b-model"]);
     }
 }
