@@ -1,6 +1,10 @@
 use std::sync::Arc;
 use crate::db::{Database, BalanceTransactionRow};
 
+pub fn is_deposit(tx_type: &str) -> bool {
+    !matches!(tx_type, "refund" | "refund_reversal")
+}
+
 /// Service for managing user balances with atomic credit/debit operations.
 /// All amounts are in millisatoshis (msats).
 pub struct BalanceService {
@@ -30,7 +34,7 @@ impl BalanceService {
             return Err(BalanceError::InvalidAmount(amount_msat));
         }
 
-        // Use a DB transaction: upsert balance + insert transaction log
+        let deposited = if is_deposit(tx_type) { amount_msat } else { 0 };
         let mut tx = self.db.pool.begin().await?;
 
         let new_balance = sqlx::query_scalar::<_, i64>(
@@ -44,9 +48,9 @@ impl BalanceService {
         )
         .bind(user_id)
         .bind(amount_msat)
+        .bind(deposited)
         .bind(amount_msat)
-        .bind(amount_msat)
-        .bind(amount_msat)
+        .bind(deposited)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -175,6 +179,21 @@ mod tests {
         let (svc, _) = setup().await;
         let new_balance = svc.credit(1, 100_000, "deposit", "ref1").await.unwrap();
         assert_eq!(new_balance, 100_000);
+    }
+
+    async fn lifetime(svc: &BalanceService, user_id: i64) -> i64 {
+        svc.db.get_user_balance(user_id).await.unwrap().unwrap().lifetime_deposited_msat
+    }
+
+    #[tokio::test]
+    async fn only_real_deposits_count_toward_lifetime() {
+        let (svc, _) = setup().await;
+        svc.credit(1, 100_000, "deposit", "a").await.unwrap();
+        svc.credit(1, 6_000, "refund", "b").await.unwrap();
+        svc.credit(1, 5_000, "refund_reversal", "c").await.unwrap();
+        svc.credit(1, 2_000, "goodwill top-up", "d").await.unwrap();
+        assert_eq!(lifetime(&svc, 1).await, 102_000);
+        assert_eq!(svc.get_balance(1).await.unwrap(), 113_000);
     }
 
     #[tokio::test]
