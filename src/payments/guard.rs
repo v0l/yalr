@@ -142,6 +142,7 @@ mod tests {
             router,
             auth_config: crate::auth::nip98::AuthConfig::default(),
             payments_config: None, // payments disabled → noop guard
+            discovery_config: None,
             admin_ui_path: "/app/admin/dist".to_string(),
             host: "0.0.0.0".to_string(),
             port: 3000,

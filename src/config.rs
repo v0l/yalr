@@ -9,6 +9,7 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub auth: Option<AuthConfig>,
     pub payments: Option<PaymentsConfig>,
+    pub discovery: Option<DiscoveryConfig>,
     #[serde(default)]
     pub anthropic: AnthropicConfig,
     #[serde(default)]
@@ -104,10 +105,29 @@ impl Default for Config {
             },
             auth: None,
             payments: None,
+            discovery: None,
             anthropic: AnthropicConfig::default(),
             request_log: RequestLogConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DiscoveryConfig {
+    pub enabled: bool,
+    pub http_url: String,
+    #[serde(default)]
+    pub onion_url: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub about: Option<String>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    #[serde(default)]
+    pub nsec: Option<String>,
+    #[serde(default)]
+    pub relays: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -164,6 +184,7 @@ pub struct AppConfig {
     pub router: Arc<Router>,
     pub auth_config: crate::auth::nip98::AuthConfig,
     pub payments_config: Option<PaymentsConfig>,
+    pub discovery_config: Option<DiscoveryConfig>,
     pub admin_ui_path: String,
     pub host: String,
     pub port: u16,
@@ -201,11 +222,12 @@ impl AppConfig {
         crate::request_log::settings::set(config.request_log.clone());
 
         let payments_config = config.payments;
+        let discovery_config = config.discovery;
         let admin_ui_path = config.server.admin_ui_path.clone();
         let host = config.server.host.clone();
         let port = config.server.port;
 
-        Ok(Self { db, router, auth_config, payments_config, admin_ui_path, host, port })
+        Ok(Self { db, router, auth_config, payments_config, discovery_config, admin_ui_path, host, port })
     }
 
     pub async fn load_providers(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

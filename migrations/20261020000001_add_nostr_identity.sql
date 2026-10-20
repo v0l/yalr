@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS nostr_identity (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    secret_key TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

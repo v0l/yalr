@@ -136,6 +136,10 @@ pub async fn run_with_shutdown<F>(
         modality_cache: Default::default(),
     });
 
+    if let Some(discovery) = config.discovery_config.clone() {
+        crate::discovery::spawn(discovery, state.db.clone());
+    }
+
     let admin_ui_path = config.admin_ui_path.clone();
     let cors = CorsLayer::permissive();
 

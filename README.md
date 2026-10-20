@@ -95,6 +95,23 @@ auth:
     - "your-nostr-pubkey"
 ```
 
+### Routstr Discovery
+
+Publishes a Routstr RIP-02 provider announcement (kind 38421) so Routstr clients can find the node. Lightning only, no Cashu `mint` tag.
+
+```yaml
+discovery:
+  enabled: true
+  http_url: "https://yalr.example.com"
+  name: "YALR"
+  about: "OpenAI-compatible LLM router paid over Lightning"
+  relays:
+    - wss://relay.damus.io
+    - wss://nos.lol
+```
+
+`http_url` must be publicly routable. The signing key is generated on first start and kept in the `nostr_identity` table; set `nsec` to use your own. `onion_url`, `provider_id` and `relays` are optional (relays default to damus, nostr.band and nos.lol). The announcement lists routing configs not hidden via `model_pricing.is_advertised`, and is republished when they change and every 24 hours.
+
 ## API Endpoints
 
 ### Admin UI

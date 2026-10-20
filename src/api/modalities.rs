@@ -253,6 +253,7 @@ mod tests {
                 router,
                 auth_config: Default::default(),
                 payments_config: None,
+                discovery_config: None,
                 admin_ui_path: String::new(),
                 host: "127.0.0.1".to_string(),
                 port: 0,

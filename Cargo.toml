@@ -34,6 +34,7 @@ async-openai = { version = "0.34.0", features = [
 ] }
 async-anthropic = { path = "vendor/async-anthropic" }
 nostr = "0.44"
+nostr-sdk = "0.44"
 base64 = "0.22"
 url = "2.5"
 uuid = { version = "1", features = ["serde", "v4"] }

@@ -270,7 +270,7 @@ CREATE TABLE transactions (
 | RIP | Title | Status | Implementation Notes |
 |-----|-------|--------|---------------------|
 | RIP-01 | Proxy / Payments | ✅ **Partial** | ✅ OpenAI-compatible proxy (`/v1/chat/completions`)<br>✅ `/v1/info` endpoint<br>✅ `/v1/models` endpoint<br>✅ `/v1/balance/info` endpoint<br>✅ `/v1/balance/refund` endpoint<br>❌ Cashu token redemption (not implemented)<br>❌ `/v1/balance/create` (Cashu-based)<br>❌ `/v1/balance/topup` (Cashu-based)<br>❌ `X-Cashu` header protocol |
-| RIP-02 | Discovery | ❌ **Not Started** | ❌ Nostr Kind 38421 Provider Announcements<br>❌ Nostr Kind 38000 Recommendations<br>❌ Nostr relay subscription/publishing |
+| RIP-02 | Discovery | ✅ **Partial** | ✅ Nostr Kind 38421 Provider Announcements (`src/discovery/`)<br>❌ Nostr Kind 38000 Recommendations (published by users, not providers)<br>❌ No `mint` tag: Cashu is not supported |
 | RIP-03 | Clients | 🟡 **Partial** | ✅ OpenAI API compatibility (drop-in replacement)<br>✅ Ephemeral auth via API keys (`sk-...`)<br>✅ Balance tracking per user<br>❌ Cashu-as-Key workflow (token minting/blinding)<br>❌ Automatic overpay-then-refund cycle<br>❌ Client-side wallet management (NIP-60) |
 | RIP-04 | Auditing | 🟡 **Partial** | ✅ Uptime/health checks via `/v1/models`<br>✅ Latency tracking in MetricsStore<br>✅ Provider health states (Healthy/Degraded/Unhealthy)<br>❌ Nostr-based audit event publishing<br>❌ Public audit score aggregation |
 | RIP-05 | Pricing | ✅ **Complete** | ✅ Millisat (msat) as base unit<br>✅ Per-token pricing (input/output)<br>✅ Request fees support<br>✅ `/v1/models` exposes pricing<br>✅ Max cost calculation<br>✅ Client-side cost verification support |

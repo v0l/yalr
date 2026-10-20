@@ -41,6 +41,7 @@ mod tests {
             },
             auth: None,
             payments: None,
+            discovery: None,
             anthropic: Default::default(),
             request_log: Default::default(),
         };
@@ -53,6 +54,7 @@ mod tests {
             )),
             auth_config: crate::auth::nip98::AuthConfig::default(),
             payments_config: None,
+            discovery_config: None,
             admin_ui_path: "/app/admin/dist".to_string(),
             host: "0.0.0.0".to_string(),
             port: 3000,
