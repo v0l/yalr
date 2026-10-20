@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 
 export default function AccountShell({ children, onSignOut }: { children: ReactNode; onSignOut?: () => void }) {
   return (
@@ -17,11 +18,16 @@ export default function AccountShell({ children, onSignOut }: { children: ReactN
               <div className="font-mono text-[9px] uppercase tracking-[0.15em] text-brand/60">Account</div>
             </div>
           </div>
-          {onSignOut && (
-            <button onClick={onSignOut} className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground">
-              Sign out
-            </button>
-          )}
+          <div className="flex items-center gap-4">
+            <Link to="/login" className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground">
+              Admin login
+            </Link>
+            {onSignOut && (
+              <button onClick={onSignOut} className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground">
+                Sign out
+              </button>
+            )}
+          </div>
         </div>
       </header>
       <main className="mx-auto max-w-3xl space-y-4 p-4 sm:p-5">{children}</main>

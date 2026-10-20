@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { api } from '../api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -190,6 +190,19 @@ export default function Login() {
               )}
             </Button>
           </form>
+
+          <div className="mt-6 border border-border/50 bg-surface p-4">
+            <p className="mb-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+              Using the API as a customer? Buy a key, top up and view your usage.
+            </p>
+            <Link
+              to="/account"
+              className="inline-flex items-center gap-2 font-mono text-[12px] uppercase tracking-[0.08em] text-brand hover:text-brand/80"
+            >
+              Customer account
+              <span className="text-[10px] opacity-60">→</span>
+            </Link>
+          </div>
 
           <div className="mt-8 pt-6 border-t border-border/50">
             <p className="font-mono text-[10px] text-muted-foreground/60 text-center tracking-[0.08em] uppercase">
