@@ -74,6 +74,8 @@ export interface Model {
 export interface ModelPricingInfo {
   prompt: number
   completion: number
+  cache_read: number
+  cache_write: number
   request: number
   unit: string
 }
@@ -543,6 +545,8 @@ export interface ModelPricingEntry {
   is_free: boolean
   price_per_1m_input_sats: number | null
   price_per_1m_output_sats: number | null
+  price_per_1m_cache_read_sats: number | null
+  price_per_1m_cache_write_sats: number | null
   price_per_request_sats: number | null
   context_window: number | null
   max_output_tokens: number | null
@@ -556,6 +560,8 @@ export interface ModelPricingCreateRequest {
   is_free: boolean
   price_per_1m_input_sats?: number | null
   price_per_1m_output_sats?: number | null
+  price_per_1m_cache_read_sats?: number | null
+  price_per_1m_cache_write_sats?: number | null
   price_per_request_sats?: number | null
   context_window?: number | null
   max_output_tokens?: number | null
@@ -566,6 +572,8 @@ export interface ModelPricingUpdateRequest {
   is_free?: boolean
   price_per_1m_input_sats?: number | null
   price_per_1m_output_sats?: number | null
+  price_per_1m_cache_read_sats?: number | null
+  price_per_1m_cache_write_sats?: number | null
   price_per_request_sats?: number | null
   context_window?: number | null
   max_output_tokens?: number | null

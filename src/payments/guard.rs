@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use axum::http::StatusCode;
 use crate::state::AppState;
-use crate::payments::biller::{BillingEngine, Reservation, BillingError};
+use crate::payments::biller::{BillingEngine, Reservation, BillingError, TokenUsage};
 
 /// Wraps the billing lifecycle for a single chat completion request.
 ///
@@ -81,11 +81,15 @@ impl BillingGuard {
     /// Finalize the charge using real usage data.
     /// Safe to call even on no-op guards.
     pub async fn finalize(&self, prompt_tokens: u32, completion_tokens: u32) {
+        self.finalize_usage(TokenUsage::plain(prompt_tokens, completion_tokens)).await;
+    }
+
+    pub async fn finalize_usage(&self, usage: TokenUsage) {
         if let (Some(engine), Some(reservation)) = (&self.engine, &self.reservation) {
             if self.settled.swap(true, std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
-            if let Err(e) = engine.finalize_charge(reservation, prompt_tokens, completion_tokens).await {
+            if let Err(e) = engine.finalize_charge(reservation, usage).await {
                 tracing::error!(error = %e, "Failed to finalize billing charge");
             }
         }

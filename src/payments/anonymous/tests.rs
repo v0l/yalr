@@ -387,3 +387,61 @@ fn parses_sqlite_timestamps() {
     assert_eq!(unix("1970-01-01 00:01:00"), Some(60));
     assert_eq!(unix("garbage"), None);
 }
+
+#[tokio::test]
+async fn cached_prompt_tokens_are_billed_at_the_cache_read_price() {
+    use crate::providers::OpenAiProvider;
+    use tower::util::ServiceExt;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "c1", "object": "chat.completion", "created": 0, "model": "m",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 1_000_000, "completion_tokens": 0, "total_tokens": 1_000_000,
+                "prompt_tokens_details": {"cached_tokens": 900_000}
+            }
+        })))
+        .mount(&upstream)
+        .await;
+
+    let (state, app) = app().await;
+    let provider = Arc::new(OpenAiProvider::new("up", Some("up"), &format!("{}/", upstream.uri()), None));
+    state.config.router.add_provider(provider.clone()).await;
+    state.config.router.register_route("sale", vec![provider]).await;
+    sqlx::query(
+        "INSERT INTO model_pricing (model_name, is_advertised, price_per_1m_input_sats, price_per_1m_output_sats,
+         price_per_1m_cache_read_sats, price_per_1m_cache_write_sats, price_per_request_sats, context_window, max_output_tokens)
+         VALUES ('sale', 1, 1000, 4000, 100, 1250, 0, 1000000, 100)",
+    )
+    .execute(&state.db.pool)
+    .await
+    .unwrap();
+
+    let secret = state.db.server_secret().await.unwrap();
+    let public_id = random_hex();
+    let user_id = create_account(&state.db, &secret, &public_id).await.unwrap();
+    let key = derive_api_key(&secret, &public_id);
+    let balance = state.payments_state.as_ref().unwrap().balance_service.clone();
+    balance.credit(user_id, 5_000_000_000, "deposit", "seed").await.unwrap();
+
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("authorization", format!("Bearer {key}"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(r#"{"model":"sale","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}]}"#))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let text = String::from_utf8_lossy(&axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap()).to_string();
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    let spent = 5_000_000_000 - balance.get_balance(user_id).await.unwrap();
+    let expected_sats = 100_000 * 1000 / 1_000_000 + 900_000 * 100 / 1_000_000;
+    assert_eq!(spent, expected_sats * 1000);
+}

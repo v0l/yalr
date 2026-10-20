@@ -40,6 +40,10 @@ pub struct ModelPricing {
     pub prompt: i64,
     /// Sats per 1M output/completion tokens.
     pub completion: i64,
+    /// Sats per 1M prompt tokens served from the cache.
+    pub cache_read: i64,
+    /// Sats per 1M prompt tokens written to the cache.
+    pub cache_write: i64,
     /// Sats per request.
     pub request: i64,
     /// Unit for token pricing (always "1M tokens").
@@ -135,6 +139,8 @@ pub struct PublicPricing {
     pub prompt: f64,
     pub completion: f64,
     pub request: f64,
+    pub input_cache_read: f64,
+    pub input_cache_write: f64,
 }
 
 #[derive(Serialize)]
@@ -163,6 +169,8 @@ pub async fn public_models(State(state): State<std::sync::Arc<AppState>>) -> Jso
                 prompt: p.map_or(0.0, |p| per_token(p.prompt)),
                 completion: p.map_or(0.0, |p| per_token(p.completion)),
                 request: p.map_or(0.0, |p| p.request as f64),
+                input_cache_read: p.map_or(0.0, |p| per_token(p.cache_read)),
+                input_cache_write: p.map_or(0.0, |p| per_token(p.cache_write)),
             };
             let arch = m.architecture.as_ref();
             PublicModel {
@@ -174,7 +182,7 @@ pub async fn public_models(State(state): State<std::sync::Arc<AppState>>) -> Jso
                     input_modalities: arch.map_or_else(|| vec!["text".to_string()], |a| a.input_modalities.clone()),
                     output_modalities: arch.map_or_else(|| vec!["text".to_string()], |a| a.output_modalities.clone()),
                 },
-                pricing: PublicPricing { prompt: 0.0, completion: 0.0, request: 0.0 },
+                pricing: PublicPricing { prompt: 0.0, completion: 0.0, request: 0.0, input_cache_read: 0.0, input_cache_write: 0.0 },
                 sats_pricing: sats,
                 id: m.id,
             }
@@ -288,6 +296,8 @@ async fn models_for(state: &std::sync::Arc<AppState>, user: &crate::db::User) ->
                 Some(ModelPricing {
                     prompt: p.price_per_1m_input_sats,
                     completion: p.price_per_1m_output_sats,
+                    cache_read: p.price_per_1m_cache_read_sats,
+                    cache_write: p.price_per_1m_cache_write_sats,
                     request: p.price_per_request_sats,
                     unit: "1M tokens".to_string(),
                 })
@@ -389,6 +399,8 @@ async fn models_for(state: &std::sync::Arc<AppState>, user: &crate::db::User) ->
                     Some(ModelPricing {
                         prompt: p.price_per_1m_input_sats,
                         completion: p.price_per_1m_output_sats,
+                        cache_read: p.price_per_1m_cache_read_sats,
+                        cache_write: p.price_per_1m_cache_write_sats,
                         request: p.price_per_request_sats,
                         unit: "1M tokens".to_string(),
                     })

@@ -116,6 +116,24 @@ async fn check_model_access(
 
 // ──────────────────────────────────────────────────────────
 
+fn billed_usage(
+    request: &ChatRequest,
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    cached_from_response: Option<u32>,
+) -> crate::payments::biller::TokenUsage {
+    let traced = request.trace().and_then(|t| t.usage());
+    crate::payments::biller::TokenUsage {
+        prompt_tokens,
+        completion_tokens,
+        cached_tokens: traced
+            .map(|u| u.cached_tokens)
+            .or(cached_from_response)
+            .unwrap_or(0),
+        cache_write_tokens: traced.map_or(0, |u| u.cache_write_tokens),
+    }
+}
+
 pub async fn chat_completions_handler(
     State(state): State<std::sync::Arc<AppState>>,
     Extension(authenticated_user): Extension<crate::auth::admin::AuthenticatedUser>,
@@ -215,7 +233,7 @@ pub async fn chat_completions_handler(
             // Finalize billing
             if let Some(guard) = &billing_guard {
                 if let Some(ref usage) = response.usage {
-                    guard.finalize(usage.prompt_tokens, usage.completion_tokens).await;
+                    guard.finalize_usage(billed_usage(&request, usage.prompt_tokens, usage.completion_tokens, usage.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens))).await;
                 }
             }
 
@@ -385,7 +403,7 @@ pub async fn chat_completions_stream(
                     // Finalize billing after stream is done
                     if let Some(ref guard) = billing_guard {
                         if guard.is_active() {
-                            guard.finalize(prompt_tokens, completion_tokens).await;
+                            guard.finalize_usage(billed_usage(&request, prompt_tokens, completion_tokens, None)).await;
                         }
                     }
                 };

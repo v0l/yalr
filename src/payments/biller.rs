@@ -7,6 +7,34 @@ use std::sync::Arc;
 use crate::payments::balance::{BalanceService, BalanceError};
 use crate::payments::pricing::PricingResolver;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub cached_tokens: u32,
+    pub cache_write_tokens: u32,
+}
+
+impl TokenUsage {
+    pub fn plain(prompt_tokens: u32, completion_tokens: u32) -> Self {
+        Self { prompt_tokens, completion_tokens, ..Default::default() }
+    }
+
+    pub fn cost_msat(&self, pricing: &crate::payments::pricing::ResolvedPricing) -> i64 {
+        let cached = (self.cached_tokens as i64).min(self.prompt_tokens as i64);
+        let written = (self.cache_write_tokens as i64).min(self.prompt_tokens as i64 - cached);
+        let fresh = self.prompt_tokens as i64 - cached - written;
+
+        let micro = fresh * pricing.price_per_1m_input_sats
+            + cached * pricing.price_per_1m_cache_read_sats
+            + written * pricing.price_per_1m_cache_write_sats
+            + self.completion_tokens as i64 * pricing.price_per_1m_output_sats;
+        let total_sats = micro / 1_000_000 + pricing.price_per_request_sats;
+
+        (total_sats * 1000).max(0)
+    }
+}
+
 /// Handles the billing lifecycle for a single request:
 /// resolve pricing → compute max_cost → reserve → finalize with real usage.
 pub struct BillingEngine {
@@ -84,9 +112,11 @@ impl BillingEngine {
         let max_cost = self.calculate_max_cost(model_name, request_max_tokens).await?;
         let pricing = self.pricing_resolver.resolve(model_name).await;
 
-        if max_cost == 0 || pricing.is_free {
+        let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
+
+        if pricing.is_free {
             return Ok(Reservation {
-                request_id: String::new(),
+                request_id,
                 user_id,
                 model: model_name.to_string(),
                 reserved_msat: 0,
@@ -95,7 +125,16 @@ impl BillingEngine {
             });
         }
 
-        let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
+        if max_cost == 0 {
+            return Ok(Reservation {
+                request_id,
+                user_id,
+                model: model_name.to_string(),
+                reserved_msat: 0,
+                max_cost_msat: 0,
+                is_free: false,
+            });
+        }
 
         self.balance_service
             .debit_with_metadata(user_id, max_cost, "reserve", &request_id, Some(model_name))
@@ -123,8 +162,7 @@ impl BillingEngine {
     pub async fn finalize_charge(
         &self,
         reservation: &Reservation,
-        prompt_tokens: u32,
-        completion_tokens: u32,
+        usage: TokenUsage,
     ) -> Result<i64, BillingError> {
         if reservation.is_free {
             return Ok(0);
@@ -132,13 +170,7 @@ impl BillingEngine {
 
         let pricing = self.pricing_resolver.resolve(&reservation.model).await;
 
-        // Actual cost in sats
-        let input_cost = (prompt_tokens as i64 * pricing.price_per_1m_input_sats) / 1_000_000;
-        let output_cost = (completion_tokens as i64 * pricing.price_per_1m_output_sats) / 1_000_000;
-        let request_cost = pricing.price_per_request_sats;
-
-        let actual_sats = input_cost + output_cost + request_cost;
-        let actual_msat = actual_sats * 1000;
+        let actual_msat = usage.cost_msat(&pricing);
 
         let refund = reservation.reserved_msat - actual_msat;
 
@@ -173,8 +205,10 @@ impl BillingEngine {
             reserved_msat = reservation.reserved_msat,
             actual_msat,
             refund_msat = refund,
-            prompt_tokens,
-            completion_tokens,
+            prompt_tokens = usage.prompt_tokens,
+            completion_tokens = usage.completion_tokens,
+            cached_tokens = usage.cached_tokens,
+            cache_write_tokens = usage.cache_write_tokens,
             "Charge finalized"
         );
 
@@ -275,12 +309,65 @@ mod tests {
 
         // Finalize with small usage — should get a refund
         let actual = engine
-            .finalize_charge(&reservation, 50, 100)
+            .finalize_charge(&reservation, TokenUsage::plain(50, 100))
             .await
             .unwrap();
 
         // (50 * 5)/1_000_000 = 0 + (100 * 15)/1_000_000 = 0 + 1 fee = 1000 msats
         assert_eq!(actual, 1000);
+    }
+
+    fn priced(input: i64, output: i64, read: i64, write: i64, request: i64) -> crate::payments::pricing::ResolvedPricing {
+        crate::payments::pricing::ResolvedPricing {
+            model_name: "m".into(),
+            is_free: false,
+            is_advertised: true,
+            price_per_1m_input_sats: input,
+            price_per_1m_output_sats: output,
+            price_per_1m_cache_read_sats: read,
+            price_per_1m_cache_write_sats: write,
+            price_per_request_sats: request,
+            context_window: 8192,
+            max_output_tokens: 4096,
+        }
+    }
+
+    #[test]
+    fn cache_reads_and_writes_bill_at_their_own_rates() {
+        let p = priced(1_000_000, 4_000_000, 100_000, 1_250_000, 0);
+        let usage = TokenUsage { prompt_tokens: 1000, completion_tokens: 100, cached_tokens: 600, cache_write_tokens: 200 };
+        let sats = 200 * 1 + 600 * 100_000 / 1_000_000 + 200 * 1_250_000 / 1_000_000 + 100 * 4;
+        assert_eq!(usage.cost_msat(&p), sats * 1000);
+    }
+
+    #[test]
+    fn unset_cache_prices_bill_like_plain_input() {
+        let p = priced(1000, 4000, 1000, 1000, 1);
+        let with_cache = TokenUsage { prompt_tokens: 2_000_000, completion_tokens: 0, cached_tokens: 1_500_000, cache_write_tokens: 250_000 };
+        let without = TokenUsage::plain(2_000_000, 0);
+        assert_eq!(with_cache.cost_msat(&p), without.cost_msat(&p));
+    }
+
+    #[test]
+    fn cache_counts_above_the_prompt_are_clamped() {
+        let p = priced(1000, 0, 100, 2000, 0);
+        let usage = TokenUsage { prompt_tokens: 1_000_000, completion_tokens: 0, cached_tokens: 900_000, cache_write_tokens: 900_000 };
+        let cost = usage.cost_msat(&p);
+        assert!(cost >= 0);
+        assert_eq!(cost, (90 + 200) * 1000);
+    }
+
+    #[tokio::test]
+    async fn a_zero_sat_reservation_is_still_charged_for_real_usage() {
+        let engine = setup().await;
+        engine.balance_service.credit(1, 10_000_000, "deposit", "t").await.unwrap();
+        let reservation = engine.reserve(1, "gpt-4", Some(1)).await.unwrap();
+        let mut zero = reservation.clone();
+        zero.reserved_msat = 0;
+        zero.max_cost_msat = 0;
+        assert!(!zero.is_free);
+        let charged = engine.finalize_charge(&zero, TokenUsage::plain(0, 2_000_000)).await.unwrap();
+        assert_eq!(charged, 31_000);
     }
 
     #[tokio::test]
@@ -299,7 +386,7 @@ mod tests {
         engine.balance_service.credit(1, 5000, "deposit", "t").await.unwrap();
         let reservation = engine.reserve(1, "gpt-4", Some(10)).await.unwrap();
         assert_eq!(reservation.reserved_msat, 1000);
-        let actual = engine.finalize_charge(&reservation, 2_000_000_000, 0).await.unwrap();
+        let actual = engine.finalize_charge(&reservation, TokenUsage::plain(2_000_000_000, 0)).await.unwrap();
         assert_eq!(actual, 10_001_000);
         assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 0);
     }
@@ -332,7 +419,7 @@ mod tests {
         assert!(reservation.is_free);
         assert_eq!(reservation.reserved_msat, 0);
 
-        let actual = engine.finalize_charge(&reservation, 1000, 1000).await.unwrap();
+        let actual = engine.finalize_charge(&reservation, TokenUsage::plain(1000, 1000)).await.unwrap();
         assert_eq!(actual, 0);
     }
 
@@ -354,7 +441,7 @@ mod tests {
         assert_eq!(balance, 4000);
 
         // Finalize with zero usage — full refund
-        engine.finalize_charge(&reservation, 0, 0).await.unwrap();
+        engine.finalize_charge(&reservation, TokenUsage::plain(0, 0)).await.unwrap();
 
         let balance = engine.balance_service.get_balance(1).await.unwrap();
         // (0 + 0 + 1sats)*1000 = 1000 msats charged, so refund of 0 (1000 reserved - 1000 actual)

@@ -43,6 +43,8 @@ export default function AccountModels({ accountKey, onSignOut }: { accountKey: s
                 <th className="px-4 py-2.5 font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">Model</th>
                 <th className="px-4 py-2.5 text-right font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">Input / 1M</th>
                 <th className="px-4 py-2.5 text-right font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">Output / 1M</th>
+                <th className="px-4 py-2.5 text-right font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">Cache read / 1M</th>
+                <th className="px-4 py-2.5 text-right font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">Cache write / 1M</th>
                 <th className="px-4 py-2.5 text-right font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">Per request</th>
                 <th className="px-4 py-2.5 text-right font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">Context</th>
               </tr>
@@ -62,6 +64,8 @@ export default function AccountModels({ accountKey, onSignOut }: { accountKey: s
                   </td>
                   <td className="px-4 py-2.5 text-right font-mono text-[12px] tabular-nums text-foreground">{m.pricing ? `${sats(m.pricing.prompt)} sats` : '-'}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-[12px] tabular-nums text-foreground">{m.pricing ? `${sats(m.pricing.completion)} sats` : '-'}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-[12px] tabular-nums text-foreground">{m.pricing ? `${sats(m.pricing.cache_read)} sats` : '-'}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-[12px] tabular-nums text-foreground">{m.pricing ? `${sats(m.pricing.cache_write)} sats` : '-'}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-[12px] tabular-nums text-foreground">{m.pricing ? `${sats(m.pricing.request)} sats` : '-'}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-[12px] tabular-nums text-muted-foreground">{tokens(m.context_length)}</td>
                 </tr>

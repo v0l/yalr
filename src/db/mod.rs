@@ -1020,7 +1020,7 @@ impl Database {
         model_name: &str,
     ) -> Result<Option<ModelPricingRow>, sqlx::Error> {
         sqlx::query_as::<_, ModelPricingRow>(
-            "SELECT id, model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_request_sats, context_window, max_output_tokens, created_at, updated_at FROM model_pricing WHERE model_name = ?"
+            "SELECT id, model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_1m_cache_read_sats, price_per_1m_cache_write_sats, price_per_request_sats, context_window, max_output_tokens, created_at, updated_at FROM model_pricing WHERE model_name = ?"
         )
         .bind(model_name)
         .fetch_optional(&self.pool)
@@ -1029,7 +1029,7 @@ impl Database {
 
     pub async fn list_model_pricings(&self) -> Result<Vec<ModelPricingRow>, sqlx::Error> {
         sqlx::query_as::<_, ModelPricingRow>(
-            "SELECT id, model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_request_sats, context_window, max_output_tokens, created_at, updated_at FROM model_pricing ORDER BY model_name"
+            "SELECT id, model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_1m_cache_read_sats, price_per_1m_cache_write_sats, price_per_request_sats, context_window, max_output_tokens, created_at, updated_at FROM model_pricing ORDER BY model_name"
         )
         .fetch_all(&self.pool)
         .await
@@ -1040,15 +1040,17 @@ impl Database {
         mp: NewModelPricing<'_>,
     ) -> Result<ModelPricingRow, sqlx::Error> {
         sqlx::query_as::<_, ModelPricingRow>(
-            "INSERT INTO model_pricing (model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_request_sats, context_window, max_output_tokens)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-             RETURNING id, model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_request_sats, context_window, max_output_tokens, created_at, updated_at"
+            "INSERT INTO model_pricing (model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_1m_cache_read_sats, price_per_1m_cache_write_sats, price_per_request_sats, context_window, max_output_tokens)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             RETURNING id, model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_1m_cache_read_sats, price_per_1m_cache_write_sats, price_per_request_sats, context_window, max_output_tokens, created_at, updated_at"
         )
         .bind(mp.model_name)
         .bind(mp.is_advertised)
         .bind(mp.is_free)
         .bind(mp.price_per_1m_input_sats)
         .bind(mp.price_per_1m_output_sats)
+        .bind(mp.price_per_1m_cache_read_sats)
+        .bind(mp.price_per_1m_cache_write_sats)
         .bind(mp.price_per_request_sats)
         .bind(mp.context_window)
         .bind(mp.max_output_tokens)
@@ -1071,6 +1073,8 @@ impl Database {
             is_free: updates.is_free.unwrap_or(current.is_free),
             price_per_1m_input_sats: updates.price_per_1m_input_sats.unwrap_or(current.price_per_1m_input_sats),
             price_per_1m_output_sats: updates.price_per_1m_output_sats.unwrap_or(current.price_per_1m_output_sats),
+            price_per_1m_cache_read_sats: updates.price_per_1m_cache_read_sats.unwrap_or(current.price_per_1m_cache_read_sats),
+            price_per_1m_cache_write_sats: updates.price_per_1m_cache_write_sats.unwrap_or(current.price_per_1m_cache_write_sats),
             price_per_request_sats: updates.price_per_request_sats.unwrap_or(current.price_per_request_sats),
             context_window: updates.context_window.unwrap_or(current.context_window),
             max_output_tokens: updates.max_output_tokens.unwrap_or(current.max_output_tokens),
@@ -1080,16 +1084,19 @@ impl Database {
         sqlx::query_as::<_, ModelPricingRow>(
             "UPDATE model_pricing SET
                 is_advertised = ?, is_free = ?,
-                price_per_1m_input_sats = ?, price_per_1m_output_sats = ?, price_per_request_sats = ?,
+                price_per_1m_input_sats = ?, price_per_1m_output_sats = ?,
+                price_per_1m_cache_read_sats = ?, price_per_1m_cache_write_sats = ?, price_per_request_sats = ?,
                 context_window = ?, max_output_tokens = ?,
                 updated_at = CURRENT_TIMESTAMP
              WHERE model_name = ?
-             RETURNING id, model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_request_sats, context_window, max_output_tokens, created_at, updated_at"
+             RETURNING id, model_name, is_advertised, is_free, price_per_1m_input_sats, price_per_1m_output_sats, price_per_1m_cache_read_sats, price_per_1m_cache_write_sats, price_per_request_sats, context_window, max_output_tokens, created_at, updated_at"
         )
         .bind(merged.is_advertised)
         .bind(merged.is_free)
         .bind(merged.price_per_1m_input_sats)
         .bind(merged.price_per_1m_output_sats)
+        .bind(merged.price_per_1m_cache_read_sats)
+        .bind(merged.price_per_1m_cache_write_sats)
         .bind(merged.price_per_request_sats)
         .bind(merged.context_window)
         .bind(merged.max_output_tokens)
@@ -1316,6 +1323,8 @@ pub struct ModelPricingRow {
     pub is_free: bool,
     pub price_per_1m_input_sats: Option<i64>,
     pub price_per_1m_output_sats: Option<i64>,
+    pub price_per_1m_cache_read_sats: Option<i64>,
+    pub price_per_1m_cache_write_sats: Option<i64>,
     pub price_per_request_sats: Option<i64>,
     pub context_window: Option<i32>,
     pub max_output_tokens: Option<i32>,
@@ -1330,6 +1339,8 @@ pub struct NewModelPricing<'a> {
     pub is_free: bool,
     pub price_per_1m_input_sats: Option<i64>,
     pub price_per_1m_output_sats: Option<i64>,
+    pub price_per_1m_cache_read_sats: Option<i64>,
+    pub price_per_1m_cache_write_sats: Option<i64>,
     pub price_per_request_sats: Option<i64>,
     pub context_window: Option<i32>,
     pub max_output_tokens: Option<i32>,
@@ -1341,6 +1352,8 @@ pub struct UpdateModelPricing {
     pub is_free: Option<bool>,
     pub price_per_1m_input_sats: Option<Option<i64>>,
     pub price_per_1m_output_sats: Option<Option<i64>>,
+    pub price_per_1m_cache_read_sats: Option<Option<i64>>,
+    pub price_per_1m_cache_write_sats: Option<Option<i64>>,
     pub price_per_request_sats: Option<Option<i64>>,
     pub context_window: Option<Option<i32>>,
     pub max_output_tokens: Option<Option<i32>>,
@@ -2317,6 +2330,65 @@ mod tests {
             .execute(&db.pool)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cache_prices_round_trip_and_update_independently() {
+        let db = setup_test_db().await;
+        let created = db
+            .create_model_pricing(NewModelPricing {
+                model_name: "m",
+                is_advertised: true,
+                is_free: false,
+                price_per_1m_input_sats: Some(1000),
+                price_per_1m_output_sats: Some(4000),
+                price_per_1m_cache_read_sats: Some(100),
+                price_per_1m_cache_write_sats: None,
+                price_per_request_sats: Some(1),
+                context_window: None,
+                max_output_tokens: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!((created.price_per_1m_cache_read_sats, created.price_per_1m_cache_write_sats), (Some(100), None));
+
+        let updated = db
+            .update_model_pricing(
+                "m",
+                UpdateModelPricing {
+                    is_advertised: None,
+                    is_free: None,
+                    price_per_1m_input_sats: None,
+                    price_per_1m_output_sats: None,
+                    price_per_1m_cache_read_sats: None,
+                    price_per_1m_cache_write_sats: Some(Some(1250)),
+                    price_per_request_sats: None,
+                    context_window: None,
+                    max_output_tokens: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!((updated.price_per_1m_cache_read_sats, updated.price_per_1m_cache_write_sats), (Some(100), Some(1250)));
+
+        let cleared = db
+            .update_model_pricing(
+                "m",
+                UpdateModelPricing {
+                    is_advertised: None,
+                    is_free: None,
+                    price_per_1m_input_sats: None,
+                    price_per_1m_output_sats: None,
+                    price_per_1m_cache_read_sats: Some(None),
+                    price_per_1m_cache_write_sats: None,
+                    price_per_request_sats: None,
+                    context_window: None,
+                    max_output_tokens: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!((cleared.price_per_1m_cache_read_sats, cleared.price_per_1m_cache_write_sats), (None, Some(1250)));
     }
 
     #[tokio::test]

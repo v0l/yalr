@@ -119,12 +119,12 @@ export default function Payments() {
   }
 
   function openCreatePricing() {
-    setPricingForm({ model_name: '', is_advertised: true, is_free: false, price_per_1m_input_sats: null, price_per_1m_output_sats: null, price_per_request_sats: null, context_window: null, max_output_tokens: null })
+    setPricingForm({ model_name: '', is_advertised: true, is_free: false, price_per_1m_input_sats: null, price_per_1m_output_sats: null, price_per_1m_cache_read_sats: null, price_per_1m_cache_write_sats: null, price_per_request_sats: null, context_window: null, max_output_tokens: null })
     setEditingModel(null); setPricingDialog(true)
   }
 
   function openEditPricing(entry: ModelPricingEntry) {
-    setPricingForm({ model_name: entry.model_name, is_advertised: entry.is_advertised, is_free: entry.is_free, price_per_1m_input_sats: entry.price_per_1m_input_sats, price_per_1m_output_sats: entry.price_per_1m_output_sats, price_per_request_sats: entry.price_per_request_sats, context_window: entry.context_window, max_output_tokens: entry.max_output_tokens })
+    setPricingForm({ model_name: entry.model_name, is_advertised: entry.is_advertised, is_free: entry.is_free, price_per_1m_input_sats: entry.price_per_1m_input_sats, price_per_1m_output_sats: entry.price_per_1m_output_sats, price_per_1m_cache_read_sats: entry.price_per_1m_cache_read_sats, price_per_1m_cache_write_sats: entry.price_per_1m_cache_write_sats, price_per_request_sats: entry.price_per_request_sats, context_window: entry.context_window, max_output_tokens: entry.max_output_tokens })
     setEditingModel(entry.model_name); setPricingDialog(true)
   }
 
@@ -132,10 +132,10 @@ export default function Payments() {
     e.preventDefault(); setPricingSaving(true)
     try {
       if (editingModel) {
-        await api.updateModelPricing(editingModel, { is_advertised: pricingForm.is_advertised, is_free: pricingForm.is_free, price_per_1m_input_sats: pricingForm.price_per_1m_input_sats, price_per_1m_output_sats: pricingForm.price_per_1m_output_sats, price_per_request_sats: pricingForm.price_per_request_sats, context_window: pricingForm.context_window, max_output_tokens: pricingForm.max_output_tokens })
+        await api.updateModelPricing(editingModel, { is_advertised: pricingForm.is_advertised, is_free: pricingForm.is_free, price_per_1m_input_sats: pricingForm.price_per_1m_input_sats, price_per_1m_output_sats: pricingForm.price_per_1m_output_sats, price_per_1m_cache_read_sats: pricingForm.price_per_1m_cache_read_sats, price_per_1m_cache_write_sats: pricingForm.price_per_1m_cache_write_sats, price_per_request_sats: pricingForm.price_per_request_sats, context_window: pricingForm.context_window, max_output_tokens: pricingForm.max_output_tokens })
         setSuccessMessage('PRICING UPDATED')
       } else {
-        await api.createModelPricing({ model_name: pricingForm.model_name, is_advertised: pricingForm.is_advertised, is_free: pricingForm.is_free, price_per_1m_input_sats: pricingForm.price_per_1m_input_sats ?? 5, price_per_1m_output_sats: pricingForm.price_per_1m_output_sats ?? 15, price_per_request_sats: pricingForm.price_per_request_sats ?? 1, context_window: pricingForm.context_window ?? 8192, max_output_tokens: pricingForm.max_output_tokens ?? 4096 })
+        await api.createModelPricing({ model_name: pricingForm.model_name, is_advertised: pricingForm.is_advertised, is_free: pricingForm.is_free, price_per_1m_input_sats: pricingForm.price_per_1m_input_sats ?? 5, price_per_1m_output_sats: pricingForm.price_per_1m_output_sats ?? 15, price_per_1m_cache_read_sats: pricingForm.price_per_1m_cache_read_sats, price_per_1m_cache_write_sats: pricingForm.price_per_1m_cache_write_sats, price_per_request_sats: pricingForm.price_per_request_sats ?? 1, context_window: pricingForm.context_window ?? 8192, max_output_tokens: pricingForm.max_output_tokens ?? 4096 })
         setSuccessMessage('PRICING CREATED')
       }
       setPricingDialog(false); loadAll()
@@ -253,6 +253,8 @@ export default function Payments() {
                     <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Model</th>
                     <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">In/1M</th>
                     <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Out/1M</th>
+                    <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Cache Rd/1M</th>
+                    <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Cache Wr/1M</th>
                     <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Per Req</th>
                     <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Context</th>
                     <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Max Out</th>
@@ -262,12 +264,14 @@ export default function Payments() {
                 </thead>
                 <tbody>
                   {modelPricings.length === 0 ? (
-                    <tr><td colSpan={8} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO CUSTOM PRICING</td></tr>
+                    <tr><td colSpan={10} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO CUSTOM PRICING</td></tr>
                   ) : modelPricings.map(mp => (
                     <tr key={mp.id} className="border-b border-border/50 hover:bg-surface">
                       <td className="px-4 py-3 font-mono text-[13px] font-medium">{mp.model_name}</td>
                       <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.price_per_1m_input_sats ?? '—'} sats</td>
                       <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.price_per_1m_output_sats ?? '—'} sats</td>
+                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.price_per_1m_cache_read_sats ?? mp.price_per_1m_input_sats ?? '—'} sats</td>
+                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.price_per_1m_cache_write_sats ?? mp.price_per_1m_input_sats ?? '—'} sats</td>
                       <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.price_per_request_sats ?? '—'} sats</td>
                       <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.context_window?.toLocaleString() ?? '—'}</td>
                       <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.max_output_tokens?.toLocaleString() ?? '—'}</td>
@@ -420,6 +424,10 @@ export default function Payments() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="flex flex-col gap-1.5"><Label htmlFor="mp-input" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">In /1M (sats)</Label><Input id="mp-input" type="number" min={0} value={pricingForm.price_per_1m_input_sats ?? ''} onChange={e => setPricingForm({ ...pricingForm, price_per_1m_input_sats: e.target.value ? Number(e.target.value) : null })} className="font-mono bg-surface border-border text-foreground" /></div>
                   <div className="flex flex-col gap-1.5"><Label htmlFor="mp-output" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Out /1M (sats)</Label><Input id="mp-output" type="number" min={0} value={pricingForm.price_per_1m_output_sats ?? ''} onChange={e => setPricingForm({ ...pricingForm, price_per_1m_output_sats: e.target.value ? Number(e.target.value) : null })} className="font-mono bg-surface border-border text-foreground" /></div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="flex flex-col gap-1.5"><Label htmlFor="mp-cache-read" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Cache Read /1M (sats)</Label><Input id="mp-cache-read" type="number" min={0} placeholder="same as input" value={pricingForm.price_per_1m_cache_read_sats ?? ''} onChange={e => setPricingForm({ ...pricingForm, price_per_1m_cache_read_sats: e.target.value ? Number(e.target.value) : null })} className="font-mono bg-surface border-border text-foreground" /></div>
+                  <div className="flex flex-col gap-1.5"><Label htmlFor="mp-cache-write" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Cache Write /1M (sats)</Label><Input id="mp-cache-write" type="number" min={0} placeholder="same as input" value={pricingForm.price_per_1m_cache_write_sats ?? ''} onChange={e => setPricingForm({ ...pricingForm, price_per_1m_cache_write_sats: e.target.value ? Number(e.target.value) : null })} className="font-mono bg-surface border-border text-foreground" /></div>
                 </div>
                 <div className="flex flex-col gap-1.5"><Label htmlFor="mp-per-req" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Per Request (sats)</Label><Input id="mp-per-req" type="number" min={0} value={pricingForm.price_per_request_sats ?? ''} onChange={e => setPricingForm({ ...pricingForm, price_per_request_sats: e.target.value ? Number(e.target.value) : null })} className="font-mono bg-surface border-border text-foreground" /></div>
                 <div className="grid grid-cols-2 gap-4">
