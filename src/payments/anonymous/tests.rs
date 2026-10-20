@@ -34,6 +34,7 @@ async fn app() -> (Arc<AppState>, axum::Router) {
         oauth_pending: Default::default(),
         model_cache: Default::default(),
         modality_cache: Default::default(),
+        limits_cache: Default::default(),
     });
     let app = crate::api::server::create_test_app(state.clone()).await;
     (state, app)
@@ -444,4 +445,98 @@ async fn cached_prompt_tokens_are_billed_at_the_cache_read_price() {
     let spent = 5_000_000_000 - balance.get_balance(user_id).await.unwrap();
     let expected_sats = 100_000 * 1000 / 1_000_000 + 900_000 * 100 / 1_000_000;
     assert_eq!(spent, expected_sats * 1000);
+}
+
+async fn vllm_upstream(model: &str, window: u32) -> wiremock::MockServer {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "object": "list",
+            "data": [{"id": model, "object": "model", "created": 0, "owned_by": "vllm", "max_model_len": window}]
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn pool_of(app_state: &Arc<AppState>, name: &str, backends: Vec<(&str, u32)>) -> Vec<wiremock::MockServer> {
+    use crate::providers::VllmProvider;
+    let mut servers = Vec::new();
+    let mut providers: Vec<Arc<dyn crate::providers::Provider>> = Vec::new();
+    for (i, (model, window)) in backends.into_iter().enumerate() {
+        let server = vllm_upstream(model, window).await;
+        let slug = format!("{name}-{i}");
+        let provider = Arc::new(VllmProvider::new(&slug, Some(&slug), &format!("{}/v1", server.uri()), None).unwrap());
+        app_state.config.router.add_provider(provider.clone()).await;
+        providers.push(provider);
+        servers.push(server);
+    }
+    app_state.config.router.register_route(name, providers).await;
+    servers
+}
+
+#[tokio::test]
+async fn context_length_comes_from_the_smallest_backend_in_the_pool() {
+    let (state, app) = app().await;
+    state
+        .db
+        .create_routing_config(crate::db::NewRoutingConfig {
+            name: "pool".into(),
+            strategy: "round_robin".into(),
+            health_check_enabled: false,
+            health_check_interval_seconds: 30,
+            health_check_timeout_seconds: 5,
+        })
+        .await
+        .unwrap();
+    let _servers = pool_of(&state, "pool", vec![("pool", 1_000_000), ("pool", 131_072)]).await;
+    sqlx::query("INSERT INTO model_pricing (model_name, is_advertised) VALUES ('pool', 1)")
+        .execute(&state.db.pool)
+        .await
+        .unwrap();
+
+    let secret = state.db.server_secret().await.unwrap();
+    let public_id = random_hex();
+    create_account(&state.db, &secret, &public_id).await.unwrap();
+    let key = derive_api_key(&secret, &public_id);
+
+    let (_, body) = get(&app, "/v1/models", Some(&key)).await;
+    let pool = body["data"].as_array().unwrap().iter().find(|m| m["id"] == "pool").unwrap();
+    assert_eq!(pool["context_length"], 131_072);
+}
+
+#[tokio::test]
+async fn an_explicit_context_window_beats_what_the_upstream_reports() {
+    let (state, app) = app().await;
+    state
+        .db
+        .create_routing_config(crate::db::NewRoutingConfig {
+            name: "pinned".into(),
+            strategy: "round_robin".into(),
+            health_check_enabled: false,
+            health_check_interval_seconds: 30,
+            health_check_timeout_seconds: 5,
+        })
+        .await
+        .unwrap();
+    let _servers = pool_of(&state, "pinned", vec![("pinned", 1_000_000)]).await;
+    sqlx::query(
+        "INSERT INTO model_pricing (model_name, is_advertised, context_window, max_output_tokens) VALUES ('pinned', 1, 64000, 8000)",
+    )
+    .execute(&state.db.pool)
+    .await
+    .unwrap();
+
+    let secret = state.db.server_secret().await.unwrap();
+    let public_id = random_hex();
+    create_account(&state.db, &secret, &public_id).await.unwrap();
+    let key = derive_api_key(&secret, &public_id);
+
+    let (_, body) = get(&app, "/v1/models", Some(&key)).await;
+    let m = body["data"].as_array().unwrap().iter().find(|m| m["id"] == "pinned").unwrap();
+    assert_eq!(m["context_length"], 64000);
+    assert_eq!(m["max_output_tokens"], 8000);
 }

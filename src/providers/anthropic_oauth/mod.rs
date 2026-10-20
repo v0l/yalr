@@ -49,6 +49,7 @@ pub struct AnthropicOAuthProvider {
     /// Last quota windows seen on a response, captured from rate-limit headers.
     quota: Arc<RwLock<Vec<QuotaSnapshot>>>,
     models_cache: ModelsCache,
+    limits: Arc<RwLock<std::collections::HashMap<String, ListedLimits>>>,
     cc_version: String,
     org_uuid: std::sync::OnceLock<String>,
 }
@@ -76,6 +77,7 @@ impl AnthropicOAuthProvider {
             session: Arc::new(session),
             quota: Arc::new(RwLock::new(Vec::new())),
             models_cache: ModelsCache::new(),
+            limits: Default::default(),
             cc_version: record
                 .client_version
                 .as_deref()
@@ -165,6 +167,20 @@ impl Provider for AnthropicOAuthProvider {
         if let Ok(r) = resp {
             if r.status().is_success() {
                 if let Ok(parsed) = r.json::<crate::providers::ModelListResponse>().await {
+                    let listed: std::collections::HashMap<String, ListedLimits> = parsed
+                        .data
+                        .iter()
+                        .filter_map(|m| {
+                            let limits = ListedLimits {
+                                context_length: m.extra.get("max_input_tokens").and_then(|v| v.as_u64()).map(|v| v as u32),
+                                max_output_tokens: m.extra.get("max_tokens").and_then(|v| v.as_u64()).map(|v| v as u32),
+                            };
+                            (!limits.is_empty()).then(|| (m.id.clone(), limits))
+                        })
+                        .collect();
+                    if let Ok(mut guard) = self.limits.write() {
+                        *guard = listed;
+                    }
                     let models: Vec<Model> = parsed
                         .data
                         .into_iter()
@@ -497,6 +513,14 @@ impl Provider for AnthropicOAuthProvider {
         crate::providers::anthropic_media::claude_modalities(model)
     }
 
+    async fn listed_limits(&self, model: &str) -> Option<ListedLimits> {
+        let empty = self.limits.read().ok().map_or(true, |g| g.is_empty());
+        if empty {
+            let _ = self.list_models().await;
+        }
+        self.limits.read().ok()?.get(model).copied()
+    }
+
     async fn health_check(&self) -> Result<bool, ProviderError> {
         let token = match self.session.access_token().await {
             Ok(t) => t,
@@ -611,6 +635,29 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
         )
         .unwrap();
         request.with_trace(trace.clone())
+    }
+
+    #[tokio::test]
+    async fn model_listing_reports_input_and_output_limits() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {"id": "claude-sonnet-5-5", "type": "model", "max_input_tokens": 1_000_000, "max_tokens": 64_000},
+                    {"id": "claude-haiku-5-5", "type": "model", "max_input_tokens": 200_000, "max_tokens": null},
+                    {"id": "claude-old", "type": "model", "max_input_tokens": null, "max_tokens": null}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let provider = provider(&server).await;
+
+        let sonnet = provider.listed_limits("claude-sonnet-5-5").await.unwrap();
+        assert_eq!((sonnet.context_length, sonnet.max_output_tokens), (Some(1_000_000), Some(64_000)));
+        let haiku = provider.listed_limits("claude-haiku-5-5").await.unwrap();
+        assert_eq!((haiku.context_length, haiku.max_output_tokens), (Some(200_000), None));
+        assert!(provider.listed_limits("claude-old").await.is_none());
     }
 
     #[tokio::test]

@@ -57,6 +57,32 @@ impl ModalityCache {
     }
 }
 
+const LIMITS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Cached upstream context and output limits per `<provider-slug>/<model-id>`.
+///
+/// A failed or empty probe is cached too, so a backend that reports nothing is
+/// not asked again on every listing request.
+#[derive(Clone, Default)]
+pub struct LimitsCache {
+    inner: Arc<RwLock<HashMap<String, (crate::providers::ListedLimits, std::time::Instant)>>>,
+}
+
+impl LimitsCache {
+    pub async fn get(&self, key: &str) -> Option<crate::providers::ListedLimits> {
+        let guard = self.inner.read().await;
+        let (limits, cached_at) = guard.get(key)?;
+        (cached_at.elapsed() < LIMITS_CACHE_TTL).then_some(*limits)
+    }
+
+    pub async fn put(&self, key: &str, limits: crate::providers::ListedLimits) {
+        self.inner
+            .write()
+            .await
+            .insert(key.to_string(), (limits, std::time::Instant::now()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

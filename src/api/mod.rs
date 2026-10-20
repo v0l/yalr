@@ -5,6 +5,7 @@ pub mod config;
 pub mod decisions;
 pub mod health;
 pub mod images;
+pub mod limits;
 pub mod modalities;
 pub mod model_cache;
 pub mod model_pricing;

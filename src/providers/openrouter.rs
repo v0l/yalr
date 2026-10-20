@@ -44,6 +44,7 @@ pub struct OpenRouterProvider {
     /// model-specific and a client cannot guess them.
     voices: Arc<tokio::sync::RwLock<HashMap<String, Vec<String>>>>,
     modalities: Arc<tokio::sync::RwLock<HashMap<String, ListedModalities>>>,
+    limits: Arc<tokio::sync::RwLock<HashMap<String, ListedLimits>>>,
 }
 
 impl OpenRouterProvider {
@@ -72,6 +73,7 @@ impl OpenRouterProvider {
             models_cache: ModelsCache::new(),
             voices: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             modalities: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            limits: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -116,6 +118,7 @@ impl OpenRouterProvider {
 
         let mut voices = HashMap::new();
         let mut modalities = HashMap::new();
+        let mut limits = HashMap::new();
         let models: Vec<Model> = body
             .data
             .into_iter()
@@ -126,6 +129,18 @@ impl OpenRouterProvider {
                     .and_then(|a| serde_json::from_value::<ListedModalities>(a.clone()).ok())
                 {
                     modalities.insert(item.id.clone(), listed);
+                }
+                let listed = ListedLimits {
+                    context_length: item.context_length,
+                    max_output_tokens: item
+                        .extra
+                        .get("top_provider")
+                        .and_then(|t| t.get("max_completion_tokens"))
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32),
+                };
+                if !listed.is_empty() {
+                    limits.insert(item.id.clone(), listed);
                 }
                 if let Some(list) = item.extra.get("supported_voices").and_then(|v| v.as_array()) {
                     let names: Vec<String> = list
@@ -147,6 +162,7 @@ impl OpenRouterProvider {
 
         *self.voices.write().await = voices;
         *self.modalities.write().await = modalities;
+        *self.limits.write().await = limits;
         self.models_cache.store(models.clone()).await;
         Ok(models)
     }
@@ -258,6 +274,13 @@ impl Provider for OpenRouterProvider {
 
     async fn listed_modalities(&self, model: &str) -> Option<ListedModalities> {
         self.modalities.read().await.get(model).cloned()
+    }
+
+    async fn listed_limits(&self, model: &str) -> Option<ListedLimits> {
+        if self.limits.read().await.is_empty() {
+            let _ = self.list_models().await;
+        }
+        self.limits.read().await.get(model).copied()
     }
 
     async fn transcriptions(
@@ -376,6 +399,33 @@ mod tests {
         );
         let balance = provider.fetch_balance().await;
         assert!(balance.is_none());
+    }
+
+    #[tokio::test]
+    async fn listing_reports_context_and_output_limits() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                r#"{"data":[
+                    {"id":"anthropic/claude-sonnet-4.5","context_length":1000000,"top_provider":{"max_completion_tokens":64000}},
+                    {"id":"deepseek/deepseek-chat","context_length":163840},
+                    {"id":"no/limits"}
+                ]}"#,
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = OpenRouterProvider::new("OpenRouter", None, &server.uri(), Some("key"));
+        let sonnet = provider.listed_limits("anthropic/claude-sonnet-4.5").await.unwrap();
+        assert_eq!((sonnet.context_length, sonnet.max_output_tokens), (Some(1_000_000), Some(64_000)));
+        let deepseek = provider.listed_limits("deepseek/deepseek-chat").await.unwrap();
+        assert_eq!((deepseek.context_length, deepseek.max_output_tokens), (Some(163_840), None));
+        assert!(provider.listed_limits("no/limits").await.is_none());
     }
 
     #[tokio::test]

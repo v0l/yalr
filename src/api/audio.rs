@@ -249,6 +249,7 @@ mod tests {
             oauth_pending: Default::default(),
             model_cache: Default::default(),
             modality_cache: Default::default(),
+            limits_cache: Default::default(),
         });
 
         state

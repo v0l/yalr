@@ -288,8 +288,15 @@ async fn models_for(state: &std::sync::Arc<AppState>, user: &crate::db::User) ->
         if !model_allowed(&rc.name) {
             continue;
         }
-        let (context_length, max_output_tokens) =
+        let (configured_context, configured_output) =
             limits.get(&rc.name).copied().unwrap_or((None, None));
+        let upstream = if configured_context.is_some() && configured_output.is_some() {
+            Default::default()
+        } else {
+            crate::api::limits::routing_limits(&state, &rc.name).await
+        };
+        let context_length = configured_context.or(upstream.context_length.map(|v| v as i32));
+        let max_output_tokens = configured_output.or(upstream.max_output_tokens.map(|v| v as i32));
         let pricing = match state.payments_state.as_ref() {
             Some(ps) => {
                 let p = ps.pricing_resolver.resolve(&rc.name).await;
@@ -411,11 +418,18 @@ async fn models_for(state: &std::sync::Arc<AppState>, user: &crate::db::User) ->
                 None
             };
 
-            let (context_length, max_output_tokens) = limits
+            let (configured_context, configured_output) = limits
                 .get(&model.id)
                 .or_else(|| limits.get(&full_id))
                 .copied()
                 .unwrap_or((None, None));
+            let upstream = if configured_context.is_some() && configured_output.is_some() {
+                Default::default()
+            } else {
+                crate::api::limits::provider_limits(&state, provider, &model.id).await
+            };
+            let context_length = configured_context.or(upstream.context_length.map(|v| v as i32));
+            let max_output_tokens = configured_output.or(upstream.max_output_tokens.map(|v| v as i32));
 
             all_models.push(ModelEntry {
                 id: full_id,

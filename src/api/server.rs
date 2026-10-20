@@ -134,6 +134,7 @@ pub async fn run_with_shutdown<F>(
         oauth_pending: Default::default(),
         model_cache: Default::default(),
         modality_cache: Default::default(),
+        limits_cache: Default::default(),
     });
 
     if let Some(discovery) = config.discovery_config.clone() {

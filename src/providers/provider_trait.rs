@@ -93,6 +93,18 @@ pub struct QuotaCredit {
     pub balance_minor: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ListedLimits {
+    pub context_length: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+}
+
+impl ListedLimits {
+    pub fn is_empty(&self) -> bool {
+        self.context_length.is_none() && self.max_output_tokens.is_none()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct ListedModalities {
     #[serde(default)]
@@ -207,6 +219,19 @@ pub trait Provider: Send + Sync {
     async fn listed_modalities(&self, model: &str) -> Option<ListedModalities> {
         let _ = model;
         None
+    }
+
+    async fn listed_limits(&self, model: &str) -> Option<ListedLimits> {
+        match self.get_runtime_info(model).await {
+            Ok(Some(info)) => {
+                let limits = ListedLimits {
+                    context_length: info.context_length(),
+                    max_output_tokens: info.max_output_tokens,
+                };
+                (!limits.is_empty()).then_some(limits)
+            }
+            _ => None,
+        }
     }
 
     /// Fetch the current balance from the upstream provider.
