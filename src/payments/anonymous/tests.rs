@@ -248,6 +248,46 @@ async fn account_endpoint_shows_balance_history_and_invoices() {
 }
 
 #[tokio::test]
+async fn a_key_can_be_topped_up_repeatedly() {
+    let (state, app) = app().await;
+    let secret = state.db.server_secret().await.unwrap();
+    let public_id = random_hex();
+    let user_id = create_account(&state.db, &secret, &public_id).await.unwrap();
+    let key = derive_api_key(&secret, &public_id);
+    let balance = state.payments_state.as_ref().unwrap().balance_service.clone();
+
+    for (n, sats) in [(1, 100i64), (2, 250), (3, 400)] {
+        let hash = format!("topup{n}");
+        state
+            .db
+            .create_lightning_invoice(crate::db::NewLightningInvoice {
+                user_id,
+                payment_hash: &hash,
+                bolt11: &format!("lnbc{n}"),
+                amount_msat: sats * 1000,
+                amount_sats: sats,
+                expire_seconds: Some(3600),
+            })
+            .await
+            .unwrap();
+        let invoice_id = random_hex();
+        state.db.mark_public_invoice(&hash, "topup", &invoice_id).await.unwrap();
+        crate::payments::lightning::handle_settlement(&state.db, &balance, &hash).await.unwrap();
+        crate::payments::lightning::handle_settlement(&state.db, &balance, &hash).await.unwrap();
+
+        let (_, status) = get(&app, &format!("/v2/lightning/invoice/{invoice_id}/status"), None).await;
+        assert_eq!(status["status"], "paid");
+        assert!(status["api_key"].is_null());
+    }
+
+    let (_, info) = get(&app, "/v1/balance/info", Some(&key)).await;
+    assert_eq!(info["balance_sats"], 750);
+    let (_, account) = get(&app, "/v1/account", Some(&key)).await;
+    assert_eq!(account["lifetime_deposited_msat"], 750_000);
+    assert_eq!(account["invoices"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
 async fn unknown_invoice_is_404_and_invoices_need_lnd() {
     use tower::util::ServiceExt;
     let (_, app) = app().await;
