@@ -183,7 +183,7 @@ impl LightningService {
     }
 }
 
-async fn handle_settlement(
+pub(crate) async fn handle_settlement(
     db: &Database,
     balance_service: &crate::payments::balance::BalanceService,
     payment_hash: &str,

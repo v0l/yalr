@@ -1,8 +1,10 @@
 use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
 
+mod anonymous;
 mod modalities;
 mod nostr_identity;
+pub use anonymous::{random_hex, PublicInvoice};
 pub use modalities::DeclaredModalities;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]

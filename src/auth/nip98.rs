@@ -18,6 +18,56 @@ pub struct AuthConfig {
 }
 
 
+pub fn validate_event(
+    event: &Event,
+    method: &str,
+    path: &str,
+) -> Result<(), (StatusCode, &'static str)> {
+    if event.kind != Kind::HttpAuth {
+        return Err((StatusCode::UNAUTHORIZED, "Wrong event kind"));
+    }
+
+    let expiration = event
+        .tags
+        .find(TagKind::Expiration)
+        .and_then(|t| t.content())
+        .and_then(|s: &str| s.parse::<u64>().ok())
+        .unwrap_or_else(|| event.created_at.as_secs() + DEFAULT_EXPIRATION_SECS);
+
+    let now = Timestamp::now().as_secs();
+
+    if event.created_at.as_secs() > now + 60 {
+        return Err((StatusCode::UNAUTHORIZED, "Event created_at is in the future"));
+    }
+
+    if now > expiration {
+        return Err((StatusCode::UNAUTHORIZED, "Event has expired"));
+    }
+
+    let url_matched = event.tags.filter(TagKind::u()).any(|tag| {
+        tag.content()
+            .and_then(|s: &str| s.parse::<url::Url>().ok())
+            .map(|u| u.path() == path)
+            .unwrap_or(false)
+    });
+    if !url_matched {
+        return Err((StatusCode::UNAUTHORIZED, "U tag does not match request URL"));
+    }
+
+    let method_matched = event.tags.filter(TagKind::Method).any(|tag| {
+        tag.content()
+            .map(|m: &str| m.eq_ignore_ascii_case(method))
+            .unwrap_or(false)
+    });
+    if !method_matched {
+        return Err((StatusCode::UNAUTHORIZED, "Method tag does not match request method"));
+    }
+
+    event
+        .verify()
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "Event signature invalid"))
+}
+
 pub struct Nip98Auth {
     pub content_type: Option<String>,
     pub content_length: Option<u64>,
@@ -51,75 +101,7 @@ where
         let event =
             Event::from_json(event_bytes).map_err(|_| (StatusCode::FORBIDDEN, "Invalid nostr event"))?;
 
-        if event.kind != Kind::HttpAuth {
-            return Err((StatusCode::UNAUTHORIZED, "Wrong event kind"));
-        }
-
-        // Get expiration from tag, or use default (10 minutes from created_at)
-        let expiration = event
-            .tags
-            .find(TagKind::Expiration)
-            .and_then(|t| t.content())
-            .and_then(|s: &str| s.parse::<u64>().ok())
-            .unwrap_or_else(|| event.created_at.as_secs() + DEFAULT_EXPIRATION_SECS);
-
-        let now = Timestamp::now().as_secs();
-
-        // Check "not before" - created_at should be in the past or very near future (allow 60s clock skew)
-        if event.created_at.as_secs() > now + 60 {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "Event created_at is in the future",
-            ));
-        }
-
-        // Check "not after" - expiration should be in the future
-        if now > expiration {
-            return Err((StatusCode::UNAUTHORIZED, "Event has expired"));
-        }
-
-        // Check url tag - match any 'u' tag against the full URL (excluding query args)
-        let request_path = parts.uri.path();
-        let url_tags: Vec<_> = event.tags.filter(TagKind::u()).collect();
-
-        if url_tags.is_empty() {
-            return Err((StatusCode::UNAUTHORIZED, "Missing url tag"));
-        }
-
-        let url_matched = url_tags.iter().any(|tag| {
-            tag.content()
-                .and_then(|s: &str| s.parse::<url::Url>().ok())
-                .map(|u| u.path() == request_path)
-                .unwrap_or(false)
-        });
-
-        if !url_matched {
-            return Err((StatusCode::UNAUTHORIZED, "U tag does not match request URL"));
-        }
-
-        // check method tag - match any 'method' tag against the request method
-        let method_tags: Vec<_> = event.tags.filter(TagKind::Method).collect();
-
-        if method_tags.is_empty() {
-            return Err((StatusCode::UNAUTHORIZED, "Missing method tag"));
-        }
-
-        let method_matched = method_tags.iter().any(|tag| {
-            tag.content()
-                .map(|m: &str| m.eq_ignore_ascii_case(parts.method.as_str()))
-                .unwrap_or(false)
-        });
-
-        if !method_matched {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "Method tag does not match request method",
-            ));
-        }
-
-        event
-            .verify()
-            .map_err(|_| (StatusCode::UNAUTHORIZED, "Event signature invalid"))?;
+        validate_event(&event, parts.method.as_str(), parts.uri.path())?;
 
         let pubkey = event.pubkey.to_string();
 
@@ -141,5 +123,53 @@ where
             content_length,
             pubkey,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nostr::{EventBuilder, Keys, Tag};
+
+    fn signed(url: &str, method: &str, age_secs: u64) -> Event {
+        let keys = Keys::generate();
+        let tags = vec![
+            Tag::parse(["u", url]).unwrap(),
+            Tag::parse(["method", method]).unwrap(),
+        ];
+        EventBuilder::new(Kind::HttpAuth, "")
+            .tags(tags)
+            .custom_created_at(Timestamp::from_secs(Timestamp::now().as_secs() - age_secs))
+            .sign_with_keys(&keys)
+            .unwrap()
+    }
+
+    #[test]
+    fn accepts_matching_event() {
+        let e = signed("https://yalr.example/v1/models", "GET", 0);
+        assert!(validate_event(&e, "GET", "/v1/models").is_ok());
+    }
+
+    #[test]
+    fn rejects_wrong_path_and_method() {
+        let e = signed("https://yalr.example/v1/models", "GET", 0);
+        assert!(validate_event(&e, "GET", "/v1/chat/completions").is_err());
+        assert!(validate_event(&e, "POST", "/v1/models").is_err());
+    }
+
+    #[test]
+    fn rejects_expired_event() {
+        let e = signed("https://yalr.example/v1/models", "GET", DEFAULT_EXPIRATION_SECS + 5);
+        assert_eq!(
+            validate_event(&e, "GET", "/v1/models").unwrap_err().1,
+            "Event has expired"
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_kind() {
+        let keys = Keys::generate();
+        let e = EventBuilder::new(Kind::TextNote, "").sign_with_keys(&keys).unwrap();
+        assert!(validate_event(&e, "GET", "/").is_err());
     }
 }

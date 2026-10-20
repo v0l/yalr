@@ -30,6 +30,10 @@ pub fn spawn(config: DiscoveryConfig, db: Arc<Database>) {
     });
 }
 
+pub async fn npub(config: &DiscoveryConfig, db: &Database) -> Option<String> {
+    load_keys(config, db).await.ok()?.public_key().to_bech32().ok()
+}
+
 async fn load_keys(config: &DiscoveryConfig, db: &Database) -> Result<Keys, String> {
     if let Some(nsec) = config.nsec.as_deref().filter(|n| !n.trim().is_empty()) {
         return Keys::parse(nsec.trim()).map_err(|e| format!("invalid discovery nsec: {e}"));

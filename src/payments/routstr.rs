@@ -60,9 +60,13 @@ struct ErrorResponse {
 
 #[derive(Serialize)]
 struct RoutstrInfoResponse {
-    name: &'static str,
-    description: &'static str,
+    name: String,
+    description: String,
     version: &'static str,
+    npub: Option<String>,
+    http_url: Option<String>,
+    onion_url: Option<String>,
+    mints: Vec<String>,
     payments: RoutstrInfoPayments,
 }
 
@@ -74,6 +78,8 @@ struct RoutstrInfoPayments {
 
 #[derive(Serialize)]
 struct BalanceInfoResponse {
+    balance: i64,
+    reserved: i64,
     balance_msat: i64,
     balance_sats: i64,
     available_sats: i64,
@@ -122,18 +128,29 @@ struct UpstreamInvoiceResponse {
 
 /// GET /v1/info — Node information (per RIP-01)
 pub async fn routstr_info(State(state): State<Arc<AppState>>) -> axum::response::Response {
-    let payments = match &state.payments_state {
-        Some(ps) => ps,
-        None => return payments_disabled(),
+    let discovery = state.config.discovery_config.as_ref().filter(|d| d.enabled);
+    let npub = match discovery {
+        Some(d) => crate::discovery::npub(d, &state.db).await,
+        None => None,
     };
+    let lightning = state
+        .payments_state
+        .as_ref()
+        .is_some_and(|p| p.lightning_service.is_some());
 
     Json(RoutstrInfoResponse {
-        name: "yalr",
-        description: "YALR - LLM Router",
+        name: discovery.and_then(|d| d.name.clone()).unwrap_or_else(|| "yalr".to_string()),
+        description: discovery
+            .and_then(|d| d.about.clone())
+            .unwrap_or_else(|| "YALR - LLM Router".to_string()),
         version: env!("CARGO_PKG_VERSION"),
+        npub,
+        http_url: discovery.map(|d| d.http_url.trim_end_matches('/').to_string()),
+        onion_url: discovery.and_then(|d| d.onion_url.clone()),
+        mints: Vec::new(),
         payments: RoutstrInfoPayments {
-            enabled: true,
-            methods: if payments.lightning_service.is_some() { vec!["lightning"] } else { vec![] },
+            enabled: lightning,
+            methods: if lightning { vec!["lightning"] } else { vec![] },
         },
     })
     .into_response()
@@ -154,6 +171,8 @@ pub async fn balance_info(
         Ok(balance_msat) => {
             let sats = balance_msat / 1000;
             Json(BalanceInfoResponse {
+                balance: balance_msat,
+                reserved: 0,
                 balance_msat,
                 balance_sats: sats,
                 available_sats: sats,

@@ -255,6 +255,13 @@ pub async fn run_with_shutdown<F>(
         .route("/", get(model_handlers::list_models))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let anonymous_payment_routes = Router::new()
+        .route("/v2/lightning/invoice", post(crate::payments::anonymous::create_invoice))
+        .route("/v2/lightning/invoice/:invoice_id/status", get(crate::payments::anonymous::invoice_status))
+        .route("/v2/lightning/recover", post(crate::payments::anonymous::recover_invoice))
+        .route("/v1/balance/lightning/invoice", post(crate::payments::anonymous::create_invoice))
+        .route("/v1/balance/lightning/invoice/:invoice_id/status", get(crate::payments::anonymous::invoice_status));
+
     let app = Router::new()
         .nest("/api", public_auth_routes.merge(all_protected))
         .route("/api/metrics/ws", get(ws::ws_metrics_handler))
@@ -264,6 +271,7 @@ pub async fn run_with_shutdown<F>(
         .merge(image_routes)
         .merge(decision_routes)
         .merge(routstr_protected_routes)
+        .merge(anonymous_payment_routes)
         .nest("/v1/models", models_route)
         .route("/v1/info", get(crate::payments::routstr::routstr_info))
         .route("/api/health", get(health::health_check))
@@ -403,6 +411,13 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/", get(model_handlers::list_models))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    let anonymous_payment_routes = Router::new()
+        .route("/v2/lightning/invoice", post(crate::payments::anonymous::create_invoice))
+        .route("/v2/lightning/invoice/:invoice_id/status", get(crate::payments::anonymous::invoice_status))
+        .route("/v2/lightning/recover", post(crate::payments::anonymous::recover_invoice))
+        .route("/v1/balance/lightning/invoice", post(crate::payments::anonymous::create_invoice))
+        .route("/v1/balance/lightning/invoice/:invoice_id/status", get(crate::payments::anonymous::invoice_status));
+
     let app = Router::new()
         .merge(chat_completions_routes)
         .merge(responses_routes)
@@ -410,6 +425,7 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .merge(image_routes)
         .merge(decision_routes)
         .merge(routstr_protected_routes)
+        .merge(anonymous_payment_routes)
         .nest("/v1/models", models_route)
         .route("/v1/info", get(crate::payments::routstr::routstr_info))
         .route("/api/health", get(health::health_check))

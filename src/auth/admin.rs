@@ -284,6 +284,41 @@ pub async fn setup_first_user(
     }))
 }
 
+fn original_path(req: &Request) -> &str {
+    req.extensions()
+        .get::<axum::extract::OriginalUri>()
+        .map(|u| u.0.path())
+        .unwrap_or_else(|| req.uri().path())
+}
+
+async fn nostr_user(
+    state: &Arc<AppState>,
+    header: &str,
+    method: &str,
+    path: &str,
+) -> Result<User, StatusCode> {
+    use base64::prelude::BASE64_STANDARD;
+    use base64::Engine;
+    use nostr::{Event, JsonUtil};
+
+    let encoded = header.strip_prefix("Nostr ").ok_or(StatusCode::UNAUTHORIZED)?;
+    let bytes = BASE64_STANDARD.decode(encoded).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let event = Event::from_json(bytes).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    crate::auth::nip98::validate_event(&event, method, path).map_err(|(code, _)| code)?;
+
+    let pubkey = event.pubkey.to_string();
+    let allowed = &state.config.auth_config.allowed_pubkeys;
+    if !allowed.is_empty() && !allowed.contains(&pubkey) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    state
+        .db
+        .get_or_create_user_by_nostr_pubkey(&pubkey)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 pub async fn auth_middleware(
     State(state): State<Arc<AppState>>,
     mut req: Request,
@@ -296,24 +331,8 @@ pub async fn auth_middleware(
 
     if let Some(auth) = &auth_header {
         if auth.starts_with("Nostr ") {
-            // NIP-98 auth - extract pubkey and get/create user
-            use nostr::{Event, JsonUtil, Kind};
-            use base64::Engine;
-            use base64::prelude::BASE64_STANDARD;
-            
-            let auth_str = auth.strip_prefix("Nostr ").unwrap();
-            let event_bytes = BASE64_STANDARD.decode(auth_str).map_err(|_| StatusCode::UNAUTHORIZED)?;
-            let event = Event::from_json(event_bytes).map_err(|_| StatusCode::UNAUTHORIZED)?;
+            let user = nostr_user(&state, auth, req.method().as_str(), original_path(&req)).await?;
 
-            if event.kind != Kind::HttpAuth || event.verify().is_err() {
-                return Err(StatusCode::UNAUTHORIZED);
-            }
-
-            let pubkey = event.pubkey.to_string();
-            let user = state.db.get_or_create_user_by_nostr_pubkey(&pubkey)
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            
             // Attach authenticated user to request extensions
             let authenticated_user = AuthenticatedUser {
                 user,
@@ -363,24 +382,8 @@ pub async fn admin_middleware(
 
     if let Some(auth) = &auth_header {
         if auth.starts_with("Nostr ") {
-            // NIP-98 auth - extract pubkey and get/create user
-            use nostr::{Event, JsonUtil, Kind};
-            use base64::Engine;
-            use base64::prelude::BASE64_STANDARD;
-            
-            let auth_str = auth.strip_prefix("Nostr ").unwrap();
-            let event_bytes = BASE64_STANDARD.decode(auth_str).map_err(|_| StatusCode::UNAUTHORIZED)?;
-            let event = Event::from_json(event_bytes).map_err(|_| StatusCode::UNAUTHORIZED)?;
+            let user = nostr_user(&state, auth, req.method().as_str(), original_path(&req)).await?;
 
-            if event.kind != Kind::HttpAuth || event.verify().is_err() {
-                return Err(StatusCode::UNAUTHORIZED);
-            }
-
-            let pubkey = event.pubkey.to_string();
-            let user = state.db.get_or_create_user_by_nostr_pubkey(&pubkey)
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            
             // Check if user is admin
             if !user.is_admin {
                 return Err(StatusCode::FORBIDDEN);
