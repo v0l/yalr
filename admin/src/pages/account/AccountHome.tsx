@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { accountApi, AccountAuthError, type AccountData, type CreatedInvoice } from '@/api/account'
+import AccountNav from './AccountNav'
 import AccountShell from './AccountShell'
 import AmountPicker from './AmountPicker'
 import PayInvoice from './PayInvoice'
@@ -66,6 +67,7 @@ export default function AccountHome({ accountKey: key, onSignOut }: { accountKey
 
   return (
     <AccountShell onSignOut={onSignOut}>
+      <AccountNav />
       {error && (
         <Alert className="border-destructive/30 bg-destructive/5 font-mono text-[13px] text-destructive">
           <AlertDescription><span className="text-destructive">!</span> {error}</AlertDescription>

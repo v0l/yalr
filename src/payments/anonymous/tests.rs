@@ -184,6 +184,9 @@ async fn plain_user_sees_and_can_use_only_models_for_sale() {
     assert_eq!(code, StatusCode::OK);
     let ids: Vec<&str> = body["data"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
     assert_eq!(ids, vec!["sale"]);
+    let sale = &body["data"][0];
+    assert_eq!(sale["pricing"]["prompt"], 0);
+    assert_eq!(sale["pricing"]["unit"], "1M tokens");
 
     let chat = |model: &str| {
         axum::http::Request::builder()

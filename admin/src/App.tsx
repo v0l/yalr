@@ -68,7 +68,7 @@ export default function App() {
       <Routes>
         <Route path="/setup" element={<Setup />} />
         <Route path="/login" element={<Login />} />
-        <Route path="/account" element={<Account />} />
+        <Route path="/account/*" element={<Account />} />
         <Route path="/" element={
           <SetupCheckRoute>
             <PrivateRoute>

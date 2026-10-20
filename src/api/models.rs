@@ -184,12 +184,24 @@ pub async fn list_models(
         }
         let (context_length, max_output_tokens) =
             limits.get(&rc.name).copied().unwrap_or((None, None));
+        let pricing = match state.payments_state.as_ref() {
+            Some(ps) => {
+                let p = ps.pricing_resolver.resolve(&rc.name).await;
+                Some(ModelPricing {
+                    prompt: p.price_per_1m_input_sats,
+                    completion: p.price_per_1m_output_sats,
+                    request: p.price_per_request_sats,
+                    unit: "1M tokens".to_string(),
+                })
+            }
+            None => None,
+        };
         all_models.push(ModelEntry {
             id: rc.name.clone(),
             object: "model".to_string(),
             created: 0,
             owned_by: rc.name.clone(),
-            pricing: None,
+            pricing,
             context_length,
             max_output_tokens,
             architecture: routing_architecture(&state, rc).await,

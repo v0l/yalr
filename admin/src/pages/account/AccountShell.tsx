@@ -1,11 +1,20 @@
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 
-export default function AccountShell({ children, onSignOut }: { children: ReactNode; onSignOut?: () => void }) {
+export default function AccountShell({
+  children,
+  onSignOut,
+  wide = false,
+}: {
+  children: ReactNode
+  onSignOut?: () => void
+  wide?: boolean
+}) {
+  const width = wide ? 'max-w-6xl' : 'max-w-3xl'
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b border-border/50">
-        <div className="mx-auto flex max-w-3xl items-center justify-between px-4 py-4 sm:px-5">
+        <div className={`mx-auto flex ${width} items-center justify-between px-4 py-4 sm:px-5`}>
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center border border-border bg-surface">
               <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none">
@@ -30,7 +39,7 @@ export default function AccountShell({ children, onSignOut }: { children: ReactN
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-3xl space-y-4 p-4 sm:p-5">{children}</main>
+      <main className={`mx-auto ${width} space-y-4 p-4 sm:p-5`}>{children}</main>
     </div>
   )
 }
