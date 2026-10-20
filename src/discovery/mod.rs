@@ -19,6 +19,13 @@ const REFRESH: Duration = Duration::from_secs(24 * 60 * 60);
 const POLL: Duration = Duration::from_secs(60);
 const RETRY: Duration = Duration::from_secs(15);
 const PARTIAL_RETRY: Duration = Duration::from_secs(300);
+const PARTIAL_RETRY_MAX: Duration = Duration::from_secs(60 * 60);
+
+fn partial_retry_delay(attempt: u32) -> Duration {
+    PARTIAL_RETRY
+        .checked_mul(1u32 << attempt.min(16))
+        .map_or(PARTIAL_RETRY_MAX, |d| d.min(PARTIAL_RETRY_MAX))
+}
 
 pub fn spawn(config: DiscoveryConfig, db: Arc<Database>) {
     if !config.enabled {
@@ -132,14 +139,14 @@ async fn run(config: DiscoveryConfig, db: Arc<Database>) -> Result<(), String> {
     tracing::info!(npub = %npub, "Nostr discovery enabled");
 
     let mut published: Option<(Listing, tokio::time::Instant)> = None;
-    let mut incomplete_since: Option<tokio::time::Instant> = None;
+    let mut partial_attempts: Option<u32> = None;
     loop {
         let listing = current_listing(&config, &db, urls.clone()).await;
         let due = match &published {
             Some((last, at)) => {
                 *last != listing
                     || at.elapsed() >= REFRESH
-                    || incomplete_since.is_some_and(|t| t.elapsed() >= PARTIAL_RETRY)
+                    || partial_attempts.is_some_and(|n| at.elapsed() >= partial_retry_delay(n))
             }
             None => true,
         };
@@ -152,7 +159,12 @@ async fn run(config: DiscoveryConfig, db: Arc<Database>) -> Result<(), String> {
                         models = listing.models.len(),
                         "Published Routstr provider announcement"
                     );
-                    incomplete_since = (output.success.len() < relays.len()).then(tokio::time::Instant::now);
+                    let changed = published.as_ref().is_none_or(|(last, _)| *last != listing);
+                    partial_attempts = if output.success.len() < relays.len() {
+                        Some(if changed { 0 } else { partial_attempts.map_or(0, |n| n + 1) })
+                    } else {
+                        None
+                    };
                     published = Some((listing, tokio::time::Instant::now()));
                 }
                 Ok(output) => {
@@ -180,6 +192,13 @@ mod tests {
             nsec: None,
             relays: vec![],
         }
+    }
+
+    #[test]
+    fn partial_retry_backs_off_to_an_hour() {
+        let minutes: Vec<u64> = (0..7).map(|n| partial_retry_delay(n).as_secs() / 60).collect();
+        assert_eq!(minutes, vec![5, 10, 20, 40, 60, 60, 60]);
+        assert_eq!(partial_retry_delay(u32::MAX), PARTIAL_RETRY_MAX);
     }
 
     #[test]
