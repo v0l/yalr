@@ -78,6 +78,9 @@ pub async fn create_response(
             Ok(Json(response))
         },
         Err(e) => {
+            if let Some(guard) = &billing_guard {
+                guard.release().await;
+            }
             tracing::error!(
                 model = request.model.as_deref().unwrap_or("unknown"),
                 error = %e,

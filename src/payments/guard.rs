@@ -20,6 +20,7 @@ use crate::payments::biller::{BillingEngine, Reservation, BillingError};
 pub struct BillingGuard {
     engine: Option<Arc<BillingEngine>>,
     reservation: Option<Reservation>,
+    settled: std::sync::atomic::AtomicBool,
 }
 
 impl BillingGuard {
@@ -42,6 +43,10 @@ impl BillingGuard {
             return Ok(Self::noop());
         };
 
+        if state.db.is_billing_exempt(uid).await.unwrap_or(false) {
+            return Ok(Self::noop());
+        }
+
         let engine = Arc::new(BillingEngine::new(
             payments.balance_service.clone(),
             payments.pricing_resolver.clone(),
@@ -51,6 +56,7 @@ impl BillingGuard {
             Ok(reservation) => Ok(Self {
                 engine: Some(engine),
                 reservation: Some(reservation),
+                settled: Default::default(),
             }),
             Err(BillingError::InsufficientFunds { required, available }) => {
                 // Re-throw insufficient funds as a distinct error for HTTP 402
@@ -68,6 +74,7 @@ impl BillingGuard {
         Self {
             engine: None,
             reservation: None,
+            settled: Default::default(),
         }
     }
 
@@ -75,8 +82,22 @@ impl BillingGuard {
     /// Safe to call even on no-op guards.
     pub async fn finalize(&self, prompt_tokens: u32, completion_tokens: u32) {
         if let (Some(engine), Some(reservation)) = (&self.engine, &self.reservation) {
+            if self.settled.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
             if let Err(e) = engine.finalize_charge(reservation, prompt_tokens, completion_tokens).await {
                 tracing::error!(error = %e, "Failed to finalize billing charge");
+            }
+        }
+    }
+
+    pub async fn release(&self) {
+        if let (Some(engine), Some(reservation)) = (&self.engine, &self.reservation) {
+            if self.settled.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            if let Err(e) = engine.release(reservation).await {
+                tracing::error!(error = %e, "Failed to release billing reservation");
             }
         }
     }

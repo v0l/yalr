@@ -2,6 +2,7 @@ use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
 
 mod anonymous;
+mod billing_exempt;
 mod modalities;
 mod nostr_identity;
 pub use anonymous::{random_hex, PublicInvoice};

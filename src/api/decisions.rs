@@ -45,8 +45,13 @@ pub async fn decide(
         .decide(&request, Some(metrics_user(&authenticated)))
         .await;
 
-    let usage = result.as_ref().ok().and_then(|r| r.usage()).unwrap_or_default();
-    billing.finalize(usage.input_tokens, usage.output_tokens).await;
+    match result.as_ref() {
+        Ok(r) => {
+            let usage = r.usage().unwrap_or_default();
+            billing.finalize(usage.input_tokens, usage.output_tokens).await;
+        }
+        Err(_) => billing.release().await,
+    }
     let response = result.map_err(|e| router_error(e, "decisions"))?;
 
     Ok(([(header::CONTENT_TYPE, "application/json")], response.body).into_response())

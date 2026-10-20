@@ -141,6 +141,21 @@ impl BillingEngine {
 
         let request_id = format!("charge-{}", chrono::Utc::now().timestamp_millis());
 
+        if refund < 0 {
+            let available = self
+                .balance_service
+                .get_balance(reservation.user_id)
+                .await
+                .map_err(BillingError::Balance)?;
+            let overage = (-refund).min(available);
+            if overage > 0 {
+                self.balance_service
+                    .debit(reservation.user_id, overage, "overage", &request_id)
+                    .await
+                    .map_err(BillingError::Balance)?;
+            }
+        }
+
         if refund > 0 {
             // Credit back unused reservation
             self.balance_service
@@ -161,6 +176,20 @@ impl BillingEngine {
         );
 
         Ok(actual_msat)
+    }
+}
+
+impl BillingEngine {
+    pub async fn release(&self, reservation: &Reservation) -> Result<(), BillingError> {
+        if reservation.is_free || reservation.reserved_msat <= 0 {
+            return Ok(());
+        }
+        let request_id = format!("release-{}", chrono::Utc::now().timestamp_millis());
+        self.balance_service
+            .credit(reservation.user_id, reservation.reserved_msat, "refund", &request_id)
+            .await
+            .map_err(BillingError::Balance)?;
+        Ok(())
     }
 }
 
@@ -250,6 +279,27 @@ mod tests {
 
         // (50 * 5)/1_000_000 = 0 + (100 * 15)/1_000_000 = 0 + 1 fee = 1000 msats
         assert_eq!(actual, 1000);
+    }
+
+    #[tokio::test]
+    async fn release_returns_the_whole_reservation() {
+        let engine = setup().await;
+        engine.balance_service.credit(1, 5000, "deposit", "t").await.unwrap();
+        let reservation = engine.reserve(1, "gpt-4", None).await.unwrap();
+        assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 4000);
+        engine.release(&reservation).await.unwrap();
+        assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 5000);
+    }
+
+    #[tokio::test]
+    async fn usage_above_the_reservation_is_charged_up_to_the_balance() {
+        let engine = setup().await;
+        engine.balance_service.credit(1, 5000, "deposit", "t").await.unwrap();
+        let reservation = engine.reserve(1, "gpt-4", Some(10)).await.unwrap();
+        assert_eq!(reservation.reserved_msat, 1000);
+        let actual = engine.finalize_charge(&reservation, 2_000_000_000, 0).await.unwrap();
+        assert_eq!(actual, 10_001_000);
+        assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 0);
     }
 
     #[tokio::test]
