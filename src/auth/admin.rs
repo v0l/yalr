@@ -370,6 +370,17 @@ pub async fn auth_middleware(
     Err(StatusCode::UNAUTHORIZED)
 }
 
+pub async fn optional_auth_middleware(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if req.headers().contains_key(header::AUTHORIZATION) {
+        return auth_middleware(State(state), req, next).await;
+    }
+    Ok(next.run(req).await)
+}
+
 pub async fn admin_middleware(
     State(state): State<Arc<AppState>>,
     mut req: Request,

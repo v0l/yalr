@@ -166,16 +166,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_v1_models_requires_auth() {
+    async fn test_v1_models_is_public_but_rejects_bad_credentials() {
         let (state, _) = setup_test_state().await;
         let app = create_test_app(state.clone()).await;
 
-        let response = app
+        let anonymous = app
+            .clone()
             .oneshot(Request::builder().uri("/v1/models").body(Body::empty()).unwrap())
             .await
             .unwrap();
+        assert_eq!(anonymous.status(), 200);
 
-        assert_eq!(response.status(), 401);
+        let bad = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/models")
+                    .header("authorization", "Bearer nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), 401);
     }
 
     #[tokio::test]

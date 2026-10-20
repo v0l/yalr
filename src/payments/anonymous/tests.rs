@@ -210,6 +210,48 @@ async fn plain_user_sees_and_can_use_only_models_for_sale() {
 }
 
 #[tokio::test]
+async fn public_model_list_matches_the_routstr_shape_and_hides_unsold_models() {
+    let (state, app) = app().await;
+    for name in ["sale", "private"] {
+        state
+            .db
+            .create_routing_config(crate::db::NewRoutingConfig {
+                name: name.into(),
+                strategy: "round_robin".into(),
+                health_check_enabled: false,
+                health_check_interval_seconds: 30,
+                health_check_timeout_seconds: 5,
+            })
+            .await
+            .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO model_pricing (model_name, is_advertised, price_per_1m_input_sats, price_per_1m_output_sats, price_per_request_sats, context_window)
+         VALUES ('sale', 1, 21, 42, 1, 256000)",
+    )
+    .execute(&state.db.pool)
+    .await
+    .unwrap();
+
+    let (code, body) = get(&app, "/v1/models", None).await;
+    assert_eq!(code, StatusCode::OK);
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 1);
+    let m = &data[0];
+    assert_eq!(m["id"], "sale");
+    assert_eq!(m["name"], "sale");
+    assert_eq!(m["context_length"], 256000);
+    assert_eq!(m["sats_pricing"]["prompt"], 0.000021);
+    assert_eq!(m["sats_pricing"]["completion"], 0.000042);
+    assert_eq!(m["sats_pricing"]["request"], 1.0);
+    assert_eq!(m["architecture"]["input_modalities"][0], "text");
+    assert!(m["description"].is_string());
+
+    let (code, _) = get(&app, "/v1/models", Some("sk-not-a-real-key")).await;
+    assert_eq!(code, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn account_endpoint_shows_balance_history_and_invoices() {
     let (state, app) = app().await;
     let secret = state.db.server_secret().await.unwrap();

@@ -98,7 +98,105 @@ pub async fn list_models(
     State(state): State<std::sync::Arc<AppState>>,
     Extension(authenticated_user): Extension<crate::auth::admin::AuthenticatedUser>,
 ) -> Json<ModelsListResponse> {
-    let user = &authenticated_user.user;
+    Json(models_for(&state, &authenticated_user.user).await)
+}
+
+pub async fn models_entry(
+    State(state): State<std::sync::Arc<AppState>>,
+    authenticated: Option<Extension<crate::auth::admin::AuthenticatedUser>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match authenticated {
+        Some(Extension(u)) => Json(models_for(&state, &u.user).await).into_response(),
+        None => public_models(State(state)).await.into_response(),
+    }
+}
+
+#[derive(Serialize)]
+pub struct PublicModel {
+    pub id: String,
+    pub name: String,
+    pub created: i64,
+    pub description: String,
+    pub context_length: i32,
+    pub architecture: PublicArchitecture,
+    pub pricing: PublicPricing,
+    pub sats_pricing: PublicPricing,
+}
+
+#[derive(Serialize)]
+pub struct PublicArchitecture {
+    pub input_modalities: Vec<String>,
+    pub output_modalities: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct PublicPricing {
+    pub prompt: f64,
+    pub completion: f64,
+    pub request: f64,
+}
+
+#[derive(Serialize)]
+pub struct PublicModelsResponse {
+    pub data: Vec<PublicModel>,
+}
+
+pub async fn public_models(State(state): State<std::sync::Arc<AppState>>) -> Json<PublicModelsResponse> {
+    let pricings = state.db.list_model_pricings().await.unwrap_or_default();
+    let for_sale: std::collections::HashSet<String> = pricings
+        .iter()
+        .filter(|p| p.is_advertised)
+        .map(|p| p.model_name.clone())
+        .collect();
+    let user = anonymous_viewer();
+    let listing = models_for(&state, &user).await;
+
+    let data = listing
+        .data
+        .into_iter()
+        .filter(|m| for_sale.contains(&m.id))
+        .map(|m| {
+            let p = m.pricing.as_ref();
+            let per_token = |sats_per_million: i64| sats_per_million as f64 / 1_000_000.0;
+            let sats = PublicPricing {
+                prompt: p.map_or(0.0, |p| per_token(p.prompt)),
+                completion: p.map_or(0.0, |p| per_token(p.completion)),
+                request: p.map_or(0.0, |p| p.request as f64),
+            };
+            let arch = m.architecture.as_ref();
+            PublicModel {
+                name: m.id.clone(),
+                created: m.created,
+                description: String::new(),
+                context_length: m.context_length.unwrap_or(0),
+                architecture: PublicArchitecture {
+                    input_modalities: arch.map_or_else(|| vec!["text".to_string()], |a| a.input_modalities.clone()),
+                    output_modalities: arch.map_or_else(|| vec!["text".to_string()], |a| a.output_modalities.clone()),
+                },
+                pricing: PublicPricing { prompt: 0.0, completion: 0.0, request: 0.0 },
+                sats_pricing: sats,
+                id: m.id,
+            }
+        })
+        .collect();
+    Json(PublicModelsResponse { data })
+}
+
+fn anonymous_viewer() -> crate::db::User {
+    crate::db::User {
+        id: -1,
+        username: None,
+        password_hash: None,
+        external_id: None,
+        user_type: crate::db::UserType::Internal,
+        is_admin: false,
+        created_at: String::new(),
+        updated_at: String::new(),
+    }
+}
+
+async fn models_for(state: &std::sync::Arc<AppState>, user: &crate::db::User) -> ModelsListResponse {
 
     let providers = state.config.router.get_providers().await;
     let routing_configs = state.config.db.list_routing_configs().await.unwrap_or_default();
@@ -124,10 +222,10 @@ pub async fn list_models(
     // Check if user has a wildcard deny (*) — if so, deny everything
     let wildcard_deny = permissions.iter().any(|p| p.model == "*" && !p.allow);
     if wildcard_deny {
-        return Json(ModelsListResponse {
+        return ModelsListResponse {
             object: "list".to_string(),
             data: vec![],
-        });
+        };
     }
 
     // Check if user has a wildcard allow (*) — if so, show everything
@@ -320,10 +418,10 @@ pub async fn list_models(
         }
     }
 
-    Json(ModelsListResponse {
+    ModelsListResponse {
         object: "list".to_string(),
         data: all_models,
-    })
+    }
 }
 
 #[axum::debug_handler]

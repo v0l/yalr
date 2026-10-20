@@ -253,8 +253,8 @@ pub async fn run_with_shutdown<F>(
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let models_route = Router::new()
-        .route("/", get(model_handlers::list_models))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+        .route("/", get(model_handlers::models_entry))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), crate::auth::admin::optional_auth_middleware));
 
     let anonymous_payment_routes = Router::new()
         .route("/v2/lightning/invoice", post(crate::payments::anonymous::create_invoice))
@@ -410,8 +410,8 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let models_route = Router::new()
-        .route("/", get(model_handlers::list_models))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+        .route("/", get(model_handlers::models_entry))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), crate::auth::admin::optional_auth_middleware));
 
     let anonymous_payment_routes = Router::new()
         .route("/v2/lightning/invoice", post(crate::payments::anonymous::create_invoice))
