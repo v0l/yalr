@@ -78,7 +78,7 @@ pub async fn create_model_pricing(
     Json(req): Json<ModelPricingCreateRequest>,
 ) -> Result<Json<ModelPricingResponse>, (StatusCode, String)> {
     let mp = crate::db::NewModelPricing {
-        model_name: &req.model_name,
+        model_name: req.model_name.trim(),
         is_advertised: req.is_advertised,
         is_free: req.is_free,
         price_per_1m_input_sats: req.price_per_1m_input_sats,

@@ -19,6 +19,18 @@ pub async fn create_response(
         "Received Responses API request"
     );
 
+    if let Some(u) = user.as_ref() {
+        if let Err((code, body)) = crate::api::shared::check_model_access(
+            &state,
+            u.id,
+            request.model.as_deref().unwrap_or("unknown"),
+        )
+        .await
+        {
+            return Err((code, body));
+        }
+    }
+
     // ── Billing ──────────────────────────────────────────────
     let billing_guard = if state.payments_state.is_some() {
         let user_id = user.as_ref().map(|u| u.id);

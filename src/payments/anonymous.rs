@@ -420,6 +420,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plain_user_sees_and_can_use_only_models_for_sale() {
+        use tower::util::ServiceExt;
+        let (state, app) = app().await;
+        for name in ["sale", "private"] {
+            state
+                .db
+                .create_routing_config(crate::db::NewRoutingConfig {
+                    name: name.into(),
+                    strategy: "round_robin".into(),
+                    health_check_enabled: false,
+                    health_check_interval_seconds: 30,
+                    health_check_timeout_seconds: 5,
+                })
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO model_pricing (model_name, is_advertised) VALUES ('sale', 1)")
+            .execute(&state.db.pool)
+            .await
+            .unwrap();
+
+        let secret = state.db.server_secret().await.unwrap();
+        let public_id = random_hex();
+        create_account(&state.db, &secret, &public_id).await.unwrap();
+        let key = derive_api_key(&secret, &public_id);
+
+        let (code, body) = get(&app, "/v1/models", Some(&key)).await;
+        assert_eq!(code, StatusCode::OK);
+        let ids: Vec<&str> = body["data"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["sale"]);
+
+        let chat = |model: &str| {
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", format!("Bearer {key}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(format!(
+                    r#"{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]}}"#
+                )))
+                .unwrap()
+        };
+        let denied = app.clone().oneshot(chat("private")).await.unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let bytes = axum::body::to_bytes(denied.into_body(), 1 << 20).await.unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("model_access_denied"));
+
+        let balance = state.payments_state.as_ref().unwrap().balance_service.clone();
+        let user = state.db.get_user_by_username(&format!("anon_{}", &public_id[..12])).await.unwrap().unwrap();
+        assert_eq!(balance.get_balance(user.id).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
     async fn unknown_invoice_is_404_and_invoices_need_lnd() {
         use tower::util::ServiceExt;
         let (_, app) = app().await;

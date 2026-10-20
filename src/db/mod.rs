@@ -1144,6 +1144,32 @@ impl Database {
         }
     }
 
+    pub async fn is_for_sale(&self, model: &str) -> Result<bool, sqlx::Error> {
+        Ok(self
+            .get_model_pricing(model)
+            .await?
+            .is_some_and(|p| p.is_advertised))
+    }
+
+    pub async fn effective_model_access(
+        &self,
+        user_id: i64,
+        model: &str,
+        sale_only_by_default: bool,
+    ) -> Result<ModelAccess, sqlx::Error> {
+        if sale_only_by_default
+            && self.list_user_model_permissions(user_id).await?.is_empty()
+            && !self.is_billing_exempt(user_id).await?
+        {
+            return Ok(if self.is_for_sale(model).await? {
+                ModelAccess::Allow
+            } else {
+                ModelAccess::Deny
+            });
+        }
+        self.check_model_access(user_id, model).await
+    }
+
     pub async fn create_user_model_permission(
         &self,
         perm: NewUserModelPermission<'_>,
@@ -2272,6 +2298,79 @@ mod tests {
         // But "code" itself should still be allowed
         let result2 = db.check_model_access(user.id, "code").await.unwrap();
         assert_eq!(result2, ModelAccess::Allow);
+    }
+
+    async fn priced_user(db: &Database, name: &str, admin: bool) -> User {
+        db.create_user(NewUser {
+            username: Some(name),
+            password_hash: None,
+            external_id: None,
+            user_type: UserType::Internal,
+            is_admin: admin,
+        }).await.unwrap()
+    }
+
+    async fn price(db: &Database, model: &str, advertised: bool) {
+        sqlx::query("INSERT INTO model_pricing (model_name, is_advertised) VALUES (?, ?)")
+            .bind(model)
+            .bind(advertised)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn plain_users_get_only_models_for_sale() {
+        let db = setup_test_db().await;
+        let user = priced_user(&db, "buyer", false).await;
+        price(&db, "sale", true).await;
+        price(&db, "hidden", false).await;
+
+        let access = |m: &'static str| {
+            let db = db.clone();
+            async move { db.effective_model_access(user.id, m, true).await.unwrap() }
+        };
+        assert_eq!(access("sale").await, ModelAccess::Allow);
+        assert_eq!(access("hidden").await, ModelAccess::Deny);
+        assert_eq!(access("unpriced").await, ModelAccess::Deny);
+    }
+
+    #[tokio::test]
+    async fn explicit_rules_override_the_sale_default() {
+        let db = setup_test_db().await;
+        let user = priced_user(&db, "buyer", false).await;
+        price(&db, "sale", true).await;
+        db.create_user_model_permission(NewUserModelPermission {
+            user_id: user.id,
+            model: "unpriced",
+            allow: true,
+        }).await.unwrap();
+
+        assert_eq!(db.effective_model_access(user.id, "unpriced", true).await.unwrap(), ModelAccess::Allow);
+        assert_eq!(db.effective_model_access(user.id, "sale", true).await.unwrap(), ModelAccess::Deny);
+    }
+
+    #[tokio::test]
+    async fn admins_and_exempt_users_keep_open_access() {
+        let db = setup_test_db().await;
+        let admin = priced_user(&db, "root", true).await;
+        let friend = priced_user(&db, "friend", false).await;
+        sqlx::query("INSERT INTO billing_exempt_users (user_id) VALUES (?)")
+            .bind(friend.id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        for id in [admin.id, friend.id] {
+            assert_eq!(db.effective_model_access(id, "unpriced", true).await.unwrap(), ModelAccess::Allow);
+        }
+    }
+
+    #[tokio::test]
+    async fn sale_default_is_off_without_payments() {
+        let db = setup_test_db().await;
+        let user = priced_user(&db, "buyer", false).await;
+        assert_eq!(db.effective_model_access(user.id, "unpriced", false).await.unwrap(), ModelAccess::Allow);
     }
 
     #[tokio::test]

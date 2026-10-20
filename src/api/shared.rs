@@ -74,13 +74,17 @@ pub async fn check_model_access(
     user_id: i64,
     model: &str,
 ) -> Result<(), HandlerError> {
-    let access = state.db.check_model_access(user_id, model).await.map_err(|e| {
-        tracing::error!(error = %e, "Failed to check model access");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error_body(&format!("Failed to check model access: {e}"), "internal_error"),
-        )
-    })?;
+    let access = state
+        .db
+        .effective_model_access(user_id, model, state.payments_state.is_some())
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to check model access");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_body(&format!("Failed to check model access: {e}"), "internal_error"),
+            )
+        })?;
     if access == ModelAccess::Deny {
         return Err((
             StatusCode::FORBIDDEN,

@@ -134,6 +134,21 @@ pub async fn list_models(
     let wildcard_allow = permissions.iter().any(|p| p.model == "*" && p.allow);
 
     // Helper to check if a model_id is allowed for this user
+    let sale_only = payments_enabled && !state.db.is_billing_exempt(user.id).await.unwrap_or(false);
+    let for_sale: std::collections::HashSet<String> = if sale_only {
+        state
+            .db
+            .list_model_pricings()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.is_advertised)
+            .map(|p| p.model_name)
+            .collect()
+    } else {
+        Default::default()
+    };
+
     let model_allowed = |model_id: &str| -> bool {
         if wildcard_allow {
             // Wildcard allow overrides everything, skip checks unless there's a specific deny
@@ -143,10 +158,8 @@ pub async fn list_models(
             return true;
         }
 
-        // No wildcard: default-allow, but check for explicit deny or allow
-        // If no permissions at all, allow everything
         if permissions.is_empty() {
-            return true;
+            return !sale_only || for_sale.contains(model_id);
         }
 
         // Check for explicit deny first
