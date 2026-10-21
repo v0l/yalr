@@ -298,7 +298,10 @@ pub struct Database {
 
 impl Database {
     pub async fn new(database_url: &str) -> Result<Self, sqlx::Error> {
-        let pool = SqlitePool::connect(database_url).await?;
+        let options = database_url
+            .parse::<sqlx::sqlite::SqliteConnectOptions>()?
+            .busy_timeout(std::time::Duration::from_secs(30));
+        let pool = SqlitePool::connect_with(options).await?;
         Self::initialize_schema(&pool).await?;
         Ok(Self { pool })
     }

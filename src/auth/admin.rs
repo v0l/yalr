@@ -359,7 +359,7 @@ pub async fn auth_middleware(
                 }
                 
                 // Then check API key
-                if let Some(authenticated_user) = validate_api_key(&state, token).await {
+                if let Some(authenticated_user) = validate_api_key(&state, token).await? {
                     req.extensions_mut().insert(authenticated_user);
                     return Ok(next.run(req).await);
                 }
@@ -430,7 +430,7 @@ pub async fn admin_middleware(
                 }
                 
                 // Then check API key (admin only)
-                if let Some(authenticated_user) = validate_api_key(&state, token).await {
+                if let Some(authenticated_user) = validate_api_key(&state, token).await? {
                     if authenticated_user.user.is_admin {
                         req.extensions_mut().insert(authenticated_user);
                         return Ok(next.run(req).await);
@@ -445,30 +445,27 @@ pub async fn admin_middleware(
     Err(StatusCode::UNAUTHORIZED)
 }
 
-async fn validate_api_key(state: &Arc<AppState>, token: &str) -> Option<AuthenticatedUser> {
+async fn validate_api_key(
+    state: &Arc<AppState>,
+    token: &str,
+) -> Result<Option<AuthenticatedUser>, StatusCode> {
     use sha2::{Digest, Sha256};
-    
-    // Hash the provided token
+
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
     let key_hash = hex::encode(hasher.finalize());
-    
-    // Look up the API key in the database
-    if let Ok(Some(api_key)) = state.db.get_api_key_by_hash(&key_hash).await {
-        // Check if key is active and not expired
-        if api_key.is_active {
-            let is_expired = state.db.is_api_key_expired(api_key.id).await.unwrap_or(false);
-            if !is_expired {
-                // Get the user associated with this API key
-                if let Ok(Some(user)) = state.db.get_user_by_id(api_key.user_id).await {
-                    return Some(AuthenticatedUser {
-                        user,
-                        api_key: Some(api_key),
-                    });
-                }
-            }
-        }
+
+    let unavailable = |e: sqlx::Error| {
+        tracing::error!(error = %e, "API key lookup failed");
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    let Some(api_key) = state.db.get_api_key_by_hash(&key_hash).await.map_err(unavailable)? else {
+        return Ok(None);
+    };
+    if !api_key.is_active || state.db.is_api_key_expired(api_key.id).await.map_err(unavailable)? {
+        return Ok(None);
     }
-    
-    None
+    let user = state.db.get_user_by_id(api_key.user_id).await.map_err(unavailable)?;
+    Ok(user.map(|user| AuthenticatedUser { user, api_key: Some(api_key) }))
 }

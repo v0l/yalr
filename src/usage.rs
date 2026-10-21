@@ -11,7 +11,11 @@ pub async fn record(
     let Some(api_key_id) = api_key_id else {
         return;
     };
-    if let Err(e) = state.db.record_api_key_usage(api_key_id, model, usage, billed_msat).await {
-        tracing::error!(error = %e, api_key_id, "Failed to record api key usage");
-    }
+    let db = state.db.clone();
+    let model = model.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = db.record_api_key_usage(api_key_id, &model, usage, billed_msat).await {
+            tracing::error!(error = %e, api_key_id, "Failed to record api key usage");
+        }
+    });
 }

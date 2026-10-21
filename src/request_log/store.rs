@@ -125,46 +125,61 @@ pub struct Retention {
     pub max_body_bytes: u64,
 }
 
+const DELETE_BATCH: usize = 10;
+
+async fn delete_in_batches(pool: &SqlitePool, table: &str, column: &str, ids: Vec<i64>) -> Result<u64, sqlx::Error> {
+    let mut removed = 0;
+    for batch in ids.chunks(DELETE_BATCH) {
+        let mut query = sqlx::QueryBuilder::new(format!("DELETE FROM {table} WHERE {column} IN ("));
+        let mut separated = query.separated(", ");
+        for id in batch {
+            separated.push_bind(*id);
+        }
+        separated.push_unseparated(")");
+        removed += query.build().execute(pool).await?.rows_affected();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Ok(removed)
+}
+
 pub async fn prune(pool: &SqlitePool, now_ms: i64, retention: &Retention) -> Result<u64, sqlx::Error> {
     let day_ms = 86_400_000i64;
     let mut removed = 0;
     if retention.body_days > 0 {
-        removed += sqlx::query(
-            "DELETE FROM request_log_body WHERE log_id IN
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT log_id FROM request_log_body WHERE log_id IN
              (SELECT id FROM request_log WHERE started_at_ms < ?)",
         )
         .bind(now_ms - i64::from(retention.body_days) * day_ms)
-        .execute(pool)
-        .await?
-        .rows_affected();
+        .fetch_all(pool)
+        .await?;
+        removed += delete_in_batches(pool, "request_log_body", "log_id", ids).await?;
     }
     if retention.max_body_bytes > 0 {
-        removed += sqlx::query(
-            "DELETE FROM request_log_body WHERE log_id IN (
-                SELECT log_id FROM (
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT log_id FROM (
+                SELECT log_id,
+                       SUM(size) OVER (ORDER BY log_id DESC) AS newest_first_total
+                FROM (
                     SELECT log_id,
-                           SUM(size) OVER (ORDER BY log_id DESC) AS newest_first_total
-                    FROM (
-                        SELECT log_id,
-                               COALESCE(LENGTH(client_request_packed), 0)
-                             + COALESCE(LENGTH(upstream_request_packed), 0)
-                             + COALESCE(LENGTH(response_packed), 0) AS size
-                        FROM request_log_body
-                    )
-                ) WHERE newest_first_total > ?
-            )",
+                           COALESCE(LENGTH(client_request_packed), 0)
+                         + COALESCE(LENGTH(upstream_request_packed), 0)
+                         + COALESCE(LENGTH(response_packed), 0) AS size
+                    FROM request_log_body
+                )
+            ) WHERE newest_first_total > ?",
         )
         .bind(i64::try_from(retention.max_body_bytes).unwrap_or(i64::MAX))
-        .execute(pool)
-        .await?
-        .rows_affected();
+        .fetch_all(pool)
+        .await?;
+        removed += delete_in_batches(pool, "request_log_body", "log_id", ids).await?;
     }
     if retention.metadata_days > 0 {
-        removed += sqlx::query("DELETE FROM request_log WHERE started_at_ms < ?")
+        let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM request_log WHERE started_at_ms < ?")
             .bind(now_ms - i64::from(retention.metadata_days) * day_ms)
-            .execute(pool)
-            .await?
-            .rows_affected();
+            .fetch_all(pool)
+            .await?;
+        removed += delete_in_batches(pool, "request_log", "id", ids).await?;
     }
     Ok(removed)
 }
@@ -180,8 +195,19 @@ pub async fn enable_incremental_vacuum(pool: &SqlitePool) -> Result<bool, sqlx::
     Ok(true)
 }
 
+const VACUUM_PAGES: i64 = 256;
+
 pub async fn release_freed_pages(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query("PRAGMA incremental_vacuum").execute(pool).await?;
+    let mut remaining: i64 = sqlx::query_scalar("PRAGMA freelist_count").fetch_one(pool).await?;
+    while remaining > 0 {
+        sqlx::query(&format!("PRAGMA incremental_vacuum({VACUUM_PAGES})")).execute(pool).await?;
+        let now: i64 = sqlx::query_scalar("PRAGMA freelist_count").fetch_one(pool).await?;
+        if now >= remaining {
+            break;
+        }
+        remaining = now;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     Ok(())
 }
 
