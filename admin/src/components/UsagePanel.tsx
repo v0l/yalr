@@ -15,7 +15,7 @@ const RANGES = [
 
 const METRICS = [
   { id: 'tokens', label: 'Tokens' },
-  { id: 'cost', label: 'Cost' },
+  { id: 'cost', label: 'Billed' },
   { id: 'requests', label: 'Requests' },
 ] as const
 
@@ -134,7 +134,7 @@ export default function UsagePanel({
         <StatCard label="Requests" value={total ? total.requests.toLocaleString() : '-'} />
         <StatCard label="Input tokens" value={total ? formatTokens(total.prompt_tokens) : '-'} sub={total && total.cached_tokens ? `${formatTokens(total.cached_tokens)} cached` : undefined} />
         <StatCard label="Output tokens" value={total ? formatTokens(total.completion_tokens) : '-'} />
-        <StatCard label="Cost" value={total ? formatSats(total.cost_msat) : '-'} color="green" />
+        <StatCard label="Billed" value={total ? formatSats(total.cost_msat) : '-'} color="green" />
       </div>
 
       <div className="h-56">
@@ -151,7 +151,7 @@ export default function UsagePanel({
               />
               {metric === 'tokens' && <Bar dataKey="input" name="Input" stackId="t" fill="var(--brand)" />}
               {metric === 'tokens' && <Bar dataKey="output" name="Output" stackId="t" fill="var(--warning)" />}
-              {metric === 'cost' && <Bar dataKey="cost" name="Cost" fill="var(--brand)" />}
+              {metric === 'cost' && <Bar dataKey="cost" name="Billed" fill="var(--brand)" />}
               {metric === 'requests' && <Bar dataKey="requests" name="Requests" fill="var(--brand)" />}
             </BarChart>
           </ResponsiveContainer>
@@ -168,7 +168,7 @@ export default function UsagePanel({
                 <th className={cn(th, 'text-right')}>In</th>
                 <th className={cn(th, 'text-right')}>Cached</th>
                 <th className={cn(th, 'text-right')}>Out</th>
-                <th className={cn(th, 'text-right')}>Cost</th>
+                <th className={cn(th, 'text-right')}>Billed</th>
               </tr>
             </thead>
             <tbody>

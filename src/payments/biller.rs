@@ -175,6 +175,7 @@ impl BillingEngine {
         let refund = reservation.reserved_msat - actual_msat;
 
         let request_id = reservation.request_id.clone();
+        let mut billed_msat = actual_msat.min(reservation.reserved_msat);
 
         if refund < 0 {
             let available = self
@@ -188,6 +189,7 @@ impl BillingEngine {
                     .debit(reservation.user_id, overage, "overage", &request_id)
                     .await
                     .map_err(BillingError::Balance)?;
+                billed_msat += overage;
             }
         }
 
@@ -212,7 +214,7 @@ impl BillingEngine {
             "Charge finalized"
         );
 
-        Ok(actual_msat)
+        Ok(billed_msat)
     }
 }
 
@@ -387,7 +389,7 @@ mod tests {
         let reservation = engine.reserve(1, "gpt-4", Some(10)).await.unwrap();
         assert_eq!(reservation.reserved_msat, 1000);
         let actual = engine.finalize_charge(&reservation, TokenUsage::plain(2_000_000_000, 0)).await.unwrap();
-        assert_eq!(actual, 10_001_000);
+        assert_eq!(actual, 5000);
         assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 0);
     }
 

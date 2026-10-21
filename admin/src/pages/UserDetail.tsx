@@ -267,7 +267,7 @@ export default function UserDetail() {
                   <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium hidden sm:table-cell">Key</th>
                   <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium text-right">Requests</th>
                   <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium text-right">Tokens in / out</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium text-right">Cost</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium text-right">Billed</th>
                   <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium hidden md:table-cell">Created</th>
                   <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium hidden md:table-cell">Expires</th>
                   <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium">Status</th>

@@ -232,10 +232,11 @@ pub async fn chat_completions_handler(
 
             if let Some(ref usage) = response.usage {
                 let billed = billed_usage(&request, usage.prompt_tokens, usage.completion_tokens, usage.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens));
-                if let Some(guard) = &billing_guard {
-                    guard.finalize_usage(billed).await;
-                }
-                crate::usage::record(&state, authenticated_user.api_key.as_ref().map(|k| k.id), &request.model, billed).await;
+                let billed_msat = match &billing_guard {
+                    Some(guard) => guard.finalize_usage(billed).await,
+                    None => 0,
+                };
+                crate::usage::record(&state, authenticated_user.api_key.as_ref().map(|k| k.id), &request.model, billed, billed_msat).await;
             }
 
             Ok(Json(response))
@@ -403,13 +404,12 @@ pub async fn chat_completions_stream(
                     }
 
                     let billed = billed_usage(&request, prompt_tokens, completion_tokens, None);
-                    if let Some(ref guard) = billing_guard {
-                        if guard.is_active() {
-                            guard.finalize_usage(billed).await;
-                        }
-                    }
+                    let billed_msat = match billing_guard.as_ref() {
+                        Some(guard) if guard.is_active() => guard.finalize_usage(billed).await,
+                        _ => 0,
+                    };
                     if prompt_tokens + completion_tokens > 0 {
-                        crate::usage::record(&state, api_key_id, &model, billed).await;
+                        crate::usage::record(&state, api_key_id, &model, billed, billed_msat).await;
                     }
                 };
                 Box::pin(converted_stream)

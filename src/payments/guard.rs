@@ -80,17 +80,22 @@ impl BillingGuard {
 
     /// Finalize the charge using real usage data.
     /// Safe to call even on no-op guards.
-    pub async fn finalize(&self, prompt_tokens: u32, completion_tokens: u32) {
-        self.finalize_usage(TokenUsage::plain(prompt_tokens, completion_tokens)).await;
+    pub async fn finalize(&self, prompt_tokens: u32, completion_tokens: u32) -> i64 {
+        self.finalize_usage(TokenUsage::plain(prompt_tokens, completion_tokens)).await
     }
 
-    pub async fn finalize_usage(&self, usage: TokenUsage) {
-        if let (Some(engine), Some(reservation)) = (&self.engine, &self.reservation) {
-            if self.settled.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                return;
-            }
-            if let Err(e) = engine.finalize_charge(reservation, usage).await {
+    pub async fn finalize_usage(&self, usage: TokenUsage) -> i64 {
+        let (Some(engine), Some(reservation)) = (&self.engine, &self.reservation) else {
+            return 0;
+        };
+        if self.settled.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return 0;
+        }
+        match engine.finalize_charge(reservation, usage).await {
+            Ok(billed_msat) => billed_msat,
+            Err(e) => {
                 tracing::error!(error = %e, "Failed to finalize billing charge");
+                0
             }
         }
     }
@@ -194,8 +199,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!guard.is_active());
-        // Finalize should not panic
-        guard.finalize(100, 200).await;
+        assert_eq!(guard.finalize(100, 200).await, 0);
     }
 
     #[tokio::test]
