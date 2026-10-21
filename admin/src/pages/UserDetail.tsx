@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import { api } from '../api/client'
 import type { UserDetailResponse, UserBalanceDetail, UserModelPermission } from '../types'
 import { Button } from '@/components/ui/button'
@@ -12,6 +12,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
+import UsagePanel from '@/components/UsagePanel'
 import { ArrowLeftIcon, PencilIcon, PlusIcon, CopyIcon, BanIcon, TrashIcon, Save, X, HelpCircle, RefreshCw } from 'lucide-react'
 
 /* ── Helpers ──────────────────────────────────────────────────── */
@@ -249,6 +250,8 @@ export default function UserDetail() {
         </div>
       </div>
 
+      <UsagePanel title="Usage (all keys)" scopeKey={user.id} load={hours => api.getUserUsage(user.id, hours)} />
+
       {/* API Keys */}
       <div className="panel p-4">
         <div className="flex items-center justify-between mb-3">
@@ -262,6 +265,9 @@ export default function UserDetail() {
                 <tr className="border-b border-border/50 text-left">
                   <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium">Name</th>
                   <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium hidden sm:table-cell">Key</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium text-right">Requests</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium text-right">Tokens in / out</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium text-right">Cost</th>
                   <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium hidden md:table-cell">Created</th>
                   <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium hidden md:table-cell">Expires</th>
                   <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-3 py-2 font-medium">Status</th>
@@ -273,6 +279,9 @@ export default function UserDetail() {
                   <tr key={k.id} className="border-b border-border/50 hover:bg-surface">
                     <td className="px-3 py-2 font-mono text-[12px] font-medium">{k.name}</td>
                     <td className="px-3 py-2 font-mono text-[12px] text-muted-foreground hidden sm:table-cell">...{k.last_four}</td>
+                    <td className="px-3 py-2 font-mono text-[12px] tabular-nums text-right"><Link to={`/request-log?api_key_id=${k.id}`} className="hover:text-brand">{k.usage.requests.toLocaleString()}</Link></td>
+                    <td className="px-3 py-2 font-mono text-[12px] tabular-nums text-right">{k.usage.prompt_tokens.toLocaleString()} / {k.usage.completion_tokens.toLocaleString()}</td>
+                    <td className="px-3 py-2 font-mono text-[12px] tabular-nums text-right">{(k.usage.cost_msat / 1000).toLocaleString(undefined, { maximumFractionDigits: 3 })} sats</td>
                     <td className="px-3 py-2 font-mono text-[12px] text-muted-foreground hidden md:table-cell">{fmtDateShort(k.created_at)}</td>
                     <td className="px-3 py-2 font-mono text-[12px] text-muted-foreground hidden md:table-cell">{k.expires_at ? fmtDateShort(k.expires_at) : '—'}</td>
                     <td className="px-3 py-2">

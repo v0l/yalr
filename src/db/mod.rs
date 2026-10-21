@@ -5,8 +5,10 @@ mod anonymous;
 mod billing_exempt;
 mod modalities;
 mod nostr_identity;
+mod usage;
 pub use anonymous::{random_hex, AccountInvoice, PublicInvoice};
 pub use modalities::DeclaredModalities;
+pub use usage::{ApiKeyUsage, HourUsage, ModelUsage, UsageReport, UsageScope};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
 #[repr(u16)]

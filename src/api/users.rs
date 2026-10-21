@@ -27,6 +27,7 @@ pub struct UserDetailResponse {
 
 #[derive(Serialize)]
 pub struct UserApiKeyResponse {
+    pub usage: crate::db::ApiKeyUsage,
     pub id: i64,
     pub name: String,
     pub last_four: String,
@@ -309,8 +310,13 @@ pub async fn get_user(
         updated_at: user.updated_at,
     };
 
+    let mut usage = state.db.api_key_usage_for_user(id)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     let api_keys_response: Vec<UserApiKeyResponse> = api_keys.into_iter().map(|k| {
         UserApiKeyResponse {
+            usage: usage.remove(&k.id).unwrap_or_default(),
             id: k.id,
             name: k.name,
             last_four: k.last_four,

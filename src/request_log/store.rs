@@ -208,6 +208,8 @@ pub struct Summary {
     pub error: Option<String>,
     pub attempts: i64,
     pub user_name: Option<String>,
+    pub api_key_id: Option<i64>,
+    pub api_key_name: Option<String>,
     pub client_ip: Option<String>,
     pub headers_ms: Option<i64>,
     pub first_event_ms: Option<i64>,
@@ -224,25 +226,35 @@ pub struct Summary {
     pub previous_request_id: Option<String>,
 }
 
-pub async fn list(
-    pool: &SqlitePool,
-    limit: i64,
-    before: Option<i64>,
-    model: Option<&str>,
-    status: Option<&str>,
-) -> Result<Vec<Summary>, sqlx::Error> {
+#[derive(Default)]
+pub struct Filter<'a> {
+    pub before: Option<i64>,
+    pub model: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub user_id: Option<i64>,
+    pub api_key_id: Option<i64>,
+    pub since_ms: Option<i64>,
+}
+
+pub async fn list(pool: &SqlitePool, limit: i64, filter: Filter<'_>) -> Result<Vec<Summary>, sqlx::Error> {
     sqlx::query_as::<_, Summary>(
         "SELECT id, request_id, started_at_ms, model, stream, provider, status, error, attempts,
-                user_name, client_ip, headers_ms, first_event_ms, first_thinking_ms, first_text_ms,
+                user_name, api_key_id, api_key_name, client_ip, headers_ms, first_event_ms,
+                first_thinking_ms, first_text_ms,
                 total_ms, prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens,
                 weighted_input_tokens, message_count, first_diverging_message, previous_request_id
          FROM request_log
          WHERE (?1 IS NULL OR id < ?1) AND (?2 IS NULL OR model = ?2) AND (?3 IS NULL OR status = ?3)
-         ORDER BY id DESC LIMIT ?4",
+           AND (?4 IS NULL OR user_id = ?4) AND (?5 IS NULL OR api_key_id = ?5)
+           AND (?6 IS NULL OR started_at_ms >= ?6)
+         ORDER BY id DESC LIMIT ?7",
     )
-    .bind(before)
-    .bind(model)
-    .bind(status)
+    .bind(filter.before)
+    .bind(filter.model)
+    .bind(filter.status)
+    .bind(filter.user_id)
+    .bind(filter.api_key_id)
+    .bind(filter.since_ms)
     .bind(limit)
     .fetch_all(pool)
     .await
@@ -354,7 +366,7 @@ mod tests {
     async fn insert_then_list_detail_and_bodies_round_trip() {
         let pool = pool().await;
         let id = insert(&pool, record("r1", 1_000, true)).await.unwrap();
-        let rows = list(&pool, 10, None, None, None).await.unwrap();
+        let rows = list(&pool, 10, Filter::default()).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].request_id, "r1");
         assert_eq!(rows[0].cached_tokens, Some(900));
@@ -364,6 +376,25 @@ mod tests {
         let stored = bodies(&pool, id).await.unwrap().unwrap();
         assert_eq!(stored.client_request_packed, Some(vec![1, 2, 3]));
         assert_eq!(stored.response_packed, Some(vec![6]));
+    }
+
+    #[tokio::test]
+    async fn list_scopes_to_user_and_key() {
+        let pool = pool().await;
+        for (id, user, key) in [("a", 1, 10), ("b", 1, 11), ("c", 2, 12)] {
+            let mut r = record(id, 1, false);
+            r.user_id = Some(user);
+            r.api_key_id = Some(key);
+            insert(&pool, r).await.unwrap();
+        }
+        let mine = list(&pool, 10, Filter { user_id: Some(1), ..Default::default() }).await.unwrap();
+        assert_eq!(mine.len(), 2);
+        let one = list(&pool, 10, Filter { api_key_id: Some(11), ..Default::default() }).await.unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].request_id, "b");
+        assert_eq!(one[0].api_key_id, Some(11));
+        let late = list(&pool, 10, Filter { since_ms: Some(2), ..Default::default() }).await.unwrap();
+        assert!(late.is_empty());
     }
 
     #[tokio::test]
@@ -388,11 +419,11 @@ mod tests {
         let mut failed = record("b", 2, false);
         failed.status = "error".into();
         let second = insert(&pool, failed).await.unwrap();
-        let all = list(&pool, 10, None, None, None).await.unwrap();
+        let all = list(&pool, 10, Filter::default()).await.unwrap();
         assert_eq!(all.iter().map(|r| r.id).collect::<Vec<_>>(), vec![second, first]);
-        let errors = list(&pool, 10, None, None, Some("error")).await.unwrap();
+        let errors = list(&pool, 10, Filter { status: Some("error"), ..Default::default() }).await.unwrap();
         assert_eq!(errors.len(), 1);
-        let older = list(&pool, 10, Some(second), None, None).await.unwrap();
+        let older = list(&pool, 10, Filter { before: Some(second), ..Default::default() }).await.unwrap();
         assert_eq!(older.len(), 1);
         assert_eq!(older[0].id, first);
     }

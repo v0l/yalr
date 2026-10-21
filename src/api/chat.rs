@@ -230,11 +230,12 @@ pub async fn chat_completions_handler(
                 "Request completed successfully"
             );
 
-            // Finalize billing
-            if let Some(guard) = &billing_guard {
-                if let Some(ref usage) = response.usage {
-                    guard.finalize_usage(billed_usage(&request, usage.prompt_tokens, usage.completion_tokens, usage.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens))).await;
+            if let Some(ref usage) = response.usage {
+                let billed = billed_usage(&request, usage.prompt_tokens, usage.completion_tokens, usage.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens));
+                if let Some(guard) = &billing_guard {
+                    guard.finalize_usage(billed).await;
                 }
+                crate::usage::record(&state, authenticated_user.api_key.as_ref().map(|k| k.id), &request.model, billed).await;
             }
 
             Ok(Json(response))
@@ -340,6 +341,7 @@ pub async fn chat_completions_stream(
     };
 
     let model = request.model.clone();
+    let api_key_id = authenticated_user.api_key.as_ref().map(|k| k.id);
     let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send + 'static>> =
         match state.config.router.chat_completions_stream(&request, Some(metrics_user)).await {
             Ok(stream) => {
@@ -400,11 +402,14 @@ pub async fn chat_completions_stream(
                         }
                     }
 
-                    // Finalize billing after stream is done
+                    let billed = billed_usage(&request, prompt_tokens, completion_tokens, None);
                     if let Some(ref guard) = billing_guard {
                         if guard.is_active() {
-                            guard.finalize_usage(billed_usage(&request, prompt_tokens, completion_tokens, None)).await;
+                            guard.finalize_usage(billed).await;
                         }
+                    }
+                    if prompt_tokens + completion_tokens > 0 {
+                        crate::usage::record(&state, api_key_id, &model, billed).await;
                     }
                 };
                 Box::pin(converted_stream)

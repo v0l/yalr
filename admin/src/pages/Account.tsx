@@ -5,6 +5,7 @@ import AccountChat from './account/AccountChat'
 import AccountHome from './account/AccountHome'
 import AccountModels from './account/AccountModels'
 import AccountStart from './account/AccountStart'
+import AccountUsage from './account/AccountUsage'
 
 export default function Account() {
   const [key, setKey] = useState<string | null>(() => accountKey.get())
@@ -20,6 +21,7 @@ export default function Account() {
     <Routes>
       <Route index element={<AccountHome accountKey={key} onSignOut={signOut} />} />
       <Route path="models" element={<AccountModels accountKey={key} onSignOut={signOut} />} />
+      <Route path="usage" element={<AccountUsage accountKey={key} onSignOut={signOut} />} />
       <Route path="chat" element={<AccountChat accountKey={key} onSignOut={signOut} />} />
     </Routes>
   )

@@ -31,6 +31,7 @@ import type {
   RequestLogDetail,
   RequestLogBodies,
   RequestLogQuery,
+  UsageReport,
 } from '../types'
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL || window.location.origin
@@ -79,6 +80,14 @@ async function audioErrorMessage(response: Response, fallback: string): Promise<
 }
 
 export const api = {
+  async getKeyUsage(id: number, hours: number): Promise<UsageReport> {
+    return request(`/api/api-keys/${id}/usage?hours=${hours}`)
+  },
+
+  async getUserUsage(id: number, hours: number): Promise<UsageReport> {
+    return request(`/api/users/${id}/usage?hours=${hours}`)
+  },
+
   async getRequestLog(query: RequestLogQuery = {}): Promise<RequestLogSummary[]> {
     const params = new URLSearchParams()
     for (const [key, value] of Object.entries(query)) {

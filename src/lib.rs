@@ -11,6 +11,7 @@ pub mod providers;
 pub mod request_log;
 pub mod router;
 pub mod state;
+pub mod usage;
 
 pub use metrics::{HealthConfig, HealthState};
 

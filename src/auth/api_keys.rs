@@ -92,8 +92,13 @@ pub async fn list_api_keys(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    let mut usage = state.db.api_key_usage_for_user(authenticated_user.user.id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     let items: Vec<ApiKeyListItem> = keys.into_iter().map(|k| {
         ApiKeyListItem {
+            usage: usage.remove(&k.id).unwrap_or_default(),
             id: k.id,
             name: k.name,
             last_four: k.last_four,
@@ -118,6 +123,7 @@ pub struct ApiKeyResponse {
 
 #[derive(serde::Serialize)]
 pub struct ApiKeyListItem {
+    pub usage: crate::db::ApiKeyUsage,
     pub id: i64,
     pub name: String,
     pub last_four: String,

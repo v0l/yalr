@@ -21,6 +21,8 @@ export default function RequestLog() {
   const [params, setParams] = useSearchParams()
   const model = params.get('model') ?? ''
   const status = params.get('status') ?? ''
+  const userId = params.get('user_id') ?? ''
+  const apiKeyId = params.get('api_key_id') ?? ''
   const [modelInput, setModelInput] = useState(model)
   const [rows, setRows] = useState<RequestLogSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -31,8 +33,15 @@ export default function RequestLog() {
   const [reloadKey, setReloadKey] = useState(0)
 
   const fetchPage = useCallback(
-    (before?: number) => api.getRequestLog({ limit: PAGE_SIZE, before, model, status }),
-    [model, status],
+    (before?: number) => api.getRequestLog({
+      limit: PAGE_SIZE,
+      before,
+      model,
+      status,
+      user_id: userId ? Number(userId) : undefined,
+      api_key_id: apiKeyId ? Number(apiKeyId) : undefined,
+    }),
+    [model, status, userId, apiKeyId],
   )
 
   useEffect(() => {
@@ -69,7 +78,7 @@ export default function RequestLog() {
     }
   }
 
-  function setFilter(key: 'model' | 'status', value: string) {
+  function setFilter(key: 'model' | 'status' | 'user_id' | 'api_key_id', value: string) {
     setLoading(true)
     const next = new URLSearchParams(params)
     if (value) next.set(key, value)
@@ -116,6 +125,13 @@ export default function RequestLog() {
         </div>
       </div>
 
+      {(userId || apiKeyId) && (
+        <div className="flex items-center gap-2 flex-wrap font-mono text-[11px] text-muted-foreground">
+          {userId && <button onClick={() => setFilter('user_id', '')} className="border border-border px-2 py-1 hover:text-foreground">user #{userId} ×</button>}
+          {apiKeyId && <button onClick={() => setFilter('api_key_id', '')} className="border border-border px-2 py-1 hover:text-foreground">key #{apiKeyId} ×</button>}
+        </div>
+      )}
+
       {error && (
         <Alert className="border-destructive/30 bg-destructive/5 text-destructive font-mono text-[13px]">
           <AlertDescription>{error}</AlertDescription>
@@ -139,17 +155,18 @@ export default function RequestLog() {
                 <th className={cn(th, 'text-right')}>Out</th>
                 <th className={cn(th, 'text-right')}>Msgs</th>
                 <th className={th}>User</th>
+                <th className={th}>Key</th>
               </tr>
             </thead>
             <tbody>
               {loading && rows.length === 0 ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="border-b border-border/50">
-                    <td colSpan={12} className="px-3 py-2"><Skeleton className="h-4 bg-secondary" /></td>
+                    <td colSpan={13} className="px-3 py-2"><Skeleton className="h-4 bg-secondary" /></td>
                   </tr>
                 ))
               ) : rows.length === 0 ? (
-                <tr><td colSpan={12} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO REQUESTS LOGGED</td></tr>
+                <tr><td colSpan={13} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO REQUESTS LOGGED</td></tr>
               ) : rows.map(row => {
                 const hit = cacheHitRate(row)
                 return (
@@ -183,6 +200,7 @@ export default function RequestLog() {
                       {row.previous_request_id && <LinkIcon className="inline ml-1 size-3 text-brand/60" />}
                     </td>
                     <td className={cn(td, 'text-muted-foreground')}>{row.user_name ?? '-'}</td>
+                    <td className={cn(td, 'text-muted-foreground')}>{row.api_key_name ?? '-'}</td>
                   </tr>
                 )
               })}

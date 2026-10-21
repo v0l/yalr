@@ -1,3 +1,4 @@
+import type { RequestLogSummary, UsageReport } from '@/types'
 import { API_BASE_URL } from './client'
 
 export interface AccountHistoryEntry {
@@ -68,6 +69,9 @@ async function call<T>(path: string, init?: RequestInit, key?: string | null): P
 }
 
 export const accountApi = {
+  usage: (key: string, hours: number) => call<UsageReport>(`/v1/usage?hours=${hours}`, undefined, key),
+  requests: (key: string, hours: number, before?: number) =>
+    call<RequestLogSummary[]>(`/v1/usage/requests?hours=${hours}&limit=50${before ? `&before=${before}` : ''}`, undefined, key),
   load: (key: string) => call<AccountData>('/v1/account', undefined, key),
   createInvoice: (amount_sats: number, purpose: 'create' | 'topup', key?: string) =>
     call<CreatedInvoice>('/v2/lightning/invoice', { method: 'POST', body: JSON.stringify({ amount_sats, purpose }) }, key),

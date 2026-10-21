@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils'
 
 const tabs = [
   { to: '/account', label: 'Balance', end: true },
+  { to: '/account/usage', label: 'Usage', end: false },
   { to: '/account/models', label: 'Models', end: false },
   { to: '/account/chat', label: 'Chat', end: false },
 ]

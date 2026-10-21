@@ -269,7 +269,32 @@ export interface ApiKey {
   is_active?: boolean
 }
 
+export interface ApiKeyUsage {
+  requests: number
+  prompt_tokens: number
+  completion_tokens: number
+  cached_tokens: number
+  cache_write_tokens: number
+  cost_msat: number
+}
+
+export interface ModelUsage extends ApiKeyUsage {
+  model: string
+}
+
+export interface HourUsage extends ApiKeyUsage {
+  hour: string
+}
+
+export interface UsageReport {
+  hours: number
+  total: ApiKeyUsage
+  by_model: ModelUsage[]
+  by_hour: HourUsage[]
+}
+
 export interface ApiKeyListItem {
+  usage: ApiKeyUsage
   id: number
   name: string
   last_four: string
@@ -400,6 +425,7 @@ export interface UpdateUserRequest {
 }
 
 export interface UserApiKeyListItem {
+  usage: ApiKeyUsage
   id: number
   name: string
   last_four: string
@@ -590,6 +616,8 @@ export interface RequestLogSummary {
   error: string | null
   attempts: number
   user_name: string | null
+  api_key_id: number | null
+  api_key_name: string | null
   client_ip: string | null
   headers_ms: number | null
   first_event_ms: number | null
@@ -619,8 +647,6 @@ export type HeaderPairs = [string, string][]
 export interface RequestLogDetail extends RequestLogSummary {
   endpoint: string
   user_id: number | null
-  api_key_id: number | null
-  api_key_name: string | null
   upstream_url: string | null
   upstream_status: number | null
   finish_reason: string | null
@@ -648,4 +674,6 @@ export interface RequestLogQuery {
   before?: number
   model?: string
   status?: string
+  user_id?: number
+  api_key_id?: number
 }

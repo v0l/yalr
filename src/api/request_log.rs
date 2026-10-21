@@ -20,6 +20,8 @@ pub struct ListQuery {
     before: Option<i64>,
     model: Option<String>,
     status: Option<String>,
+    user_id: Option<i64>,
+    api_key_id: Option<i64>,
 }
 
 pub async fn list(
@@ -27,7 +29,15 @@ pub async fn list(
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<store::Summary>>, ApiError> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    store::list(&state.db.pool, limit, query.before, query.model.as_deref(), query.status.as_deref())
+    let filter = store::Filter {
+        before: query.before,
+        model: query.model.as_deref(),
+        status: query.status.as_deref(),
+        user_id: query.user_id,
+        api_key_id: query.api_key_id,
+        since_ms: None,
+    };
+    store::list(&state.db.pool, limit, filter)
         .await
         .map(Json)
         .map_err(internal)

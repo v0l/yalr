@@ -49,6 +49,13 @@ pub async fn decide(
         Ok(r) => {
             let usage = r.usage().unwrap_or_default();
             billing.finalize(usage.input_tokens, usage.output_tokens).await;
+            crate::usage::record(
+                &state,
+                authenticated.api_key.as_ref().map(|k| k.id),
+                &request.model,
+                crate::payments::biller::TokenUsage::plain(usage.input_tokens, usage.output_tokens),
+            )
+            .await;
         }
         Err(_) => billing.release().await,
     }
