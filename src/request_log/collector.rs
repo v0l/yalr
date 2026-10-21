@@ -38,7 +38,12 @@ impl Collector {
             if let Some(text) = &choice.delta.content {
                 self.text.push_str(text);
             }
-            if let Some(reasoning) = &choice.delta.reasoning_content {
+            let reasoning = choice
+                .delta
+                .reasoning_content
+                .as_deref()
+                .or_else(|| choice.delta.extra_fields.get("reasoning").and_then(|v| v.as_str()));
+            if let Some(reasoning) = reasoning {
                 self.reasoning.push_str(reasoning);
             }
             if let Some(calls) = &choice.delta.tool_calls {
@@ -89,5 +94,39 @@ impl Collector {
             tool_calls: self.tools.values().collect(),
         })
         .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chunk(delta: serde_json::Value) -> StreamingChunk {
+        serde_json::from_value(serde_json::json!({
+            "id": "c", "object": "chat.completion.chunk", "created": 1, "model": "m",
+            "choices": [{"index": 0, "delta": delta}]
+        }))
+        .unwrap()
+    }
+
+    fn reasoning_of(collector: &Collector) -> String {
+        let assembled: serde_json::Value = serde_json::from_slice(&collector.assembled()).unwrap();
+        assembled["reasoning"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn collects_reasoning_streamed_under_the_raw_reasoning_key() {
+        let mut collector = Collector::default();
+        collector.push(&chunk(serde_json::json!({"reasoning": "think "})));
+        collector.push(&chunk(serde_json::json!({"reasoning": "more"})));
+        assert_eq!(reasoning_of(&collector), "think more");
+        assert!(!collector.is_empty());
+    }
+
+    #[test]
+    fn collects_reasoning_content_field() {
+        let mut collector = Collector::default();
+        collector.push(&chunk(serde_json::json!({"reasoning_content": "hmm"})));
+        assert_eq!(reasoning_of(&collector), "hmm");
     }
 }
