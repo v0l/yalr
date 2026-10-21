@@ -15,6 +15,10 @@ pub struct TokenUsage {
     pub cache_write_tokens: u32,
 }
 
+fn ceil_msat(micro_sats: i64) -> i64 {
+    (micro_sats + 999) / 1000
+}
+
 impl TokenUsage {
     pub fn plain(prompt_tokens: u32, completion_tokens: u32) -> Self {
         Self { prompt_tokens, completion_tokens, ..Default::default() }
@@ -29,9 +33,7 @@ impl TokenUsage {
             + cached * pricing.price_per_1m_cache_read_sats
             + written * pricing.price_per_1m_cache_write_sats
             + self.completion_tokens as i64 * pricing.price_per_1m_output_sats;
-        let total_sats = micro / 1_000_000 + pricing.price_per_request_sats;
-
-        (total_sats * 1000).max(0)
+        (ceil_msat(micro) + pricing.price_per_request_sats * 1000).max(0)
     }
 }
 
@@ -71,6 +73,7 @@ impl BillingEngine {
     /// max_cost = (context_window * input_price_per_1M) / 1_000_000
     ///          + (max_output_tokens * output_price_per_1M) / 1_000_000
     ///          + request_fee
+    /// computed in msats, rounded up
     /// ```
     ///
     /// If `request_max_tokens` is provided, uses `min(context_window, request_max_tokens)`
@@ -92,13 +95,10 @@ impl BillingEngine {
 
         let output_tokens = pricing.max_output_tokens as i64;
 
-        // (tokens * sats_per_1M) / 1_000_000 * 1000 to get msats
-        let input_cost = (input_tokens * pricing.price_per_1m_input_sats) / 1_000_000;
-        let output_cost = (output_tokens * pricing.price_per_1m_output_sats) / 1_000_000;
-        let request_cost = pricing.price_per_request_sats;
-
-        let total_sats = input_cost + output_cost + request_cost;
-        Ok(total_sats * 1000) // convert sats → msats
+        let token_msat = ceil_msat(
+            input_tokens * pricing.price_per_1m_input_sats + output_tokens * pricing.price_per_1m_output_sats,
+        );
+        Ok(token_msat + pricing.price_per_request_sats * 1000)
     }
 
     /// Reserve balance for a request. Returns a `Reservation` that should be
@@ -273,18 +273,16 @@ mod tests {
         let engine = setup().await;
         let cost = engine.calculate_max_cost("gpt-4", None).await.unwrap();
 
-        // (8192 * 5)/1_000_000 = 0 sats (truncated integer)
-        // (4096 * 15)/1_000_000 = 0 sats (truncated integer)
-        // + 1 sat request fee = 1 sat = 1000 msats
-        assert_eq!(cost, 1000);
+        // 8192 * 5 + 4096 * 15 = 102400 micro-sats -> ceil(102.4) = 103 msats, + 1000 request fee
+        assert_eq!(cost, 1103);
     }
 
     #[tokio::test]
     async fn test_calculate_max_cost_with_request_tokens() {
         let engine = setup().await;
         let cost = engine.calculate_max_cost("gpt-4", Some(100)).await.unwrap();
-        // (100 * 5)/1_000_000 = 0 (truncated) + (4096 * 15)/1_000_000 = 0 + 1 fee = 1000 msats
-        assert_eq!(cost, 1000);
+        // 100 * 5 + 4096 * 15 = 61940 -> ceil(61.94) = 62 msats, + 1000 request fee
+        assert_eq!(cost, 1062);
     }
 
     #[tokio::test]
@@ -307,7 +305,7 @@ mod tests {
             .unwrap();
 
         let reservation = engine.reserve(1, "gpt-4", None).await.unwrap();
-        assert_eq!(reservation.reserved_msat, 1000);
+        assert_eq!(reservation.reserved_msat, 1103);
 
         // Finalize with small usage — should get a refund
         let actual = engine
@@ -315,8 +313,8 @@ mod tests {
             .await
             .unwrap();
 
-        // (50 * 5)/1_000_000 = 0 + (100 * 15)/1_000_000 = 0 + 1 fee = 1000 msats
-        assert_eq!(actual, 1000);
+        // 50 * 5 + 100 * 15 = 1750 -> ceil(1.75) = 2 msats, + 1000 request fee
+        assert_eq!(actual, 1002);
     }
 
     fn priced(input: i64, output: i64, read: i64, write: i64, request: i64) -> crate::payments::pricing::ResolvedPricing {
@@ -338,8 +336,8 @@ mod tests {
     fn cache_reads_and_writes_bill_at_their_own_rates() {
         let p = priced(1_000_000, 4_000_000, 100_000, 1_250_000, 0);
         let usage = TokenUsage { prompt_tokens: 1000, completion_tokens: 100, cached_tokens: 600, cache_write_tokens: 200 };
-        let sats = 200 * 1 + 600 * 100_000 / 1_000_000 + 200 * 1_250_000 / 1_000_000 + 100 * 4;
-        assert_eq!(usage.cost_msat(&p), sats * 1000);
+        let msat = (200 * 1_000_000 + 600 * 100_000 + 200 * 1_250_000 + 100 * 4_000_000) / 1000;
+        assert_eq!(usage.cost_msat(&p), msat);
     }
 
     #[test]
@@ -357,6 +355,15 @@ mod tests {
         let cost = usage.cost_msat(&p);
         assert!(cost >= 0);
         assert_eq!(cost, (90 + 200) * 1000);
+    }
+
+    #[test]
+    fn small_requests_bill_fractions_of_a_sat() {
+        let p = priced(2000, 10_000, 110, 3000, 0);
+        assert_eq!(TokenUsage::plain(100, 0).cost_msat(&p), 200);
+        assert_eq!(TokenUsage::plain(1, 0).cost_msat(&p), 2);
+        assert_eq!(TokenUsage::plain(0, 1).cost_msat(&p), 10);
+        assert_eq!(TokenUsage::plain(1, 0).cost_msat(&priced(1, 0, 1, 1, 0)), 1);
     }
 
     #[tokio::test]
@@ -377,7 +384,7 @@ mod tests {
         let engine = setup().await;
         engine.balance_service.credit(1, 5000, "deposit", "t").await.unwrap();
         let reservation = engine.reserve(1, "gpt-4", None).await.unwrap();
-        assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 4000);
+        assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 5000 - 1103);
         engine.release(&reservation).await.unwrap();
         assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 5000);
     }
@@ -387,7 +394,7 @@ mod tests {
         let engine = setup().await;
         engine.balance_service.credit(1, 5000, "deposit", "t").await.unwrap();
         let reservation = engine.reserve(1, "gpt-4", Some(10)).await.unwrap();
-        assert_eq!(reservation.reserved_msat, 1000);
+        assert_eq!(reservation.reserved_msat, 1062);
         let actual = engine.finalize_charge(&reservation, TokenUsage::plain(2_000_000_000, 0)).await.unwrap();
         assert_eq!(actual, 5000);
         assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 0);
@@ -436,17 +443,15 @@ mod tests {
             .unwrap();
 
         let reservation = engine.reserve(1, "gpt-4", None).await.unwrap();
-        assert_eq!(reservation.reserved_msat, 1000);
+        assert_eq!(reservation.reserved_msat, 1103);
 
-        // Balance should now be 4000
         let balance = engine.balance_service.get_balance(1).await.unwrap();
-        assert_eq!(balance, 4000);
+        assert_eq!(balance, 5000 - 1103);
 
         // Finalize with zero usage — full refund
         engine.finalize_charge(&reservation, TokenUsage::plain(0, 0)).await.unwrap();
 
         let balance = engine.balance_service.get_balance(1).await.unwrap();
-        // (0 + 0 + 1sats)*1000 = 1000 msats charged, so refund of 0 (1000 reserved - 1000 actual)
-        assert_eq!(balance, 4000); // 4000 was left after reserve, no refund since actual=1000=reserved
+        assert_eq!(balance, 4000);
     }
 }
