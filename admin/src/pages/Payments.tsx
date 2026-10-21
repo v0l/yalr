@@ -28,8 +28,8 @@ function satsFromMsat(msat: number): string {
   return (msat / 1000).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })
 }
 function formatMsat(msat: number): string {
-  if (Math.abs(msat) >= 100_000_000) return `${(msat / 100_000_000).toFixed(2)}M sats`
-  if (Math.abs(msat) >= 100_000) return `${(msat / 100_000).toFixed(1)}k sats`
+  if (Math.abs(msat) >= 1_000_000_000) return `${(msat / 1_000_000_000).toFixed(2)}M sats`
+  if (Math.abs(msat) >= 1_000_000) return `${(msat / 1_000_000).toFixed(1)}k sats`
   return `${(msat / 1000).toFixed(3)} sats`
 }
 function formatDate(s: string): string { try { return new Date(s).toLocaleString() } catch { return s } }
