@@ -70,7 +70,7 @@ pub async fn detail(
         .await
         .map_err(internal)?
         .ok_or((StatusCode::NOT_FOUND, "no such request".to_string()))?;
-    let has_bodies = store::bodies(&state.db.pool, id).await.map_err(internal)?.is_some();
+    let has_bodies = store::has_bodies(&state.db.pool, id).await.map_err(internal)?;
     let previous_log_id = match detail.previous_request_id.as_deref() {
         Some(previous) => store::id_for_request(&state.db.pool, previous).await.map_err(internal)?,
         None => None,

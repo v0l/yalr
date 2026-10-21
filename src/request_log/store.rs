@@ -344,6 +344,13 @@ pub async fn id_for_request(pool: &SqlitePool, request_id: &str) -> Result<Optio
         .await
 }
 
+pub async fn has_bodies(pool: &SqlitePool, id: i64) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM request_log_body WHERE log_id = ?)")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+}
+
 #[derive(Debug, sqlx::FromRow)]
 pub struct Bodies {
     pub client_request_packed: Option<Vec<u8>>,
@@ -424,6 +431,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_id_lookup_uses_an_index() {
+        let pool = pool().await;
+        let rows = sqlx::query("EXPLAIN QUERY PLAN SELECT id FROM request_log WHERE request_id = 'x'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        use sqlx::Row;
+        let detail: String = rows[0].get("detail");
+        assert!(detail.contains("USING"), "{detail}");
+    }
+
+    #[tokio::test]
     async fn request_id_resolves_to_row_id() {
         let pool = pool().await;
         let id = insert(&pool, record("r1", 1_000, false)).await.unwrap();
@@ -436,6 +455,9 @@ mod tests {
         let pool = pool().await;
         let id = insert(&pool, record("r1", 1_000, false)).await.unwrap();
         assert!(bodies(&pool, id).await.unwrap().is_none());
+        assert!(!has_bodies(&pool, id).await.unwrap());
+        let with = insert(&pool, record("r2", 1_000, true)).await.unwrap();
+        assert!(has_bodies(&pool, with).await.unwrap());
     }
 
     #[tokio::test]
