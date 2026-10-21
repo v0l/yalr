@@ -110,12 +110,11 @@ export default function Payments() {
   async function loadAll() {
     setLoading(true); setError(null)
     try {
-      const [b, t, i, m, l] = await Promise.allSettled([api.getAllBalances(), api.getAllTransactions(), api.getAllInvoices(), api.getModelPricing(), api.getModels()])
+      const [b, t, i, m] = await Promise.allSettled([api.getAllBalances(), api.getAllTransactions(), api.getAllInvoices(), api.getModelPricing()])
       if (b.status === 'fulfilled') setBalances(b.value)
       if (t.status === 'fulfilled') setTransactions(t.value)
       if (i.status === 'fulfilled') setInvoices(i.value)
       if (m.status === 'fulfilled') setModelPricings(m.value)
-      if (l.status === 'fulfilled') setAvailableModels(l.value.data)
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load payment data') }
     finally { setLoading(false) }
   }
@@ -135,6 +134,7 @@ export default function Payments() {
   }
 
   function openCreatePricing() {
+    if (availableModels.length === 0) api.getModels().then(r => setAvailableModels(r.data)).catch(() => undefined)
     setPricingForm({ model_name: '', is_advertised: true, is_free: false, price_per_1m_input_sats: null, price_per_1m_output_sats: null, price_per_1m_cache_read_sats: null, price_per_1m_cache_write_sats: null, price_per_request_sats: null, context_window: null, max_output_tokens: null })
     setEditingModel(null); setPricingDialog(true)
   }
@@ -434,7 +434,7 @@ export default function Payments() {
                   <SelectContent className="bg-card border-border max-h-72">
                     <SelectGroup>
                       {unpricedModels.length === 0
-                        ? <div className="px-2 py-1.5 font-mono text-[12px] text-muted-foreground">No unpriced models</div>
+                        ? <div className="px-2 py-1.5 font-mono text-[12px] text-muted-foreground">{availableModels.length === 0 ? 'Loading models...' : 'No unpriced models'}</div>
                         : unpricedModels.map(m => <SelectItem key={m.id} value={m.id} className="font-mono text-foreground">{m.id}</SelectItem>)}
                     </SelectGroup>
                   </SelectContent>
