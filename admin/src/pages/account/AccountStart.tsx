@@ -1,10 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { CheckIcon, CopyIcon, KeyRoundIcon } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { accountApi, accountKey, AccountAuthError, type CreatedInvoice } from '@/api/account'
+import { Skeleton } from '@/components/ui/skeleton'
+import { loadPublicModels } from '@/api/account-models'
+import type { Model } from '@/types'
 import AccountShell from './AccountShell'
+import ModelPriceTable from './ModelPriceTable'
 import AmountPicker from './AmountPicker'
 import PayInvoice from './PayInvoice'
 
@@ -15,6 +19,9 @@ export default function AccountStart({ onKey }: { onKey: (key: string) => void }
   const [newKey, setNewKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [existing, setExisting] = useState('')
+  const [models, setModels] = useState<Model[] | null>(null)
+
+  useEffect(() => { loadPublicModels().then(setModels).catch(() => setModels([])) }, [])
 
   async function buy(sats: number) {
     setBusy(true)
@@ -76,7 +83,7 @@ export default function AccountStart({ onKey }: { onKey: (key: string) => void }
   }
 
   return (
-    <AccountShell>
+    <AccountShell wide>
       <div>
         <h1 className="mb-1 font-display text-[28px] leading-none tracking-[0.04em] text-foreground">GET AN API KEY</h1>
         <p className="font-mono text-[13px] text-muted-foreground">Pay with Lightning. The amount you pay becomes your balance.</p>
@@ -120,6 +127,15 @@ export default function AccountStart({ onKey }: { onKey: (key: string) => void }
           >
             Sign in
           </Button>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <p className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Models and pricing (sats)</p>
+        <div className="panel overflow-x-auto">
+          {!models ? <Skeleton className="m-4 h-24 bg-secondary" /> : models.length === 0 ? (
+            <p className="p-6 text-center font-mono text-[12px] text-muted-foreground">No models listed</p>
+          ) : <ModelPriceTable models={models} />}
         </div>
       </div>
     </AccountShell>
