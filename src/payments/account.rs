@@ -46,7 +46,7 @@ pub struct InvoiceEntry {
 fn kind(tx_type: &str) -> &'static str {
     match tx_type {
         "deposit" => "deposit",
-        "reserve" | "refund" | "overage" => "usage",
+        "usage" | "reserve" | "refund" | "overage" => "usage",
         "refund_fee" | "refund_reversal" => "withdrawal",
         _ => "adjustment",
     }
@@ -78,7 +78,7 @@ pub fn fold_history(rows: Vec<BalanceTransactionRow>, models: &HashMap<String, S
             "refund_fee" => Some("lightning routing fee".to_string()),
             "refund" => Some("released reservation".to_string()),
             "refund_reversal" => Some("withdrawal failed, returned".to_string()),
-            "deposit" | "reserve" | "overage" => None,
+            "deposit" | "usage" | "reserve" | "overage" => None,
             other => Some(other.to_string()),
         };
         out.push(HistoryEntry {

@@ -35,7 +35,7 @@ pub async fn decide(
         "Received decision request"
     );
 
-    let billing = BillingGuard::try_create(&state, Some(authenticated.user.id), &request.model, None)
+    let billing = BillingGuard::try_create(&state, Some(authenticated.user.id), &request.model)
         .await
         .map_err(billing_error)?;
 
@@ -58,7 +58,7 @@ pub async fn decide(
             )
             .await;
         }
-        Err(_) => billing.release().await,
+        Err(_) => {}
     }
     let response = result.map_err(|e| router_error(e, "decisions"))?;
 

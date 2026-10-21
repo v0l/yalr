@@ -1,7 +1,7 @@
-//! Billing engine — max cost calculation, balance reservation, charge finalization.
+//! Billing engine: admission check and charge finalization.
 //!
-//! Follows RIP-05 pricing: max_cost is computed upfront from context window and
-//! max output tokens. The actual charge uses real usage data from the provider response.
+//! A request is admitted when the balance covers the per-request fee. The real cost is
+//! charged from the provider's usage afterwards and may take the balance below zero.
 
 use std::sync::Arc;
 use crate::payments::balance::{BalanceService, BalanceError};
@@ -38,20 +38,17 @@ impl TokenUsage {
 }
 
 /// Handles the billing lifecycle for a single request:
-/// resolve pricing → compute max_cost → reserve → finalize with real usage.
+/// admit when the balance is positive → finalize with real usage, which may leave it negative.
 pub struct BillingEngine {
     balance_service: Arc<BalanceService>,
     pricing_resolver: Arc<PricingResolver>,
 }
 
-/// Result of reserving balance for a request.
 #[derive(Debug, Clone)]
-pub struct Reservation {
+pub struct Admission {
     pub request_id: String,
     pub user_id: i64,
     pub model: String,
-    pub reserved_msat: i64,
-    pub max_cost_msat: i64,
     pub is_free: bool,
 }
 
@@ -66,147 +63,59 @@ impl BillingEngine {
         }
     }
 
-    /// Calculate the maximum possible cost for a request to the given model.
-    ///
-    /// Formula (RIP-05):
-    /// ```text
-    /// max_cost = (context_window * input_price_per_1M) / 1_000_000
-    ///          + (max_output_tokens * output_price_per_1M) / 1_000_000
-    ///          + request_fee
-    /// computed in msats, rounded up
-    /// ```
-    ///
-    /// If `request_max_tokens` is provided, uses `min(context_window, request_max_tokens)`
-    /// for the input side.
-    pub async fn calculate_max_cost(
-        &self,
-        model_name: &str,
-        request_max_tokens: Option<u32>,
-    ) -> Result<i64, BillingError> {
-        let pricing = self.pricing_resolver.resolve(model_name).await;
-
-        if pricing.is_free {
-            return Ok(0);
-        }
-
-        let input_tokens = request_max_tokens
-            .map(|t| t.min(pricing.context_window as u32))
-            .unwrap_or(pricing.context_window as u32) as i64;
-
-        let output_tokens = pricing.max_output_tokens as i64;
-
-        let token_msat = ceil_msat(
-            input_tokens * pricing.price_per_1m_input_sats + output_tokens * pricing.price_per_1m_output_sats,
-        );
-        Ok(token_msat + pricing.price_per_request_sats * 1000)
-    }
-
-    /// Reserve balance for a request. Returns a `Reservation` that should be
-    /// passed to `finalize_charge` after the request completes.
-    pub async fn reserve(
+    pub async fn admit(
         &self,
         user_id: i64,
         model_name: &str,
-        request_max_tokens: Option<u32>,
-    ) -> Result<Reservation, BillingError> {
-        let max_cost = self.calculate_max_cost(model_name, request_max_tokens).await?;
+    ) -> Result<Admission, BillingError> {
         let pricing = self.pricing_resolver.resolve(model_name).await;
-
         let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
-
-        if pricing.is_free {
-            return Ok(Reservation {
-                request_id,
-                user_id,
-                model: model_name.to_string(),
-                reserved_msat: 0,
-                max_cost_msat: 0,
-                is_free: true,
-            });
-        }
-
-        if max_cost == 0 {
-            return Ok(Reservation {
-                request_id,
-                user_id,
-                model: model_name.to_string(),
-                reserved_msat: 0,
-                max_cost_msat: 0,
-                is_free: false,
-            });
-        }
-
-        self.balance_service
-            .debit_with_metadata(user_id, max_cost, "reserve", &request_id, Some(model_name))
-            .await
-            .map_err(|e| match e {
-                BalanceError::InsufficientFunds { required, available } => {
-                    BillingError::InsufficientFunds { required, available }
-                }
-                other => BillingError::Balance(other),
-            })?;
-
-        Ok(Reservation {
+        let admission = Admission {
             request_id,
             user_id,
             model: model_name.to_string(),
-            reserved_msat: max_cost,
-            max_cost_msat: max_cost,
-            is_free: false,
-        })
+            is_free: pricing.is_free,
+        };
+        if pricing.is_free {
+            return Ok(admission);
+        }
+
+        let required = (pricing.price_per_request_sats * 1000).max(1);
+        let available = self
+            .balance_service
+            .get_balance(user_id)
+            .await
+            .map_err(BillingError::Balance)?;
+        if available < required {
+            return Err(BillingError::InsufficientFunds { required, available });
+        }
+        Ok(admission)
     }
 
-    /// Finalize a charge using real usage data from the provider response.
-    ///
-    /// Computes actual cost, refunds the difference from the reservation.
     pub async fn finalize_charge(
         &self,
-        reservation: &Reservation,
+        admission: &Admission,
         usage: TokenUsage,
     ) -> Result<i64, BillingError> {
-        if reservation.is_free {
+        if admission.is_free {
             return Ok(0);
         }
 
-        let pricing = self.pricing_resolver.resolve(&reservation.model).await;
-
+        let pricing = self.pricing_resolver.resolve(&admission.model).await;
         let actual_msat = usage.cost_msat(&pricing);
-
-        let refund = reservation.reserved_msat - actual_msat;
-
-        let request_id = reservation.request_id.clone();
-        let mut billed_msat = actual_msat.min(reservation.reserved_msat);
-
-        if refund < 0 {
-            let available = self
-                .balance_service
-                .get_balance(reservation.user_id)
-                .await
-                .map_err(BillingError::Balance)?;
-            let overage = (-refund).min(available);
-            if overage > 0 {
-                self.balance_service
-                    .debit(reservation.user_id, overage, "overage", &request_id)
-                    .await
-                    .map_err(BillingError::Balance)?;
-                billed_msat += overage;
-            }
+        if actual_msat <= 0 {
+            return Ok(0);
         }
 
-        if refund > 0 {
-            // Credit back unused reservation
-            self.balance_service
-                .credit(reservation.user_id, refund, "refund", &request_id)
-                .await
-                .map_err(BillingError::Balance)?;
-        }
+        self.balance_service
+            .charge(admission.user_id, actual_msat, "usage", &admission.request_id, Some(&admission.model))
+            .await
+            .map_err(BillingError::Balance)?;
 
         tracing::info!(
-            user_id = reservation.user_id,
-            model = %reservation.model,
-            reserved_msat = reservation.reserved_msat,
+            user_id = admission.user_id,
+            model = %admission.model,
             actual_msat,
-            refund_msat = refund,
             prompt_tokens = usage.prompt_tokens,
             completion_tokens = usage.completion_tokens,
             cached_tokens = usage.cached_tokens,
@@ -214,20 +123,7 @@ impl BillingEngine {
             "Charge finalized"
         );
 
-        Ok(billed_msat)
-    }
-}
-
-impl BillingEngine {
-    pub async fn release(&self, reservation: &Reservation) -> Result<(), BillingError> {
-        if reservation.is_free || reservation.reserved_msat <= 0 {
-            return Ok(());
-        }
-        self.balance_service
-            .credit(reservation.user_id, reservation.reserved_msat, "refund", &reservation.request_id)
-            .await
-            .map_err(BillingError::Balance)?;
-        Ok(())
+        Ok(actual_msat)
     }
 }
 
@@ -269,52 +165,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_calculate_max_cost_with_defaults() {
+    async fn admit_rejects_an_empty_balance() {
         let engine = setup().await;
-        let cost = engine.calculate_max_cost("gpt-4", None).await.unwrap();
-
-        // 8192 * 5 + 4096 * 15 = 102400 micro-sats -> ceil(102.4) = 103 msats, + 1000 request fee
-        assert_eq!(cost, 1103);
+        let result = engine.admit(1, "gpt-4").await;
+        assert!(matches!(result, Err(BillingError::InsufficientFunds { required: 1000, available: 0 })));
     }
 
     #[tokio::test]
-    async fn test_calculate_max_cost_with_request_tokens() {
+    async fn admit_rejects_a_negative_balance() {
         let engine = setup().await;
-        let cost = engine.calculate_max_cost("gpt-4", Some(100)).await.unwrap();
-        // 100 * 5 + 4096 * 15 = 61940 -> ceil(61.94) = 62 msats, + 1000 request fee
-        assert_eq!(cost, 1062);
+        engine.balance_service.charge(1, 500, "usage", "req-x", None).await.unwrap();
+        assert!(matches!(engine.admit(1, "gpt-4").await, Err(BillingError::InsufficientFunds { .. })));
     }
 
     #[tokio::test]
-    async fn test_reserve_insufficient_funds() {
+    async fn admit_does_not_move_the_balance() {
         let engine = setup().await;
-        // User has 0 balance, reserve should fail
-        let result = engine.reserve(1, "gpt-4", None).await;
-        assert!(matches!(result, Err(BillingError::InsufficientFunds { .. })));
+        engine.balance_service.credit(1, 5000, "deposit", "t").await.unwrap();
+        engine.admit(1, "gpt-4").await.unwrap();
+        assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 5000);
     }
 
     #[tokio::test]
-    async fn test_reserve_and_finalize() {
+    async fn finalize_charges_real_usage_only() {
         let engine = setup().await;
+        engine.balance_service.credit(1, 5000, "deposit", "t").await.unwrap();
+        let admission = engine.admit(1, "gpt-4").await.unwrap();
+        let billed = engine.finalize_charge(&admission, TokenUsage::plain(50, 100)).await.unwrap();
+        assert_eq!(billed, 1002);
+        assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 5000 - 1002);
+    }
 
-        // Credit the user enough to cover max cost
-        engine
-            .balance_service
-            .credit(1, 5000, "deposit", "test-deposit")
-            .await
-            .unwrap();
+    #[tokio::test]
+    async fn usage_beyond_the_balance_goes_negative() {
+        let engine = setup().await;
+        engine.balance_service.credit(1, 2000, "deposit", "t").await.unwrap();
+        let admission = engine.admit(1, "gpt-4").await.unwrap();
+        let billed = engine.finalize_charge(&admission, TokenUsage::plain(2_000_000_000, 0)).await.unwrap();
+        assert_eq!(billed, 10_000_000 + 1000);
+        assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 2000 - 10_001_000);
+    }
 
-        let reservation = engine.reserve(1, "gpt-4", None).await.unwrap();
-        assert_eq!(reservation.reserved_msat, 1103);
-
-        // Finalize with small usage — should get a refund
-        let actual = engine
-            .finalize_charge(&reservation, TokenUsage::plain(50, 100))
-            .await
-            .unwrap();
-
-        // 50 * 5 + 100 * 15 = 1750 -> ceil(1.75) = 2 msats, + 1000 request fee
-        assert_eq!(actual, 1002);
+    #[tokio::test]
+    async fn a_deposit_pays_off_a_negative_balance() {
+        let engine = setup().await;
+        engine.balance_service.charge(1, 3000, "usage", "req-x", None).await.unwrap();
+        engine.balance_service.credit(1, 5000, "deposit", "t").await.unwrap();
+        assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 2000);
     }
 
     fn priced(input: i64, output: i64, read: i64, write: i64, request: i64) -> crate::payments::pricing::ResolvedPricing {
@@ -367,40 +264,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_zero_sat_reservation_is_still_charged_for_real_usage() {
-        let engine = setup().await;
-        engine.balance_service.credit(1, 10_000_000, "deposit", "t").await.unwrap();
-        let reservation = engine.reserve(1, "gpt-4", Some(1)).await.unwrap();
-        let mut zero = reservation.clone();
-        zero.reserved_msat = 0;
-        zero.max_cost_msat = 0;
-        assert!(!zero.is_free);
-        let charged = engine.finalize_charge(&zero, TokenUsage::plain(0, 2_000_000)).await.unwrap();
-        assert_eq!(charged, 31_000);
-    }
-
-    #[tokio::test]
-    async fn release_returns_the_whole_reservation() {
-        let engine = setup().await;
-        engine.balance_service.credit(1, 5000, "deposit", "t").await.unwrap();
-        let reservation = engine.reserve(1, "gpt-4", None).await.unwrap();
-        assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 5000 - 1103);
-        engine.release(&reservation).await.unwrap();
-        assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 5000);
-    }
-
-    #[tokio::test]
-    async fn usage_above_the_reservation_is_charged_up_to_the_balance() {
-        let engine = setup().await;
-        engine.balance_service.credit(1, 5000, "deposit", "t").await.unwrap();
-        let reservation = engine.reserve(1, "gpt-4", Some(10)).await.unwrap();
-        assert_eq!(reservation.reserved_msat, 1062);
-        let actual = engine.finalize_charge(&reservation, TokenUsage::plain(2_000_000_000, 0)).await.unwrap();
-        assert_eq!(actual, 5000);
-        assert_eq!(engine.balance_service.get_balance(1).await.unwrap(), 0);
-    }
-
-    #[tokio::test]
     async fn test_free_model_skips_charges() {
         let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
         sqlx::query("INSERT INTO users (username, user_type, is_admin) VALUES ('test', 0, 0)")
@@ -421,37 +284,10 @@ mod tests {
         let pricing_resolver = Arc::new(PricingResolver::new(db, defaults));
         let engine = BillingEngine::new(balance_service, pricing_resolver);
 
-        let cost = engine.calculate_max_cost("free-model", None).await.unwrap();
-        assert_eq!(cost, 0);
+        let admission = engine.admit(1, "free-model").await.unwrap();
+        assert!(admission.is_free);
 
-        let reservation = engine.reserve(1, "free-model", None).await.unwrap();
-        assert!(reservation.is_free);
-        assert_eq!(reservation.reserved_msat, 0);
-
-        let actual = engine.finalize_charge(&reservation, TokenUsage::plain(1000, 1000)).await.unwrap();
+        let actual = engine.finalize_charge(&admission, TokenUsage::plain(1000, 1000)).await.unwrap();
         assert_eq!(actual, 0);
-    }
-
-    #[tokio::test]
-    async fn test_reserve_credits_balance_correctly() {
-        let engine = setup().await;
-
-        engine
-            .balance_service
-            .credit(1, 5000, "deposit", "test")
-            .await
-            .unwrap();
-
-        let reservation = engine.reserve(1, "gpt-4", None).await.unwrap();
-        assert_eq!(reservation.reserved_msat, 1103);
-
-        let balance = engine.balance_service.get_balance(1).await.unwrap();
-        assert_eq!(balance, 5000 - 1103);
-
-        // Finalize with zero usage — full refund
-        engine.finalize_charge(&reservation, TokenUsage::plain(0, 0)).await.unwrap();
-
-        let balance = engine.balance_service.get_balance(1).await.unwrap();
-        assert_eq!(balance, 4000);
     }
 }

@@ -167,7 +167,6 @@ pub async fn chat_completions_handler(
             &state,
             user_id,
             &request.model,
-            request.max_completion_tokens.map(|t| t),
         )
         .await
         {
@@ -242,9 +241,6 @@ pub async fn chat_completions_handler(
             Ok(Json(response))
         },
         Err(e) => {
-            if let Some(guard) = &billing_guard {
-                guard.release().await;
-            }
             if let Some(pending) = log.take() {
                 pending.complete("error", Some(e.to_string()));
             }
@@ -297,7 +293,6 @@ pub async fn chat_completions_stream(
             &state,
             user_id,
             &request.model,
-            request.max_completion_tokens,
         )
         .await
         {
@@ -415,9 +410,6 @@ pub async fn chat_completions_stream(
                 Box::pin(converted_stream)
             }
             Err(e) => {
-                if let Some(guard) = &billing_guard {
-                    guard.release().await;
-                }
                 if let Some(pending) = log {
                     pending.complete("error", Some(e.to_string()));
                 }

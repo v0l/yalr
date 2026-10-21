@@ -69,6 +69,50 @@ impl BalanceService {
         Ok(new_balance)
     }
 
+    pub async fn charge(
+        &self,
+        user_id: i64,
+        amount_msat: i64,
+        tx_type: &str,
+        reference_id: &str,
+        metadata: Option<&str>,
+    ) -> Result<i64, BalanceError> {
+        if amount_msat <= 0 {
+            return Err(BalanceError::InvalidAmount(amount_msat));
+        }
+        let negative = -amount_msat;
+        let mut tx = self.db.pool.begin().await?;
+
+        let new_balance = sqlx::query_scalar::<_, i64>(
+            r#"INSERT INTO user_balances (user_id, balance_msat, lifetime_deposited_msat)
+               VALUES (?, ?, 0)
+               ON CONFLICT(user_id) DO UPDATE SET
+                   balance_msat = balance_msat + ?,
+                   updated_at = CURRENT_TIMESTAMP
+               RETURNING balance_msat"#,
+        )
+        .bind(user_id)
+        .bind(negative)
+        .bind(negative)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"INSERT INTO balance_transactions (user_id, amount_msat, transaction_type, reference_id, metadata)
+               VALUES (?, ?, ?, ?, ?)"#,
+        )
+        .bind(user_id)
+        .bind(negative)
+        .bind(tx_type)
+        .bind(reference_id)
+        .bind(metadata)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(new_balance)
+    }
+
     /// Debit (subtract) from a user's balance. Fails if insufficient funds.
     pub async fn debit(
         &self,

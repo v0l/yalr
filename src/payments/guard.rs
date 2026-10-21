@@ -1,25 +1,25 @@
 //! Balance-checking wrapper for chat completion handlers.
 //!
-//! Provides `BillingGuard` that handles the reserve→execute→finalize lifecycle.
+//! Provides `BillingGuard` that handles the admit→execute→finalize lifecycle.
 //! When payments are disabled, the guard is a no-op (pass-through).
 
 use std::sync::Arc;
 use axum::http::StatusCode;
 use crate::state::AppState;
-use crate::payments::biller::{BillingEngine, Reservation, BillingError, TokenUsage};
+use crate::payments::biller::{BillingEngine, Admission, BillingError, TokenUsage};
 
 /// Wraps the billing lifecycle for a single chat completion request.
 ///
 /// # Usage
 ///
 /// ```ignore
-/// let guard = BillingGuard::try_reserve(&state, user_id, &model, max_tokens).await?;
+/// let guard = BillingGuard::try_create(&state, user_id, &model).await?;
 /// let response = router.chat_completions(&request).await?;
 /// guard.finalize(response.usage.as_ref()).await;
 /// ```
 pub struct BillingGuard {
     engine: Option<Arc<BillingEngine>>,
-    reservation: Option<Reservation>,
+    admission: Option<Admission>,
     settled: std::sync::atomic::AtomicBool,
 }
 
@@ -32,7 +32,6 @@ impl BillingGuard {
         state: &Arc<AppState>,
         user_id: Option<i64>,
         model: &str,
-        max_tokens: Option<u32>,
     ) -> Result<Self, BillingError> {
         let payments = match &state.payments_state {
             Some(ps) => ps,
@@ -52,10 +51,10 @@ impl BillingGuard {
             payments.pricing_resolver.clone(),
         ));
 
-        match engine.reserve(uid, model, max_tokens).await {
-            Ok(reservation) => Ok(Self {
+        match engine.admit(uid, model).await {
+            Ok(admission) => Ok(Self {
                 engine: Some(engine),
-                reservation: Some(reservation),
+                admission: Some(admission),
                 settled: Default::default(),
             }),
             Err(BillingError::InsufficientFunds { required, available }) => {
@@ -73,7 +72,7 @@ impl BillingGuard {
     fn noop() -> Self {
         Self {
             engine: None,
-            reservation: None,
+            admission: None,
             settled: Default::default(),
         }
     }
@@ -85,28 +84,17 @@ impl BillingGuard {
     }
 
     pub async fn finalize_usage(&self, usage: TokenUsage) -> i64 {
-        let (Some(engine), Some(reservation)) = (&self.engine, &self.reservation) else {
+        let (Some(engine), Some(admission)) = (&self.engine, &self.admission) else {
             return 0;
         };
         if self.settled.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return 0;
         }
-        match engine.finalize_charge(reservation, usage).await {
+        match engine.finalize_charge(admission, usage).await {
             Ok(billed_msat) => billed_msat,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to finalize billing charge");
                 0
-            }
-        }
-    }
-
-    pub async fn release(&self) {
-        if let (Some(engine), Some(reservation)) = (&self.engine, &self.reservation) {
-            if self.settled.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                return;
-            }
-            if let Err(e) = engine.release(reservation).await {
-                tracing::error!(error = %e, "Failed to release billing reservation");
             }
         }
     }
@@ -195,7 +183,7 @@ mod tests {
     #[tokio::test]
     async fn test_noop_guard_when_payments_disabled() {
         let state = setup().await;
-        let guard = BillingGuard::try_create(&state, Some(1), "gpt-4", None)
+        let guard = BillingGuard::try_create(&state, Some(1), "gpt-4")
             .await
             .unwrap();
         assert!(!guard.is_active());
