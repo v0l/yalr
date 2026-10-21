@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
-import type { UserBalanceEntry, BalanceTransaction, LightningInvoice, ModelPricingEntry, ModelPricingCreateRequest } from '../types'
+import type { UserBalanceEntry, BalanceTransaction, LightningInvoice, ModelPricingEntry, ModelPricingCreateRequest, Model } from '../types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
@@ -72,6 +73,7 @@ export default function Payments() {
   const [transactions, setTransactions] = useState<BalanceTransaction[]>([])
   const [invoices, setInvoices] = useState<LightningInvoice[]>([])
   const [modelPricings, setModelPricings] = useState<ModelPricingEntry[]>([])
+  const [availableModels, setAvailableModels] = useState<Model[]>([])
 
   /* Credit/Debit */
   const [creditDialog, setCreditDialog] = useState(false)
@@ -92,14 +94,28 @@ export default function Payments() {
 
   useEffect(() => { loadAll() }, [])
 
+  const pricedNames = new Set(modelPricings.map(p => p.model_name))
+  const unpricedModels = availableModels.filter(m => !pricedNames.has(m.id))
+
+  function pickModel(id: string) {
+    const model = availableModels.find(m => m.id === id)
+    setPricingForm(f => ({
+      ...f,
+      model_name: id,
+      context_window: f.context_window ?? model?.context_length ?? null,
+      max_output_tokens: f.max_output_tokens ?? model?.max_output_tokens ?? null,
+    }))
+  }
+
   async function loadAll() {
     setLoading(true); setError(null)
     try {
-      const [b, t, i, m] = await Promise.allSettled([api.getAllBalances(), api.getAllTransactions(), api.getAllInvoices(), api.getModelPricing()])
+      const [b, t, i, m, l] = await Promise.allSettled([api.getAllBalances(), api.getAllTransactions(), api.getAllInvoices(), api.getModelPricing(), api.getModels()])
       if (b.status === 'fulfilled') setBalances(b.value)
       if (t.status === 'fulfilled') setTransactions(t.value)
       if (i.status === 'fulfilled') setInvoices(i.value)
       if (m.status === 'fulfilled') setModelPricings(m.value)
+      if (l.status === 'fulfilled') setAvailableModels(l.value.data)
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load payment data') }
     finally { setLoading(false) }
   }
@@ -413,7 +429,17 @@ export default function Payments() {
           </DialogHeader>
           <form onSubmit={handlePricingSave} className="flex flex-col gap-4">
             {!editingModel && (
-              <div className="flex flex-col gap-1.5"><Label htmlFor="mp-name" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Model Name</Label><Input id="mp-name" value={pricingForm.model_name} onChange={e => setPricingForm({ ...pricingForm, model_name: e.target.value })} placeholder="gpt-4" required className="font-mono bg-surface border-border text-foreground" /></div>
+              <div className="flex flex-col gap-1.5"><Label htmlFor="mp-name" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Model Name</Label><Select value={pricingForm.model_name} onValueChange={pickModel}>
+                  <SelectTrigger id="mp-name" className="font-mono bg-surface border-border text-foreground"><SelectValue placeholder="Select a model" /></SelectTrigger>
+                  <SelectContent className="bg-card border-border max-h-72">
+                    <SelectGroup>
+                      {unpricedModels.length === 0
+                        ? <div className="px-2 py-1.5 font-mono text-[12px] text-muted-foreground">No unpriced models</div>
+                        : unpricedModels.map(m => <SelectItem key={m.id} value={m.id} className="font-mono text-foreground">{m.id}</SelectItem>)}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
             )}
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2"><Checkbox id="mp-free" checked={pricingForm.is_free} onCheckedChange={c => setPricingForm({ ...pricingForm, is_free: !!c })} /><Label htmlFor="mp-free" className="font-mono text-[12px]">FREE</Label></div>
@@ -438,7 +464,7 @@ export default function Payments() {
             )}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setPricingDialog(false)} disabled={pricingSaving} className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</Button>
-              <Button type="submit" disabled={pricingSaving} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand">{pricingSaving ? '...' : editingModel ? 'UPDATE' : 'CREATE'}</Button>
+              <Button type="submit" disabled={pricingSaving || (!editingModel && !pricingForm.model_name)} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand">{pricingSaving ? '...' : editingModel ? 'UPDATE' : 'CREATE'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
