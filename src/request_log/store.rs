@@ -208,6 +208,7 @@ pub async fn release_freed_pages(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         remaining = now;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
+    sqlx::query("PRAGMA wal_checkpoint(PASSIVE)").execute(pool).await?;
     Ok(())
 }
 
