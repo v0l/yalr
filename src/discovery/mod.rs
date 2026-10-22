@@ -1,4 +1,5 @@
 pub mod event;
+pub mod peers;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use crate::config::DiscoveryConfig;
 use crate::db::Database;
 use event::{is_public_url, Listing};
 
-const DEFAULT_RELAYS: [&str; 3] = [
+pub(crate) const DEFAULT_RELAYS: [&str; 3] = [
     "wss://relay.damus.io",
     "wss://relay.nostr.band",
     "wss://nos.lol",
@@ -38,6 +39,13 @@ pub fn spawn(config: DiscoveryConfig, db: Arc<Database>) {
     });
 }
 
+pub fn relays(config: Option<&DiscoveryConfig>) -> Vec<String> {
+    match config {
+        Some(c) if !c.relays.is_empty() => c.relays.clone(),
+        _ => DEFAULT_RELAYS.iter().map(|r| r.to_string()).collect(),
+    }
+}
+
 pub async fn npub(config: &DiscoveryConfig, db: &Database) -> Option<String> {
     load_keys(config, db).await.ok()?.public_key().to_bech32().ok()
 }
@@ -59,7 +67,7 @@ async fn load_keys(config: &DiscoveryConfig, db: &Database) -> Result<Keys, Stri
     Keys::parse(&stored).map_err(|e| e.to_string())
 }
 
-fn provider_id(config: &DiscoveryConfig) -> String {
+pub fn provider_id(config: &DiscoveryConfig) -> String {
     config
         .provider_id
         .clone()
@@ -115,11 +123,7 @@ async fn run(config: DiscoveryConfig, db: Arc<Database>) -> Result<(), String> {
     let keys = load_keys(&config, &db).await?;
     let npub = keys.public_key().to_bech32().unwrap_or_default();
 
-    let relays: Vec<String> = if config.relays.is_empty() {
-        DEFAULT_RELAYS.iter().map(|r| r.to_string()).collect()
-    } else {
-        config.relays.clone()
-    };
+    let relays = relays(Some(&config));
     let client = Client::new(keys.clone());
     for relay in &relays {
         if let Err(e) = client.add_relay(relay.as_str()).await {

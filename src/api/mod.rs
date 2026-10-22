@@ -6,6 +6,7 @@ pub mod decisions;
 pub mod health;
 pub mod images;
 pub mod limits;
+pub mod market;
 pub mod modalities;
 pub mod model_cache;
 pub mod model_pricing;

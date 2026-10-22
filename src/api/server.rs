@@ -187,6 +187,8 @@ pub async fn run_with_shutdown<F>(
         .route("/models/discrepancies", post(model_handlers::detect_model_discrepancies))
         .route("/model-pricing", get(model_pricing::list_model_pricing))
         .route("/model-pricing", post(model_pricing::create_model_pricing))
+        .route("/model-pricing/market", get(crate::api::market::market))
+        .route("/model-pricing/listing", get(crate::api::market::listing))
         .route("/model-pricing/:model_name", put(model_pricing::update_model_pricing))
         .route("/model-pricing/:model_name", delete(model_pricing::delete_model_pricing))
         .route("/api-keys", get(list_api_keys))

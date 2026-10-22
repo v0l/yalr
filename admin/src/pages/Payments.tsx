@@ -4,14 +4,15 @@ import type { UserBalanceEntry, BalanceTransaction, LightningInvoice, ModelPrici
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
-import { PlusIcon, TrashIcon, PencilIcon, CoinsIcon, ReceiptIcon, ZapIcon, DollarSignIcon } from 'lucide-react'
+import PricingDialog from '@/components/pricing/PricingDialog'
+import CompareDialog from '@/components/pricing/CompareDialog'
+import { marketApi, type ListingStatus } from '@/api/market'
+import { ScaleIcon, PlusIcon, TrashIcon, PencilIcon, CoinsIcon, ReceiptIcon, ZapIcon, DollarSignIcon } from 'lucide-react'
 
 /* ── Tab types ─────────────────────────────────────────────────── */
 
@@ -90,9 +91,11 @@ export default function Payments() {
     price_per_request_sats: null, context_window: null, max_output_tokens: null,
   })
   const [pricingSaving, setPricingSaving] = useState(false)
+  const [compareTarget, setCompareTarget] = useState<ModelPricingEntry | null>(null)
+  const [listing, setListing] = useState<ListingStatus | null>(null)
   const [deletePricingTarget, setDeletePricingTarget] = useState<string | null>(null)
 
-  useEffect(() => { loadAll() }, [])
+  useEffect(() => { loadAll(); marketApi.listing().then(setListing).catch(() => undefined) }, [])
 
   const pricedNames = new Set(modelPricings.map(p => p.model_name))
   const unpricedModels = availableModels.filter(m => !pricedNames.has(m.id))
@@ -294,11 +297,14 @@ export default function Payments() {
                       <td className="px-4 py-3">
                         <div className="flex gap-1">
                           {mp.is_free && <Badge className="font-mono text-[9px] uppercase bg-brand/15 text-brand border-brand/30">FREE</Badge>}
-                          {!mp.is_advertised && <Badge className="font-mono text-[9px] uppercase bg-secondary text-muted-foreground border-border">HIDDEN</Badge>}
+                          {mp.is_advertised
+                            ? <Badge className="font-mono text-[9px] uppercase bg-brand/15 text-brand border-brand/30">FOR SALE</Badge>
+                            : <Badge className="font-mono text-[9px] uppercase bg-secondary text-muted-foreground border-border">NOT FOR SALE</Badge>}
                         </div>
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
+                          <Button variant="ghost" size="icon-xs" title="Compare with other Routstr nodes" onClick={() => setCompareTarget(mp)} className="text-muted-foreground hover:text-foreground"><ScaleIcon className="size-3" /></Button>
                           <Button variant="ghost" size="icon-xs" onClick={() => openEditPricing(mp)} className="text-muted-foreground hover:text-foreground"><PencilIcon className="size-3" /></Button>
                           <Button variant="ghost" size="icon-xs" onClick={() => setDeletePricingTarget(mp.model_name)} className="text-muted-foreground hover:text-destructive"><TrashIcon className="size-3" /></Button>
                         </div>
@@ -420,55 +426,20 @@ export default function Payments() {
         </DialogContent>
       </Dialog>
 
-      {/* ══ Pricing Dialog ══════════════════════════════════════════ */}
-      <Dialog open={pricingDialog} onOpenChange={setPricingDialog}>
-        <DialogContent className="sm:max-w-lg border-border bg-card">
-          <DialogHeader>
-            <DialogTitle className="font-display text-xl tracking-[0.04em]">{editingModel ? 'EDIT PRICING' : 'ADD PRICING'}</DialogTitle>
-            <DialogDescription className="font-mono text-[12px] text-muted-foreground">{editingModel ? 'Update pricing for this model.' : 'Define custom pricing for a model.'}</DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handlePricingSave} className="flex flex-col gap-4">
-            {!editingModel && (
-              <div className="flex flex-col gap-1.5"><Label htmlFor="mp-name" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Model Name</Label><Select value={pricingForm.model_name} onValueChange={pickModel}>
-                  <SelectTrigger id="mp-name" className="font-mono bg-surface border-border text-foreground"><SelectValue placeholder="Select a model" /></SelectTrigger>
-                  <SelectContent className="bg-card border-border max-h-72">
-                    <SelectGroup>
-                      {unpricedModels.length === 0
-                        ? <div className="px-2 py-1.5 font-mono text-[12px] text-muted-foreground">{availableModels.length === 0 ? 'Loading models...' : 'No unpriced models'}</div>
-                        : unpricedModels.map(m => <SelectItem key={m.id} value={m.id} className="font-mono text-foreground">{m.id}</SelectItem>)}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2"><Checkbox id="mp-free" checked={pricingForm.is_free} onCheckedChange={c => setPricingForm({ ...pricingForm, is_free: !!c })} /><Label htmlFor="mp-free" className="font-mono text-[12px]">FREE</Label></div>
-              <div className="flex items-center gap-2"><Checkbox id="mp-advertised" checked={pricingForm.is_advertised} onCheckedChange={c => setPricingForm({ ...pricingForm, is_advertised: !!c })} /><Label htmlFor="mp-advertised" className="font-mono text-[12px]">ADVERTISED</Label></div>
-            </div>
-            {!pricingForm.is_free && (
-              <>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="flex flex-col gap-1.5"><Label htmlFor="mp-input" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">In /1M (sats)</Label><Input id="mp-input" type="number" min={0} value={pricingForm.price_per_1m_input_sats ?? ''} onChange={e => setPricingForm({ ...pricingForm, price_per_1m_input_sats: e.target.value ? Number(e.target.value) : null })} className="font-mono bg-surface border-border text-foreground" /></div>
-                  <div className="flex flex-col gap-1.5"><Label htmlFor="mp-output" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Out /1M (sats)</Label><Input id="mp-output" type="number" min={0} value={pricingForm.price_per_1m_output_sats ?? ''} onChange={e => setPricingForm({ ...pricingForm, price_per_1m_output_sats: e.target.value ? Number(e.target.value) : null })} className="font-mono bg-surface border-border text-foreground" /></div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="flex flex-col gap-1.5"><Label htmlFor="mp-cache-read" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Cache Read /1M (sats)</Label><Input id="mp-cache-read" type="number" min={0} placeholder="same as input" value={pricingForm.price_per_1m_cache_read_sats ?? ''} onChange={e => setPricingForm({ ...pricingForm, price_per_1m_cache_read_sats: e.target.value ? Number(e.target.value) : null })} className="font-mono bg-surface border-border text-foreground" /></div>
-                  <div className="flex flex-col gap-1.5"><Label htmlFor="mp-cache-write" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Cache Write /1M (sats)</Label><Input id="mp-cache-write" type="number" min={0} placeholder="same as input" value={pricingForm.price_per_1m_cache_write_sats ?? ''} onChange={e => setPricingForm({ ...pricingForm, price_per_1m_cache_write_sats: e.target.value ? Number(e.target.value) : null })} className="font-mono bg-surface border-border text-foreground" /></div>
-                </div>
-                <div className="flex flex-col gap-1.5"><Label htmlFor="mp-per-req" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Per Request (sats)</Label><Input id="mp-per-req" type="number" min={0} value={pricingForm.price_per_request_sats ?? ''} onChange={e => setPricingForm({ ...pricingForm, price_per_request_sats: e.target.value ? Number(e.target.value) : null })} className="font-mono bg-surface border-border text-foreground" /></div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="flex flex-col gap-1.5"><Label htmlFor="mp-ctx" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Context Window</Label><Input id="mp-ctx" type="number" min={1} value={pricingForm.context_window ?? ''} onChange={e => setPricingForm({ ...pricingForm, context_window: e.target.value ? Number(e.target.value) : null })} className="font-mono bg-surface border-border text-foreground" /></div>
-                  <div className="flex flex-col gap-1.5"><Label htmlFor="mp-max-tok" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Max Output Tokens</Label><Input id="mp-max-tok" type="number" min={1} value={pricingForm.max_output_tokens ?? ''} onChange={e => setPricingForm({ ...pricingForm, max_output_tokens: e.target.value ? Number(e.target.value) : null })} className="font-mono bg-surface border-border text-foreground" /></div>
-                </div>
-              </>
-            )}
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setPricingDialog(false)} disabled={pricingSaving} className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</Button>
-              <Button type="submit" disabled={pricingSaving || (!editingModel && !pricingForm.model_name)} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand">{pricingSaving ? '...' : editingModel ? 'UPDATE' : 'CREATE'}</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <PricingDialog
+        open={pricingDialog}
+        onOpenChange={setPricingDialog}
+        editing={editingModel}
+        form={pricingForm}
+        setForm={setPricingForm}
+        saving={pricingSaving}
+        onSave={handlePricingSave}
+        availableModels={availableModels}
+        unpricedModels={unpricedModels}
+        pickModel={pickModel}
+        listing={listing}
+      />
+      <CompareDialog open={!!compareTarget} onOpenChange={o => { if (!o) setCompareTarget(null) }} entry={compareTarget} />
 
       {/* ══ Delete Pricing ══════════════════════════════════════════ */}
       <AlertDialog open={!!deletePricingTarget} onOpenChange={o => { if (!o) setDeletePricingTarget(null) }}>
