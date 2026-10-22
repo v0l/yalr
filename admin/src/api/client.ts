@@ -678,9 +678,14 @@ export const api = {
   },
 
   // User Management
-  async getUsers(): Promise<User[]> {
+  async getUsers(page: { before?: number; search?: string; limit?: number } = {}): Promise<User[]> {
     const headers = await getAuthHeaders()
-    const response = await fetch(`${API_BASE_URL}/api/users`, { headers })
+    const params = new URLSearchParams()
+    if (page.before) params.set('before', String(page.before))
+    if (page.search) params.set('search', page.search)
+    if (page.limit) params.set('limit', String(page.limit))
+    const query = params.toString()
+    const response = await fetch(`${API_BASE_URL}/api/users${query ? `?${query}` : ''}`, { headers })
     
     if (!response.ok) {
       if (response.status === 401) {

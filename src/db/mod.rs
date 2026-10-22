@@ -816,10 +816,26 @@ impl Database {
         Ok(result.get::<i64, _>(0) > 0)
     }
 
-    pub async fn list_users(&self) -> Result<Vec<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY username")
-            .fetch_all(&self.pool)
-            .await
+    pub async fn has_users(&self) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users)").fetch_one(&self.pool).await
+    }
+
+    pub async fn list_users(&self, page: Page<'_>) -> Result<Vec<User>, sqlx::Error> {
+        let mut query = sqlx::QueryBuilder::new("SELECT * FROM users WHERE 1 = 1");
+        if let Some(before) = page.before {
+            query.push(" AND id < ").push_bind(before);
+        }
+        if let Some(search) = page.search {
+            let like = format!("%{search}%");
+            query
+                .push(" AND (username LIKE ")
+                .push_bind(like.clone())
+                .push(" OR external_id LIKE ")
+                .push_bind(like)
+                .push(")");
+        }
+        query.push(" ORDER BY id DESC LIMIT ").push_bind(page.limit);
+        query.build_query_as::<User>().fetch_all(&self.pool).await
     }
 
     // API Key CRUD
@@ -925,10 +941,11 @@ impl Database {
     // ── Payments: Admin Queries ───────────────────────────────────────
 
     /// List all user balances (admin overview).
-    pub async fn list_all_user_balances(&self) -> Result<Vec<UserBalanceWithUsername>, sqlx::Error> {
+    pub async fn list_all_user_balances(&self, limit: i64) -> Result<Vec<UserBalanceWithUsername>, sqlx::Error> {
         sqlx::query_as::<_, UserBalanceWithUsername>(
-            "SELECT ub.id, ub.user_id, ub.balance_msat, ub.lifetime_deposited_msat, ub.created_at, ub.updated_at, COALESCE(u.username, u.external_id, 'user-' || ub.user_id) as username FROM user_balances ub LEFT JOIN users u ON ub.user_id = u.id ORDER BY ub.balance_msat DESC"
+            "SELECT ub.id, ub.user_id, ub.balance_msat, ub.lifetime_deposited_msat, ub.created_at, ub.updated_at, COALESCE(u.username, u.external_id, 'user-' || ub.user_id) as username FROM user_balances ub LEFT JOIN users u ON ub.user_id = u.id ORDER BY ub.balance_msat DESC LIMIT ?"
         )
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
     }
@@ -1262,6 +1279,13 @@ impl Database {
 }
 
 pub type DbPool = Arc<SqlitePool>;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Page<'a> {
+    pub limit: i64,
+    pub before: Option<i64>,
+    pub search: Option<&'a str>,
+}
 
 // ── Payments Row Types ────────────────────────────────────────────────
 
@@ -2396,6 +2420,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!((cleared.price_per_1m_cache_read_sats, cleared.price_per_1m_cache_write_sats), (None, Some(1250)));
+    }
+
+    #[tokio::test]
+    async fn users_page_newest_first_and_search() {
+        let db = setup_test_db().await;
+        assert!(!db.has_users().await.unwrap());
+        for name in ["alice", "bob", "anon_x1", "anon_x2", "carol"] {
+            db.create_user(NewUser {
+                username: Some(name),
+                password_hash: None,
+                external_id: None,
+                user_type: UserType::Internal,
+                is_admin: false,
+            })
+            .await
+            .unwrap();
+        }
+        assert!(db.has_users().await.unwrap());
+        let page = |limit, before, search| Page { limit, before, search };
+        let first = db.list_users(page(2, None, None)).await.unwrap();
+        let names: Vec<_> = first.iter().map(|u| u.username.clone().unwrap()).collect();
+        assert_eq!(names, vec!["carol", "anon_x2"]);
+        let next = db.list_users(page(2, Some(first[1].id), None)).await.unwrap();
+        let names: Vec<_> = next.iter().map(|u| u.username.clone().unwrap()).collect();
+        assert_eq!(names, vec!["anon_x1", "bob"]);
+        let found = db.list_users(page(10, None, Some("anon_"))).await.unwrap();
+        assert_eq!(found.len(), 2);
     }
 
     #[tokio::test]

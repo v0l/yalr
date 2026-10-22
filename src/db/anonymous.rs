@@ -45,7 +45,8 @@ impl Database {
 
     pub async fn prune_unpaid_anonymous_users(&self) -> Result<u64, sqlx::Error> {
         let done = sqlx::query(
-            "DELETE FROM users WHERE username LIKE 'anon_%' AND created_at < datetime('now', '-2 days')
+            "DELETE FROM users WHERE created_at < datetime('now', '-2 days') AND created_at >= datetime('now', '-3 days')
+             AND username LIKE 'anon_%'
              AND NOT EXISTS (SELECT 1 FROM lightning_invoices WHERE user_id = users.id AND status = 'paid')",
         )
         .execute(&self.pool)
@@ -126,7 +127,7 @@ mod tests {
     #[tokio::test]
     async fn prunes_only_old_unpaid_anonymous_users() {
         let db = Database::new("sqlite::memory:").await.unwrap();
-        for (name, age) in [("anon_old", "-3 days"), ("anon_new", "-1 hours"), ("alice", "-3 days")] {
+        for (name, age) in [("anon_old", "-60 hours"), ("anon_new", "-1 hours"), ("alice", "-60 hours")] {
             sqlx::query("INSERT INTO users (username, user_type, is_admin, created_at) VALUES (?, 0, 0, datetime('now', ?))")
                 .bind(name)
                 .bind(age)

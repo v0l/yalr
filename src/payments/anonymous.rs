@@ -95,6 +95,20 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .map(str::trim)
 }
 
+pub fn spawn_unpaid_pruner(db: std::sync::Arc<crate::db::Database>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+        loop {
+            interval.tick().await;
+            match db.prune_unpaid_anonymous_users().await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(users = n, "Pruned unpaid anonymous users"),
+                Err(e) => tracing::error!(error = %e, "Anonymous user prune failed"),
+            }
+        }
+    });
+}
+
 async fn create_account(db: &Database, secret: &str, public_id: &str) -> Result<i64, sqlx::Error> {
     let username = format!("anon_{}", &public_id[..12]);
     let user = db
@@ -145,7 +159,6 @@ pub async fn create_invoice(
         );
     }
 
-    let _ = state.db.prune_unpaid_anonymous_users().await;
     let secret = match state.db.server_secret().await {
         Ok(s) => s,
         Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "Server secret unavailable"),

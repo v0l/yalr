@@ -233,12 +233,8 @@ pub async fn check_setup_complete(
     State(state): State<Arc<AppState>>,
 ) -> Json<SetupStatusResponse> {
     let db = &state.db;
-    let users = db.list_users()
-        .await
-        .unwrap_or_default();
-    
     Json(SetupStatusResponse {
-        setup_complete: !users.is_empty(),
+        setup_complete: db.has_users().await.unwrap_or(false),
     })
 }
 
@@ -257,8 +253,7 @@ pub async fn setup_first_user(
     use rand::rngs::OsRng;
     use crate::db::NewUser;
     
-    let users = db.list_users().await.unwrap_or_default();
-    if !users.is_empty() {
+    if db.has_users().await.unwrap_or(true) {
         return Err((StatusCode::BAD_REQUEST, "Setup already complete".to_string()));
     }
 

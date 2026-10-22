@@ -15,9 +15,14 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { PlusIcon, EyeIcon, TrashIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
+const PAGE = 100
+
 export default function Users() {
   const navigate = useNavigate()
   const [users, setUsers] = useState<User[]>([])
+  const [search, setSearch] = useState('')
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
@@ -30,12 +35,30 @@ export default function Users() {
     username: '', password: '', external_id: '', user_type: 'internal', is_admin: false,
   })
 
-  useEffect(() => { loadUsers() }, [])
+  useEffect(() => {
+    const timer = setTimeout(() => { loadUsers() }, search ? 250 : 0)
+    return () => clearTimeout(timer)
+  }, [search])
 
   async function loadUsers() {
-    try { setLoading(true); const d = await api.getUsers(); setUsers(d); setError(null) }
+    try {
+      const d = await api.getUsers({ search: search.trim() || undefined, limit: PAGE })
+      setUsers(d); setHasMore(d.length === PAGE); setError(null)
+    }
     catch (e) { setError(e instanceof Error ? e.message : 'Failed to load users') }
     finally { setLoading(false) }
+  }
+
+  async function loadMore() {
+    const last = users[users.length - 1]
+    if (!last) return
+    setLoadingMore(true)
+    try {
+      const d = await api.getUsers({ search: search.trim() || undefined, limit: PAGE, before: last.id })
+      setUsers(prev => [...prev, ...d]); setHasMore(d.length === PAGE)
+    }
+    catch (e) { setError(e instanceof Error ? e.message : 'Failed to load users') }
+    finally { setLoadingMore(false) }
   }
 
   function openCreate() { setFormData({ username: '', password: '', external_id: '', user_type: 'internal', is_admin: false }); setDialogOpen(true) }
@@ -90,6 +113,13 @@ export default function Users() {
         </Alert>
       )}
 
+      <Input
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        placeholder="Search username or external ID"
+        className="max-w-sm border-border bg-surface font-mono text-[12px]"
+      />
+
       <div className="panel">
         <div className="overflow-x-auto">
           <table className="w-full table-scan">
@@ -143,6 +173,13 @@ export default function Users() {
             </tbody>
           </table>
         </div>
+        {hasMore && (
+          <div className="border-t border-border/50 p-3 text-center">
+            <Button variant="outline" onClick={loadMore} disabled={loadingMore} className="border-border font-mono text-[11px] uppercase tracking-wider">
+              {loadingMore ? 'Loading' : 'Load more'}
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* Create Dialog */}

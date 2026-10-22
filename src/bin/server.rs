@@ -38,6 +38,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         yalr::request_log::recorder::spawn_pruner(config.db.pool.clone(), retention);
     }
 
+    if config.payments_config.as_ref().is_some_and(|p| p.enabled) {
+        yalr::payments::anonymous::spawn_unpaid_pruner(config.db.clone());
+    }
+
     let addr = format!("{}:{}", config.host, config.port);
 
     tracing::info!(addr = %addr, "Starting YALR");

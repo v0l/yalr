@@ -63,11 +63,27 @@ pub struct UserDeleteResponse {
     pub message: String,
 }
 
+const USER_PAGE_DEFAULT: i64 = 100;
+const USER_PAGE_MAX: i64 = 500;
+
+#[derive(Deserialize)]
+pub struct UserListQuery {
+    limit: Option<i64>,
+    before: Option<i64>,
+    search: Option<String>,
+}
+
 #[axum::debug_handler]
 pub async fn list_users(
     State(state): State<std::sync::Arc<AppState>>,
+    Query(query): Query<UserListQuery>,
 ) -> Json<Vec<UserResponse>> {
-    let users = match state.db.list_users().await {
+    let page = crate::db::Page {
+        limit: query.limit.unwrap_or(USER_PAGE_DEFAULT).clamp(1, USER_PAGE_MAX),
+        before: query.before,
+        search: query.search.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+    };
+    let users = match state.db.list_users(page).await {
         Ok(users) => users,
         Err(e) => {
             tracing::error!("Failed to list users from DB: {}", e);
@@ -336,12 +352,14 @@ pub async fn get_user(
 // Admin Payment Management Handlers
 // ============================================================================
 
+const BALANCE_PAGE: i64 = 200;
+
 /// GET /api/payments/balances — List all user balances (admin)
 #[axum::debug_handler]
 pub async fn list_all_balances(
     State(state): State<std::sync::Arc<AppState>>,
 ) -> Json<Vec<crate::db::UserBalanceWithUsername>> {
-    let balances = state.db.list_all_user_balances().await.unwrap_or_default();
+    let balances = state.db.list_all_user_balances(BALANCE_PAGE).await.unwrap_or_default();
     Json(balances)
 }
 
