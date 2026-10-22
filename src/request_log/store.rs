@@ -263,27 +263,34 @@ pub struct Filter<'a> {
 }
 
 pub async fn list(pool: &SqlitePool, limit: i64, filter: Filter<'_>) -> Result<Vec<Summary>, sqlx::Error> {
-    sqlx::query_as::<_, Summary>(
+    let mut query = sqlx::QueryBuilder::new(
         "SELECT id, request_id, started_at_ms, model, stream, provider, status, error, attempts,
                 user_name, api_key_id, api_key_name, client_ip, headers_ms, first_event_ms,
                 first_thinking_ms, first_text_ms,
                 total_ms, prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens,
                 weighted_input_tokens, message_count, first_diverging_message, previous_request_id
-         FROM request_log
-         WHERE (?1 IS NULL OR id < ?1) AND (?2 IS NULL OR model = ?2) AND (?3 IS NULL OR status = ?3)
-           AND (?4 IS NULL OR user_id = ?4) AND (?5 IS NULL OR api_key_id = ?5)
-           AND (?6 IS NULL OR started_at_ms >= ?6)
-         ORDER BY id DESC LIMIT ?7",
-    )
-    .bind(filter.before)
-    .bind(filter.model)
-    .bind(filter.status)
-    .bind(filter.user_id)
-    .bind(filter.api_key_id)
-    .bind(filter.since_ms)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
+         FROM request_log WHERE 1 = 1",
+    );
+    if let Some(before) = filter.before {
+        query.push(" AND id < ").push_bind(before);
+    }
+    if let Some(model) = filter.model {
+        query.push(" AND model = ").push_bind(model);
+    }
+    if let Some(status) = filter.status {
+        query.push(" AND status = ").push_bind(status);
+    }
+    if let Some(user_id) = filter.user_id {
+        query.push(" AND user_id = ").push_bind(user_id);
+    }
+    if let Some(api_key_id) = filter.api_key_id {
+        query.push(" AND api_key_id = ").push_bind(api_key_id);
+    }
+    if let Some(since_ms) = filter.since_ms {
+        query.push(" AND started_at_ms >= ").push_bind(since_ms);
+    }
+    query.push(" ORDER BY id DESC LIMIT ").push_bind(limit);
+    query.build_query_as::<Summary>().fetch_all(pool).await
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
