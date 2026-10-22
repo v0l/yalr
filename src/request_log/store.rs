@@ -572,4 +572,24 @@ mod tests {
         assert!(trimmed < full / 4, "{trimmed} vs {full}");
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    async fn query_plan(pool: &SqlitePool, sql: &str) -> String {
+        use sqlx::Row;
+        let rows = sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}")).fetch_all(pool).await.unwrap();
+        rows.iter().map(|r| r.get::<String, _>("detail")).collect::<Vec<_>>().join(" | ")
+    }
+
+    #[tokio::test]
+    async fn filtered_lists_search_an_index_without_sorting() {
+        let pool = pool().await;
+        for filter in ["model = 'm'", "status = 'error'", "user_id = 1", "api_key_id = 1"] {
+            let plan = query_plan(
+                &pool,
+                &format!("SELECT id FROM request_log WHERE 1 = 1 AND id < 10 AND {filter} ORDER BY id DESC LIMIT 100"),
+            )
+            .await;
+            assert!(plan.starts_with("SEARCH"), "{filter}: {plan}");
+            assert!(!plan.contains("TEMP B-TREE"), "{filter}: {plan}");
+        }
+    }
 }
