@@ -1,5 +1,7 @@
 pub mod audio;
 pub mod chat;
+#[cfg(test)]
+mod chat_stream_tests;
 pub mod compression;
 pub mod config;
 pub mod decisions;

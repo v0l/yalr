@@ -55,7 +55,7 @@ fn begin_log(
         client_headers: redact::axum_headers(headers),
         body: if settings.store_bodies { raw_body.to_vec() } else { Vec::new() },
     };
-    Some(Pending::new(state.db.pool.clone(), inbound, Trace::new()))
+    Some(Pending::new(state.db.log_writer.clone(), inbound, Trace::new()))
 }
 
 #[axum::debug_handler]

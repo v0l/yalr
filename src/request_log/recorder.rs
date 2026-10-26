@@ -128,7 +128,37 @@ pub fn build(inbound: Inbound, trace: &Trace, outcome: Outcome, started_at_ms: i
     }
 }
 
-fn spawn_save(pool: SqlitePool, inbound: Inbound, trace: Trace, outcome: Outcome, started_at_ms: i64) {
+const WRITE_QUEUE: usize = 256;
+const WRITE_BATCH: usize = 64;
+
+#[derive(Clone)]
+pub struct Writer {
+    sender: tokio::sync::mpsc::Sender<store::Record>,
+}
+
+impl Writer {
+    pub fn spawn(pool: SqlitePool) -> Self {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<store::Record>(WRITE_QUEUE);
+        tokio::spawn(async move {
+            let mut batch = Vec::with_capacity(WRITE_BATCH);
+            while receiver.recv_many(&mut batch, WRITE_BATCH).await > 0 {
+                if let Err(e) = store::insert_batch(&pool, &batch).await {
+                    tracing::error!(error = %e, rows = batch.len(), "Failed to write request log");
+                }
+                batch.clear();
+            }
+        });
+        Self { sender }
+    }
+
+    pub async fn write(&self, record: store::Record) {
+        if self.sender.send(record).await.is_err() {
+            tracing::error!("Request log writer stopped");
+        }
+    }
+}
+
+fn spawn_save(writer: Writer, inbound: Inbound, trace: Trace, outcome: Outcome, started_at_ms: i64) {
     tokio::spawn(async move {
         let record = match tokio::task::spawn_blocking(move || build(inbound, &trace, outcome, started_at_ms)).await {
             Ok(record) => record,
@@ -137,14 +167,12 @@ fn spawn_save(pool: SqlitePool, inbound: Inbound, trace: Trace, outcome: Outcome
                 return;
             }
         };
-        if let Err(e) = store::insert(&pool, record).await {
-            tracing::error!(error = %e, "Failed to write request log");
-        }
+        writer.write(record).await;
     });
 }
 
 pub struct Pending {
-    pool: SqlitePool,
+    writer: Writer,
     inbound: Option<Inbound>,
     trace: Trace,
     started_at_ms: i64,
@@ -156,9 +184,9 @@ pub struct Pending {
 }
 
 impl Pending {
-    pub fn new(pool: SqlitePool, inbound: Inbound, trace: Trace) -> Self {
+    pub fn new(writer: Writer, inbound: Inbound, trace: Trace) -> Self {
         Self {
-            pool,
+            writer,
             inbound: Some(inbound),
             trace,
             started_at_ms: chrono::Utc::now().timestamp_millis(),
@@ -218,7 +246,7 @@ impl Pending {
 
     fn save(&mut self, outcome: Outcome) {
         if let Some(inbound) = self.inbound.take() {
-            spawn_save(self.pool.clone(), inbound, self.trace.clone(), outcome, self.started_at_ms);
+            spawn_save(self.writer.clone(), inbound, self.trace.clone(), outcome, self.started_at_ms);
         }
     }
 }

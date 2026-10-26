@@ -291,9 +291,12 @@ pub struct NewApiKey<'a> {
     pub expires_at: Option<chrono::NaiveDateTime>,
 }
 
+const DB_MAX_CONNECTIONS: u32 = 32;
+
 #[derive(Clone)]
 pub struct Database {
     pub pool: SqlitePool,
+    pub log_writer: crate::request_log::recorder::Writer,
 }
 
 impl Database {
@@ -303,9 +306,14 @@ impl Database {
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
             .busy_timeout(std::time::Duration::from_secs(30));
-        let pool = SqlitePool::connect_with(options).await?;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(DB_MAX_CONNECTIONS)
+            .acquire_timeout(std::time::Duration::from_secs(30))
+            .connect_with(options)
+            .await?;
         Self::initialize_schema(&pool).await?;
-        Ok(Self { pool })
+        let log_writer = crate::request_log::recorder::Writer::spawn(pool.clone());
+        Ok(Self { pool, log_writer })
     }
 
     async fn initialize_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
@@ -1428,7 +1436,8 @@ mod tests {
     async fn setup_test_db() -> Database {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         Database::initialize_schema(&pool).await.unwrap();
-        Database { pool }
+        let log_writer = crate::request_log::recorder::Writer::spawn(pool.clone());
+        Database { pool, log_writer }
     }
 
     // Provider Tests

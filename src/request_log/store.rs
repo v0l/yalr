@@ -48,7 +48,21 @@ pub struct Record {
 }
 
 pub async fn insert(pool: &SqlitePool, r: Record) -> Result<i64, sqlx::Error> {
+    let mut ids = insert_batch(pool, &[r]).await?;
+    Ok(ids.remove(0))
+}
+
+pub async fn insert_batch(pool: &SqlitePool, records: &[Record]) -> Result<Vec<i64>, sqlx::Error> {
     let mut tx = pool.begin().await?;
+    let mut ids = Vec::with_capacity(records.len());
+    for r in records {
+        ids.push(insert_one(&mut tx, r).await?);
+    }
+    tx.commit().await?;
+    Ok(ids)
+}
+
+async fn insert_one(tx: &mut sqlx::SqliteConnection, r: &Record) -> Result<i64, sqlx::Error> {
     let id = sqlx::query(
         "INSERT INTO request_log (
             request_id, started_at_ms, endpoint, stream, model, user_id, user_name,
@@ -115,7 +129,6 @@ pub async fn insert(pool: &SqlitePool, r: Record) -> Result<i64, sqlx::Error> {
         .execute(&mut *tx)
         .await?;
     }
-    tx.commit().await?;
     Ok(id)
 }
 
@@ -401,6 +414,17 @@ mod tests {
             response_packed: with_bodies.then(|| vec![6]),
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn insert_batch_writes_every_record_in_one_transaction() {
+        let pool = pool().await;
+        let records: Vec<Record> = (0..5).map(|n| record(&format!("b{n}"), 1_000 + n, n % 2 == 0)).collect();
+        let ids = insert_batch(&pool, &records).await.unwrap();
+        assert_eq!(ids.len(), 5);
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_log").fetch_one(&pool).await.unwrap();
+        let bodies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_log_body").fetch_one(&pool).await.unwrap();
+        assert_eq!((rows, bodies), (5, 3));
     }
 
     #[tokio::test]
