@@ -455,12 +455,6 @@ async fn validate_api_key(
         StatusCode::SERVICE_UNAVAILABLE
     };
 
-    let Some(api_key) = state.db.get_api_key_by_hash(&key_hash).await.map_err(unavailable)? else {
-        return Ok(None);
-    };
-    if !api_key.is_active || state.db.is_api_key_expired(api_key.id).await.map_err(unavailable)? {
-        return Ok(None);
-    }
-    let user = state.db.get_user_by_id(api_key.user_id).await.map_err(unavailable)?;
-    Ok(user.map(|user| AuthenticatedUser { user, api_key: Some(api_key) }))
+    let found = state.db.authenticate_api_key(&key_hash).await.map_err(unavailable)?;
+    Ok(found.map(|(api_key, user)| AuthenticatedUser { user, api_key: Some(api_key) }))
 }

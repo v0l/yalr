@@ -263,6 +263,7 @@ pub async fn update_user(
         .fetch_one(&state.db.pool)
         .await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.db.invalidate_auth_cache();
 
     let user_response = UserResponse {
         id: updated_user.id,

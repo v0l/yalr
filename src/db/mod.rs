@@ -2,6 +2,7 @@ use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
 
 mod anonymous;
+mod auth_cache;
 mod billing_exempt;
 mod modalities;
 mod nostr_identity;
@@ -297,6 +298,7 @@ const DB_MAX_CONNECTIONS: u32 = 32;
 pub struct Database {
     pub pool: SqlitePool,
     pub log_writer: crate::request_log::recorder::Writer,
+    auth_cache: auth_cache::AuthCache,
 }
 
 impl Database {
@@ -313,7 +315,7 @@ impl Database {
             .await?;
         Self::initialize_schema(&pool).await?;
         let log_writer = crate::request_log::recorder::Writer::spawn(pool.clone());
-        Ok(Self { pool, log_writer })
+        Ok(Self { pool, log_writer, auth_cache: Default::default() })
     }
 
     async fn initialize_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
@@ -879,6 +881,7 @@ impl Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        self.invalidate_auth_cache();
         Ok(result.rows_affected() > 0)
     }
 
@@ -887,6 +890,7 @@ impl Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        self.invalidate_auth_cache();
         Ok(result.rows_affected() > 0)
     }
 
@@ -895,6 +899,7 @@ impl Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        self.invalidate_auth_cache();
         Ok(result.rows_affected() > 0)
     }
 
@@ -918,6 +923,7 @@ impl Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        self.invalidate_auth_cache();
         Ok(result.rows_affected() > 0)
     }
 
@@ -1437,7 +1443,7 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         Database::initialize_schema(&pool).await.unwrap();
         let log_writer = crate::request_log::recorder::Writer::spawn(pool.clone());
-        Database { pool, log_writer }
+        Database { pool, log_writer, auth_cache: Default::default() }
     }
 
     // Provider Tests

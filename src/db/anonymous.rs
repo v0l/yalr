@@ -51,6 +51,7 @@ impl Database {
         )
         .execute(&self.pool)
         .await?;
+        self.invalidate_auth_cache();
         Ok(done.rows_affected())
     }
 
