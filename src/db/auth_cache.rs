@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -10,6 +11,16 @@ const MAX_ENTRIES: usize = 10_000;
 #[derive(Clone, Default)]
 pub struct AuthCache {
     entries: Arc<Mutex<HashMap<String, (Instant, ApiKey, User)>>>,
+    generation: Arc<AtomicU64>,
+}
+
+fn already_expired_or_unparsable(key: &ApiKey) -> bool {
+    let Some(expires_at) = &key.expires_at else {
+        return false;
+    };
+    chrono::NaiveDateTime::parse_from_str(expires_at, "%Y-%m-%d %H:%M:%S%.f")
+        .map(|at| at.and_utc().timestamp() - chrono::Utc::now().timestamp() < TTL.as_secs() as i64)
+        .unwrap_or(true)
 }
 
 impl AuthCache {
@@ -25,8 +36,18 @@ impl AuthCache {
         }
     }
 
-    fn put(&self, key_hash: &str, key: ApiKey, user: User) {
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    fn put(&self, generation: u64, key_hash: &str, key: ApiKey, user: User) {
+        if already_expired_or_unparsable(&key) {
+            return;
+        }
         let mut entries = self.entries.lock().unwrap();
+        if generation != self.generation() {
+            return;
+        }
         if entries.len() >= MAX_ENTRIES {
             entries.retain(|_, (at, _, _)| at.elapsed() < TTL);
             if entries.len() >= MAX_ENTRIES {
@@ -37,7 +58,9 @@ impl AuthCache {
     }
 
     pub fn clear(&self) {
-        self.entries.lock().unwrap().clear();
+        let mut entries = self.entries.lock().unwrap();
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        entries.clear();
     }
 }
 
@@ -46,6 +69,7 @@ impl Database {
         if let Some(hit) = self.auth_cache.get(key_hash) {
             return Ok(Some(hit));
         }
+        let generation = self.auth_cache.generation();
         let Some(key) = self.get_api_key_by_hash(key_hash).await? else {
             return Ok(None);
         };
@@ -55,7 +79,7 @@ impl Database {
         let Some(user) = self.get_user_by_id(key.user_id).await? else {
             return Ok(None);
         };
-        self.auth_cache.put(key_hash, key.clone(), user.clone());
+        self.auth_cache.put(generation, key_hash, key.clone(), user.clone());
         Ok(Some((key, user)))
     }
 
@@ -88,6 +112,46 @@ mod tests {
         assert!(db.authenticate_api_key("h").await.unwrap().is_some());
         db.pool.close().await;
         assert!(db.authenticate_api_key("h").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_lookup_racing_a_flush_is_not_cached() {
+        let (db, _) = db_with_key().await;
+        let generation = db.auth_cache.generation();
+        let (key, user) = db.authenticate_api_key("h").await.unwrap().unwrap();
+        db.invalidate_auth_cache();
+        db.auth_cache.put(generation, "h", key, user);
+        assert!(db.auth_cache.get("h").is_none());
+    }
+
+    #[tokio::test]
+    async fn keys_about_to_expire_are_not_cached() {
+        let db = Database::new("sqlite::memory:").await.unwrap();
+        let user = db
+            .create_user(NewUser { username: Some("u"), password_hash: None, external_id: None, user_type: UserType::Internal, is_admin: false })
+            .await
+            .unwrap();
+        let soon = chrono::Utc::now().naive_utc() + chrono::Duration::seconds(5);
+        db.create_api_key(NewApiKey { key_hash: "e", name: "k", user_id: user.id, last_four: "abcd", expires_at: Some(soon) })
+            .await
+            .unwrap();
+        assert!(db.authenticate_api_key("e").await.unwrap().is_some());
+        assert!(db.auth_cache.get("e").is_none());
+    }
+
+    #[tokio::test]
+    async fn keys_with_a_distant_expiry_are_cached() {
+        let db = Database::new("sqlite::memory:").await.unwrap();
+        let user = db
+            .create_user(NewUser { username: Some("u"), password_hash: None, external_id: None, user_type: UserType::Internal, is_admin: false })
+            .await
+            .unwrap();
+        let later = chrono::Utc::now().naive_utc() + chrono::Duration::days(30);
+        db.create_api_key(NewApiKey { key_hash: "l", name: "k", user_id: user.id, last_four: "abcd", expires_at: Some(later) })
+            .await
+            .unwrap();
+        assert!(db.authenticate_api_key("l").await.unwrap().is_some());
+        assert!(db.auth_cache.get("l").is_some());
     }
 
     #[tokio::test]
