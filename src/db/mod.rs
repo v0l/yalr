@@ -848,6 +848,20 @@ impl Database {
         query.build_query_as::<User>().fetch_all(&self.pool).await
     }
 
+    pub async fn balances_for_users(&self, ids: &[i64]) -> Result<std::collections::HashMap<i64, i64>, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(Default::default());
+        }
+        let mut query = sqlx::QueryBuilder::new("SELECT user_id, balance_msat FROM user_balances WHERE user_id IN (");
+        let mut separated = query.separated(", ");
+        for id in ids {
+            separated.push_bind(*id);
+        }
+        query.push(")");
+        let rows: Vec<(i64, i64)> = query.build_query_as().fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().collect())
+    }
+
     // API Key CRUD
     pub async fn create_api_key(&self, key: NewApiKey<'_>) -> Result<ApiKey, sqlx::Error> {
         sqlx::query_as::<_, ApiKey>(
@@ -1437,6 +1451,26 @@ pub enum ModelAccess {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn balances_for_users_returns_only_funded_users() {
+        let db = Database::new("sqlite::memory:").await.unwrap();
+        for name in ["a", "b"] {
+            sqlx::query("INSERT INTO users (username, user_type, is_admin) VALUES (?, 0, 0)")
+                .bind(name)
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO user_balances (user_id, balance_msat) VALUES (2, 5000)")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let balances = db.balances_for_users(&[1, 2]).await.unwrap();
+        assert_eq!(balances.get(&2), Some(&5000));
+        assert_eq!(balances.get(&1), None);
+        assert!(db.balances_for_users(&[]).await.unwrap().is_empty());
+    }
+
     use super::*;
 
     async fn setup_test_db() -> Database {

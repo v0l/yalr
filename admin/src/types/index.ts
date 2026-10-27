@@ -408,6 +408,7 @@ export interface User {
   is_admin: boolean
   created_at: string
   updated_at: string
+  balance_msat?: number
 }
 
 export interface CreateUserRequest {

@@ -20,6 +20,13 @@ pub struct UserResponse {
 }
 
 #[derive(Serialize)]
+pub struct UserListEntry {
+    #[serde(flatten)]
+    pub user: UserResponse,
+    pub balance_msat: i64,
+}
+
+#[derive(Serialize)]
 pub struct UserDetailResponse {
     pub user: UserResponse,
     pub api_keys: Vec<UserApiKeyResponse>,
@@ -77,7 +84,7 @@ pub struct UserListQuery {
 pub async fn list_users(
     State(state): State<std::sync::Arc<AppState>>,
     Query(query): Query<UserListQuery>,
-) -> Json<Vec<UserResponse>> {
+) -> Json<Vec<UserListEntry>> {
     let page = crate::db::Page {
         limit: query.limit.unwrap_or(USER_PAGE_DEFAULT).clamp(1, USER_PAGE_MAX),
         before: query.before,
@@ -91,9 +98,14 @@ pub async fn list_users(
         }
     };
 
-    let users_list: Vec<UserResponse> = users
+    let ids: Vec<i64> = users.iter().map(|u| u.id).collect();
+    let balances = state.db.balances_for_users(&ids).await.unwrap_or_default();
+
+    let users_list: Vec<UserListEntry> = users
         .into_iter()
-        .map(|u| UserResponse {
+        .map(|u| UserListEntry {
+            balance_msat: balances.get(&u.id).copied().unwrap_or(0),
+            user: UserResponse {
             id: u.id,
             username: u.username,
             external_id: u.external_id,
@@ -105,6 +117,7 @@ pub async fn list_users(
             is_admin: u.is_admin,
             created_at: u.created_at,
             updated_at: u.updated_at,
+            },
         })
         .collect();
 

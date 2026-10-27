@@ -129,13 +129,14 @@ export default function Users() {
                 <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">External ID</th>
                 <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Type</th>
                 <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Admin</th>
+                <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Balance</th>
                 <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Created</th>
                 <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
               {users.length === 0 ? (
-                <tr><td colSpan={6} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO USERS FOUND</td></tr>
+                <tr><td colSpan={7} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO USERS FOUND</td></tr>
               ) : (
                 users.map(user => (
                   <tr key={user.id} className="border-b border-border/50 hover:bg-surface transition-colors">
@@ -159,6 +160,11 @@ export default function Users() {
                       {user.is_admin
                         ? <Badge className="font-mono text-[10px] uppercase tracking-wider bg-warning/15 text-warning border-warning/30">ADMIN</Badge>
                         : <span className="font-mono text-[12px] text-muted-foreground">REGULAR</span>}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-[12px] text-right tabular-nums">
+                      {(user.balance_msat ?? 0) === 0
+                        ? <span className="text-muted-foreground">0 sats</span>
+                        : `${((user.balance_msat ?? 0) / 1000).toLocaleString(undefined, { maximumFractionDigits: 0 })} sats`}
                     </td>
                     <td className="px-4 py-3 font-mono text-[12px] text-muted-foreground">{new Date(user.created_at).toLocaleDateString()}</td>
                     <td className="px-4 py-3">
