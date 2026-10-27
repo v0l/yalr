@@ -165,7 +165,9 @@ pub async fn login(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()))?;
 
-    let parsed_hash = PasswordHash::new(user.password_hash.as_ref().unwrap())
+    let stored_hash = user.password_hash.as_ref()
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()))?;
+    let parsed_hash = PasswordHash::new(stored_hash)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid hash".to_string()))?;
     
     let valid = Argon2::default()
@@ -296,6 +298,9 @@ async fn nostr_user(
     use base64::Engine;
     use nostr::{Event, JsonUtil};
 
+    if !state.config.auth_config.enabled {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let encoded = header.strip_prefix("Nostr ").ok_or(StatusCode::UNAUTHORIZED)?;
     let bytes = BASE64_STANDARD.decode(encoded).map_err(|_| StatusCode::UNAUTHORIZED)?;
     let event = Event::from_json(bytes).map_err(|_| StatusCode::UNAUTHORIZED)?;
@@ -457,4 +462,59 @@ async fn validate_api_key(
 
     let found = state.db.authenticate_api_key(&key_hash).await.map_err(unavailable)?;
     Ok(found.map(|(api_key, user)| AuthenticatedUser { user, api_key: Some(api_key) }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+    use crate::metrics::MetricsStore;
+    use tower::util::ServiceExt;
+
+    async fn app() -> (Arc<AppState>, axum::Router) {
+        let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+        let metrics_store = Arc::new(MetricsStore::new(100));
+        let router = Arc::new(crate::router::engine::Router::new((*metrics_store).clone(), db.clone()));
+        let state = Arc::new(AppState {
+            config: crate::config::AppConfig {
+                db: db.clone(),
+                router,
+                auth_config: Default::default(),
+                payments_config: None,
+                discovery_config: None,
+                admin_ui_path: String::new(),
+                host: String::new(),
+                port: 0,
+            },
+            metrics_emitter: metrics_store.emitter().clone(),
+            metrics_store,
+            session_store: Arc::new(SessionStore::new()),
+            db,
+            payments_state: None,
+            oauth_pending: Default::default(),
+            model_cache: Default::default(),
+            modality_cache: Default::default(),
+            limits_cache: Default::default(),
+        });
+        let app = crate::api::server::create_test_app(state.clone()).await;
+        (state, app)
+    }
+
+    #[tokio::test]
+    async fn password_login_for_nostr_user_is_rejected_not_a_panic() {
+        let (state, app) = app().await;
+        let pubkey = "9a6e18794c5270ee284df06a18d02d35d9adbd46fe4801cf096758646fc3d82b";
+        let user = state.db.get_or_create_user_by_nostr_pubkey(pubkey).await.unwrap();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(format!(
+                r#"{{"username":"{}","password":"x"}}"#,
+                user.username.unwrap()
+            )))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
 }

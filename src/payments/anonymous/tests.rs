@@ -137,6 +137,7 @@ async fn nostr_auth_binds_path_and_honours_the_whitelist() {
     let stranger = nostr::Keys::generate();
 
     let mut open = (*state).clone();
+    open.config.auth_config.enabled = true;
     open.config.auth_config.allowed_pubkeys = Default::default();
     let app_open = crate::api::server::create_test_app(Arc::new(open)).await;
     let h = nostr_header(&stranger, "/v1/balance/info", "GET");
@@ -146,12 +147,21 @@ async fn nostr_auth_binds_path_and_honours_the_whitelist() {
     assert_eq!(status_with(&app_open, &wrong_path, "/v1/balance/info").await, StatusCode::UNAUTHORIZED);
 
     let mut closed = (*state).clone();
+    closed.config.auth_config.enabled = true;
     closed.config.auth_config.allowed_pubkeys = [allowed.public_key().to_string()].into_iter().collect();
     let app_closed = crate::api::server::create_test_app(Arc::new(closed)).await;
     let ok = nostr_header(&allowed, "/v1/balance/info", "GET");
     assert_eq!(status_with(&app_closed, &ok, "/v1/balance/info").await, StatusCode::OK);
     let denied = nostr_header(&stranger, "/v1/balance/info", "GET");
     assert_eq!(status_with(&app_closed, &denied, "/v1/balance/info").await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn nostr_auth_is_rejected_when_auth_is_disabled() {
+    let (state, app) = app().await;
+    assert!(!state.config.auth_config.enabled);
+    let h = nostr_header(&nostr::Keys::generate(), "/v1/balance/info", "GET");
+    assert_eq!(status_with(&app, &h, "/v1/balance/info").await, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
