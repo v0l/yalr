@@ -2,6 +2,7 @@ use crate::db::Database;
 use crate::metrics::{MetricsStore, MetricsUser};
 use crate::providers::{create_provider_from_record, ChatRequest, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
 use crate::router::input_filter;
+use crate::router::sticky::{SessionKey, StickySessions};
 use crate::router::strategies::ProviderEntry;
 use crate::{ChatCompletionRequest, ChatCompletionResponse, ProviderError};
 use crate::providers::StreamingChunk;
@@ -151,6 +152,10 @@ impl RoutingTable {
     }
 }
 
+fn session_key(user: Option<&MetricsUser>, model: &str, session: Option<&str>) -> Option<SessionKey> {
+    SessionKey::new(user.and_then(|u| u.id), model, session)
+}
+
 /// Helper struct for health check tasks that only needs metrics access
 /// Clamp a configured health-check duration (in seconds) to a positive value,
 /// falling back to `default_secs` when the stored value is 0 or negative.
@@ -215,6 +220,7 @@ pub struct Router {
     pub(crate) max_retries: u32,
     health_check_handles: RwLock<HashMap<String, tokio::task::JoinHandle<()>>>,
     shutdown_tx: RwLock<Option<tokio::sync::broadcast::Sender<()>>>,
+    sticky: StickySessions,
 }
 
 impl Router {
@@ -230,6 +236,7 @@ impl Router {
             max_retries: 3,
             health_check_handles: RwLock::new(HashMap::new()),
             shutdown_tx: RwLock::new(None),
+            sticky: StickySessions::default(),
         }
     }
 
@@ -634,6 +641,14 @@ impl Router {
         &self,
         model: &str,
     ) -> Vec<(Arc<dyn Provider>, String)> {
+        self.collect_session_candidates(model, None).await
+    }
+
+    pub(crate) async fn collect_session_candidates(
+        &self,
+        model: &str,
+        session: Option<&SessionKey>,
+    ) -> Vec<(Arc<dyn Provider>, String)> {
         // Handle prefixed model (provider-slug/model)
         if let Some((slug_prefix, actual_model)) = model.split_once('/') {
             let providers = self.providers.read().await;
@@ -766,6 +781,9 @@ impl Router {
             );
             candidates.extend(degraded);
         }
+        if table.strategy == StrategyKind::RoundRobin {
+            self.sticky.move_pinned_first(session, &mut candidates, |(p, _)| p.name());
+        }
         
         // Next fall back to cooling (rate-limited / quota) providers, soonest to
         // recover first — better than blindly retrying a hard-down provider.
@@ -838,8 +856,9 @@ impl Router {
     ) -> Result<ChatCompletionResponse, RouterError> {
         let start = Instant::now();
         let original_model = request.model.clone();
+        let session = session_key(user.as_ref(), &original_model, request.session_id());
 
-        let candidates = self.collect_candidates(&request.model).await;
+        let candidates = self.collect_session_candidates(&request.model, session.as_ref()).await;
         if candidates.is_empty() {
             return Err(RouterError::NoAvailableProvider);
         }
@@ -903,6 +922,9 @@ impl Router {
             match result {
                 Ok(response) => {
                     guard.decrement();
+                    if let Some(key) = &session {
+                        self.sticky.pin(key, &provider_name);
+                    }
                     if let Some(trace) = actual_request.trace() {
                         trace.end_attempt(None);
                     }
@@ -1033,11 +1055,13 @@ impl Router {
             "Routing streaming request"
         );
 
-        let candidates = self.collect_candidates(&request.model).await;
+        let session = session_key(user.as_ref(), &original_model, request.session_id());
+        let candidates = self.collect_session_candidates(&request.model, session.as_ref()).await;
         if candidates.is_empty() {
             return Err(RouterError::NoAvailableProvider);
         }
 
+        let sticky = self.sticky.clone();
         let metrics_store = self.metrics_store.clone();
         let max_retries = self.max_retries;
         let request = request.clone();
@@ -1180,6 +1204,11 @@ impl Router {
                                         saw_content = true;
                                     }
 
+                                    if !attempt_yielded {
+                                        if let Some(key) = &session {
+                                            sticky.pin(key, &provider_name);
+                                        }
+                                    }
                                     chunks_yielded = true;
                                     attempt_yielded = true;
 
@@ -1489,12 +1518,14 @@ impl Router {
     pub async fn responses(
         &self,
         request: &CreateResponse,
+        session: Option<&str>,
         user: Option<MetricsUser>,
     ) -> Result<ApiResponse, RouterError> {
         let start = Instant::now();
         let original_model = request.model.clone().unwrap_or_default();
+        let session = session_key(user.as_ref(), &original_model, session.or(request.prompt_cache_key.as_deref()));
 
-        let candidates = self.collect_candidates(&original_model).await;
+        let candidates = self.collect_session_candidates(&original_model, session.as_ref()).await;
         if candidates.is_empty() {
             return Err(RouterError::NoAvailableProvider);
         }
@@ -1544,6 +1575,9 @@ impl Router {
             match result {
                 Ok(response) => {
                     guard.decrement();
+                    if let Some(key) = &session {
+                        self.sticky.pin(key, &provider_name);
+                    }
 
                     let latency_ms = total_latency.as_millis() as u32;
                     self.metrics_store

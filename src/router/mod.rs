@@ -7,6 +7,7 @@ mod failover;
 mod input_filter;
 pub mod image;
 pub mod model_info;
+pub mod sticky;
 pub mod strategies;
 
 pub use detector::{DbModelInfo, ModelInfoDetector};

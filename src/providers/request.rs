@@ -32,6 +32,7 @@ pub struct ChatRequest {
     /// Top-level request fields re-applied verbatim on the upstream wire.
     extra_fields: Map<String, Value>,
     trace: Option<crate::request_log::Trace>,
+    session_header: Option<String>,
 }
 
 /// Fields pulled out before the typed parse because their client shapes are
@@ -86,6 +87,7 @@ impl ChatRequest {
             assistant_extras,
             extra_fields,
             trace: None,
+            session_header: None,
         })
     }
 
@@ -158,6 +160,7 @@ impl From<ChatCompletionRequest> for ChatRequest {
             assistant_extras: Vec::new(),
             extra_fields: Map::new(),
             trace: None,
+            session_header: None,
         }
     }
 }
@@ -190,6 +193,15 @@ impl ChatRequest {
 
     pub fn trace(&self) -> Option<&crate::request_log::Trace> {
         self.trace.as_ref()
+    }
+
+    pub fn with_session_header(mut self, session: Option<String>) -> Self {
+        self.session_header = session;
+        self
+    }
+
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_header.as_deref().or(self.inner.prompt_cache_key.as_deref())
     }
 
     /// Assistant message at `ordinal`, if it exists.

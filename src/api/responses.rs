@@ -11,6 +11,7 @@ use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 pub async fn create_response(
     State(state): State<std::sync::Arc<AppState>>,
     Extension(user): Extension<Option<crate::db::User>>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<CreateResponse>,
 ) -> Result<Json<ApiResponse>, (axum::http::StatusCode, String)> {
     tracing::info!(
@@ -71,7 +72,7 @@ pub async fn create_response(
         api_key_name: None,
     });
 
-    match state.config.router.responses(&request, metrics_user).await {
+    match state.config.router.responses(&request, crate::api::chat::session_header(&headers).as_deref(), metrics_user).await {
         Ok(response) => {
             tracing::info!(
                 model = request.model.as_deref().unwrap_or("unknown"),

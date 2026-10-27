@@ -86,6 +86,13 @@ audio.
 - Uses round-robin strategy to select from active providers configured for that model
 - Falls back to first available routing config if no model-specific match
 
+**Sticky sessions**: `src/router/sticky.rs`. Round-robin pools (also `least_loaded`
+and `random`, which map to round robin) keep a session on the provider that last
+answered it. The session is the `x-session-id` header, else the body's
+`prompt_cache_key`, scoped per user and model, idle for 1 h. The pin is moved to
+the front of the healthy or degraded candidates only, so a provider in backoff
+still fails over and the session re-pins to whoever answers.
+
 **Audio models** route the same way, through `Router::transcriptions()` and
 `Router::speech()`.
 

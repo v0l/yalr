@@ -58,6 +58,13 @@ fn begin_log(
     Some(Pending::new(state.db.log_writer.clone(), inbound, Trace::new()))
 }
 
+pub(crate) fn session_header(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(crate::router::sticky::SESSION_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+}
+
 #[axum::debug_handler]
 pub async fn chat_handler(
     State(state): State<std::sync::Arc<AppState>>,
@@ -91,6 +98,7 @@ pub async fn chat_handler(
     let (input, output) = crate::api::modalities::chat_modalities(&request);
     crate::api::modalities::require_modalities(&state, &request.model, &input, &output).await?;
 
+    let request = request.with_session_header(session_header(&headers));
     let log = begin_log(&state, &headers, peer.map(|p| p.0), &authenticated_user, &request, &body);
 
     if request.stream.unwrap_or(false) {
