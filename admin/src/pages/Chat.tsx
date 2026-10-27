@@ -100,7 +100,7 @@ export default function Chat() {
   }
 
   return (
-    <div className="h-full flex flex-col bg-background">
+    <div className="h-screen flex flex-col bg-background">
       <div className="px-6 pt-6 pb-4">
         <h1 className="font-display text-[28px] tracking-[0.04em] text-foreground mb-3 leading-none">CHAT</h1>
         <div className="flex flex-wrap items-center gap-3">
@@ -122,8 +122,8 @@ export default function Chat() {
           />
         </div>
       </div>
-      <div className="flex-1 px-6 pb-6">
-        <div className="h-full border border-border bg-background">
+      <div className="flex-1 min-h-0 px-6 pb-6">
+        <div className="h-full min-h-0 border border-border bg-background">
           <ChatInterface adapter={adapter} speech={speechAdapter} dictation={dictationAdapter} pendingLabel={pendingLabel} />
         </div>
       </div>

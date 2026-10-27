@@ -1,6 +1,7 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { ThreadPrimitive, ComposerPrimitive, MessagePrimitive, MessagePartPrimitive, ErrorPrimitive, ActionBarPrimitive, AssistantRuntimeProvider, useLocalRuntime, AuiIf, type ChatModelAdapter, type ChatModelRunResult, type ThreadAssistantMessagePart, type DictationAdapter, type SpeechSynthesisAdapter } from '@assistant-ui/react'
-import { ArrowUpIcon, Loader2Icon, MicIcon, PaperclipIcon, SquareIcon, Volume2Icon } from 'lucide-react'
+import { ArrowUpIcon, Loader2Icon, MicIcon, PaperclipIcon, Trash2Icon, SquareIcon, Volume2Icon } from 'lucide-react'
+import { loadChatHistory, saveChatHistory } from '../../lib/chat-storage'
 import VoiceStatus, { useVoicePhase } from '../VoiceStatus'
 import PendingReply from './PendingReply'
 import { ComposerAttachment, FilePart, ImagePart, MessageAttachment } from './MediaParts'
@@ -93,11 +94,16 @@ export function ChatInterface({
   pendingLabel: string
 }) {
   const attachments = useMemo(() => chatAttachments(), [])
-  const runtime = useLocalRuntime(adapter, { adapters: { speech, dictation, attachments } })
+  const initialMessages = useMemo(() => loadChatHistory(), [])
+  const runtime = useLocalRuntime(adapter, { initialMessages, adapters: { speech, dictation, attachments } })
+  useEffect(() => runtime.thread.subscribe(() => {
+    const state = runtime.thread.getState()
+    if (!state.isRunning) saveChatHistory(state.messages)
+  }), [runtime])
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ThreadPrimitive.Root className="flex h-full flex-col items-stretch bg-background px-4 font-mono text-foreground">
-        <ThreadPrimitive.Viewport className="flex grow flex-col gap-6 overflow-y-scroll pt-12">
+      <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col items-stretch bg-background px-4 font-mono text-foreground">
+        <ThreadPrimitive.Viewport className="flex min-h-0 grow flex-col gap-6 overflow-y-scroll pt-12">
           <AuiIf condition={s => s.thread.isEmpty}>
             <div className="flex grow flex-col items-center justify-center">
               <div className="flex h-10 w-10 items-center justify-center border border-border bg-card">
@@ -118,6 +124,16 @@ export function ChatInterface({
           </ThreadPrimitive.Messages>
 
           <ThreadPrimitive.ViewportFooter className="sticky bottom-0 mt-auto flex flex-col gap-2 bg-background pb-2">
+            <AuiIf condition={s => !s.thread.isEmpty}>
+              <button
+                type="button"
+                onClick={() => runtime.thread.reset()}
+                className="mx-auto flex w-full max-w-3xl items-center justify-end gap-1 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-destructive"
+              >
+                <Trash2Icon className="size-3" />
+                Clear chat
+              </button>
+            </AuiIf>
             <VoiceStatus />
             <ComposerPrimitive.Root className="mx-auto flex w-full max-w-3xl flex-wrap items-end border border-border bg-card">
               <div className="flex w-full flex-wrap gap-1.5 px-1.5 pt-1.5 empty:hidden">
