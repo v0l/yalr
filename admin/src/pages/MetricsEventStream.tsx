@@ -1,8 +1,35 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { WsProviderMetrics } from '../types'
 import { cn } from '@/lib/utils'
 import { ActivityIcon, SearchIcon, FilterIcon, XIcon, ChevronDownIcon, RefreshCwIcon, Trash2Icon, UserIcon, KeyIcon } from 'lucide-react'
 import { fmt, fmtUser, eventKind, MAXL } from './metricsHelpers'
+
+const ROW_HEIGHT = 21
+const VIEW_HEIGHT = 550
+const OVERSCAN = 10
+
+interface Row {
+  ev: WsProviderMetrics
+  time: string
+  label: string
+  value: string
+  kind: string
+  user: string
+}
+
+const rowCache = new WeakMap<WsProviderMetrics, Row>()
+
+function toRow(ev: WsProviderMetrics): Row {
+  let row = rowCache.get(ev)
+  if (!row) {
+    const { label, value, kind } = fmt(ev.event)
+    const d = new Date(ev.timestamp_ms)
+    const time = `${d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}.${String(d.getMilliseconds()).padStart(3, '0')}`
+    row = { ev, time, label, value, kind, user: fmtUser(ev.user) }
+    rowCache.set(ev, row)
+  }
+  return row
+}
 
 interface Props {
   events: WsProviderMetrics[]
@@ -11,13 +38,14 @@ interface Props {
   skipped: number
 }
 
-export default function MetricsEventStream({ events, onClear, wsStatus, skipped }: Props) {
+function MetricsEventStream({ events, onClear, wsStatus, skipped }: Props) {
   const [evtFilter, setEvtFilter] = useState<'all' | 'success' | 'failure' | 'load' | 'balance' | 'info'>('all')
   const [evtProvFilter, setEvtProvFilter] = useState('')
   const [evtModelFilter, setEvtModelFilter] = useState('')
   const [evtTail, setEvtTail] = useState(true)
   const [evtShowFilters, setEvtShowFilters] = useState(false)
   const streamRef = useRef<HTMLDivElement>(null)
+  const [scrollTop, setScrollTop] = useState(0)
 
   const filteredEvents = useMemo(() => {
     let evs = events
@@ -44,8 +72,13 @@ export default function MetricsEventStream({ events, onClear, wsStatus, skipped 
     if (!evtTail) return
     const el = streamRef.current
     if (!el) return
-    requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
+    requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; setScrollTop(el.scrollTop) })
   }, [filteredEvents, evtTail])
+
+  const ordered = useMemo(() => [...filteredEvents].reverse(), [filteredEvents])
+  const first = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
+  const last = Math.min(ordered.length, Math.ceil((scrollTop + VIEW_HEIGHT) / ROW_HEIGHT) + OVERSCAN)
+  const visible = ordered.slice(first, last).map(toRow)
 
   function resetFilters() { setEvtFilter('all'); setEvtProvFilter(''); setEvtModelFilter('') }
 
@@ -178,12 +211,13 @@ export default function MetricsEventStream({ events, onClear, wsStatus, skipped 
           onScroll={() => {
             if (!streamRef.current) return
             const el = streamRef.current
+            setScrollTop(el.scrollTop)
             if (el.scrollTop + el.clientHeight < el.scrollHeight - 30) setEvtTail(false)
             if (el.scrollTop + el.clientHeight >= el.scrollHeight - 5) setEvtTail(true)
           }}
           className="max-h-[550px] overflow-y-auto font-mono text-[11px]"
         >
-          <div className="flex items-center gap-2 px-2 py-1.5 border-b border-border text-[9px] uppercase tracking-wider text-muted-foreground sticky top-0 bg-card">
+          <div className="flex items-center gap-2 px-2 py-1.5 border-b border-border text-[9px] uppercase tracking-wider text-muted-foreground sticky top-0 z-10 bg-card">
             <span className="shrink-0 w-[82px] text-right pr-2">TIME</span>
             <span className="shrink-0 w-36">PROVIDER</span>
             <span className="shrink-0 w-28">MODEL</span>
@@ -198,40 +232,38 @@ export default function MetricsEventStream({ events, onClear, wsStatus, skipped 
                 : 'NO EVENTS MATCH FILTERS'}
             </p>
           ) : (
-            // Reverse so newest is at bottom (terminal tail)
-            [...filteredEvents].reverse().map((ev, i) => {
-              const { label, value, kind } = fmt(ev.event)
-              const d = new Date(ev.timestamp_ms)
-              const t = d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-              const ms = String(d.getMilliseconds()).padStart(3, '0')
-              const kc = kind === 'ok' ? 'text-brand' : kind === 'err' ? 'text-destructive' : kind === 'warn' ? 'text-warning' : 'text-muted-foreground'
-              const userText = fmtUser(ev.user)
-              return (
-                <div
-                  key={`${ev.timestamp_ms}-${i}`}
-                  className={cn(
-                    'flex items-center gap-2 px-2 py-0.5 border-b border-border/50 transition-colors',
-                    i === filteredEvents.length - 1 && 'bg-brand/5'
-                  )}
-                >
-                  <span className="text-muted-foreground shrink-0 w-[82px] tabular-nums text-right pr-2">{t}.{ms}</span>
-                  <span className="font-medium shrink-0 w-36 truncate" title={ev.provider}>{ev.provider}</span>
-                  <span className="text-muted-foreground shrink-0 w-28 truncate" title={ev.model ?? ''}>{ev.model ?? ''}</span>
-                  <span className={cn('shrink-0 w-12 text-[9px] px-1 py-0 border font-mono uppercase tracking-wider text-center', kc)} style={{ borderColor: 'currentColor' }}>
-                    {label}
-                  </span>
-                  <span
-                    className={cn('truncate flex-1 min-w-0', kind === 'err' && 'cursor-copy hover:underline')}
-                    title={kind === 'err' ? `Click to copy: ${value}` : value}
-                    onClick={() => { if (kind === 'err') navigator.clipboard.writeText(value) }}
-                  >{value}</span>
-                  <span className="shrink-0 w-32 text-[10px] text-muted-foreground truncate flex items-center gap-1" title={userText}>
-                    {userText && userText.includes('🔑') ? <KeyIcon className="size-2.5 shrink-0" /> : userText ? <UserIcon className="size-2.5 shrink-0" /> : null}
-                    {userText}
-                  </span>
-                </div>
-              )
-            })
+            <div style={{ height: ordered.length * ROW_HEIGHT, position: 'relative' }}>
+              {visible.map((r, j) => {
+                const i = first + j
+                const kc = r.kind === 'ok' ? 'text-brand' : r.kind === 'err' ? 'text-destructive' : r.kind === 'warn' ? 'text-warning' : 'text-muted-foreground'
+                return (
+                  <div
+                    key={`${r.ev.timestamp_ms}-${i}`}
+                    style={{ position: 'absolute', top: i * ROW_HEIGHT, height: ROW_HEIGHT, left: 0, right: 0 }}
+                    className={cn(
+                      'flex items-center gap-2 px-2 border-b border-border/50',
+                      i === ordered.length - 1 && 'bg-brand/5'
+                    )}
+                  >
+                    <span className="text-muted-foreground shrink-0 w-[82px] tabular-nums text-right pr-2">{r.time}</span>
+                    <span className="font-medium shrink-0 w-36 truncate" title={r.ev.provider}>{r.ev.provider}</span>
+                    <span className="text-muted-foreground shrink-0 w-28 truncate" title={r.ev.model ?? ''}>{r.ev.model ?? ''}</span>
+                    <span className={cn('shrink-0 w-12 text-[9px] px-1 py-0 border font-mono uppercase tracking-wider text-center', kc)} style={{ borderColor: 'currentColor' }}>
+                      {r.label}
+                    </span>
+                    <span
+                      className={cn('truncate flex-1 min-w-0', r.kind === 'err' && 'cursor-copy hover:underline')}
+                      title={r.kind === 'err' ? `Click to copy: ${r.value}` : r.value}
+                      onClick={() => { if (r.kind === 'err') navigator.clipboard.writeText(r.value) }}
+                    >{r.value}</span>
+                    <span className="shrink-0 w-32 text-[10px] text-muted-foreground truncate flex items-center gap-1" title={r.user}>
+                      {r.user && r.user.includes('🔑') ? <KeyIcon className="size-2.5 shrink-0" /> : r.user ? <UserIcon className="size-2.5 shrink-0" /> : null}
+                      {r.user}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
           )}
         </div>
 
@@ -260,3 +292,5 @@ export default function MetricsEventStream({ events, onClear, wsStatus, skipped 
     </div>
   )
 }
+
+export default memo(MetricsEventStream)
