@@ -1520,6 +1520,7 @@ impl Router {
         request: &CreateResponse,
         session: Option<&str>,
         user: Option<MetricsUser>,
+        trace: Option<&crate::request_log::Trace>,
     ) -> Result<ApiResponse, RouterError> {
         let start = Instant::now();
         let original_model = request.model.clone().unwrap_or_default();
@@ -1569,8 +1570,14 @@ impl Router {
                 .emitter()
                 .emit_provider_load(&provider_name, in_flight, max_concurrency, user.clone());
 
+            if let Some(trace) = trace {
+                trace.begin_attempt(&provider_name);
+            }
             let result = provider.responses(&actual_request).await;
             let total_latency = start.elapsed();
+            if let Some(trace) = trace {
+                trace.end_attempt(result.as_ref().err().map(|e| e.to_string()));
+            }
 
             match result {
                 Ok(response) => {

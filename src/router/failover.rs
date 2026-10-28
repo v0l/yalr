@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::metrics::MetricsUser;
+use crate::request_log::Trace;
 use crate::providers::Provider;
 use crate::router::engine::{InFlightGuard, Router, RouterError};
 use crate::ProviderError;
@@ -30,6 +31,7 @@ impl Router {
         model: &str,
         op: &str,
         user: Option<MetricsUser>,
+        trace: Option<&Trace>,
         call: F,
     ) -> Result<T, RouterError>
     where
@@ -42,7 +44,7 @@ impl Router {
         }
 
         let tried: Vec<String> = candidates.iter().map(|(p, _)| p.name().to_string()).collect();
-        let outcome = self.try_candidates(candidates, model, op, &user, &call).await;
+        let outcome = self.try_candidates(candidates, model, op, &user, trace, &call).await;
         if let Some(result) = outcome.result {
             return result;
         }
@@ -66,7 +68,7 @@ impl Router {
                     "No healthy provider supports this request, falling back to filtered providers"
                 );
                 if let Some(result) = self
-                    .try_candidates(fallback, model, op, &user, &call)
+                    .try_candidates(fallback, model, op, &user, trace, &call)
                     .await
                     .result
                 {
@@ -84,6 +86,7 @@ impl Router {
         model: &str,
         op: &str,
         user: &Option<MetricsUser>,
+        trace: Option<&Trace>,
         call: &F,
     ) -> AttemptRun<T>
     where
@@ -106,8 +109,18 @@ impl Router {
                 .emitter()
                 .emit_provider_load(&provider_name, in_flight, None, user.clone());
 
+            if let Some(trace) = trace {
+                trace.begin_attempt(&provider_name);
+            }
             let result = call(provider.clone(), resolved_model).await;
             guard.decrement();
+            if let Some(trace) = trace {
+                match &result {
+                    Ok(_) => trace.end_attempt(None),
+                    Err(ProviderError::Unsupported(_)) => {}
+                    Err(e) => trace.end_attempt(Some(e.to_string())),
+                }
+            }
 
             match result {
                 Ok(response) => {

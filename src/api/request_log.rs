@@ -23,6 +23,7 @@ pub struct ListQuery {
     status: Option<String>,
     user_id: Option<i64>,
     api_key_id: Option<i64>,
+    endpoint: Option<String>,
 }
 
 pub async fn list(
@@ -36,6 +37,7 @@ pub async fn list(
         status: query.status.as_deref(),
         user_id: query.user_id,
         api_key_id: query.api_key_id,
+        endpoint: query.endpoint.as_deref(),
         since_ms: None,
     };
     state.db.list_request_logs(limit, filter)

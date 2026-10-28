@@ -1,10 +1,13 @@
 use axum::{
-    extract::{Extension, Multipart, State},
-    http::{header, StatusCode},
+    extract::{ConnectInfo, Extension, Multipart, State},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    Json,
 };
+use bytes::Bytes;
+use std::net::SocketAddr;
 use std::sync::Arc;
+
+use crate::api::metered::{Metered, MultipartBody, RequestInfo, UploadedFile};
 
 use crate::api::modalities::require_modalities;
 use crate::api::shared::{check_model_access, error_body, metrics_user, router_error, HandlerError};
@@ -22,61 +25,112 @@ fn bad_request(message: impl AsRef<str>) -> HandlerError {
     )
 }
 
-fn stream_response(response: ImageResponse) -> Response {
-    let body = axum::body::Body::from_stream(response.stream);
+fn stream_response(metered: Metered, response: ImageResponse) -> Response {
+    let tapped = metered.tap(response.content_type.clone(), response.stream);
+    let body = axum::body::Body::from_stream(tapped);
     ([(header::CONTENT_TYPE, response.content_type)], body).into_response()
 }
 
 pub async fn generations(
     State(state): State<Arc<AppState>>,
     Extension(authenticated): Extension<AuthenticatedUser>,
-    Json(request): Json<ImageGenerationRequest>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Response, HandlerError> {
+    let request: ImageGenerationRequest = serde_json::from_slice(&body)
+        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, error_body(&format!("Invalid request body: {e}"), "invalid_request_error")))?;
     if request.prompt.trim().is_empty() {
         return Err(bad_request("`prompt` must not be empty"));
     }
 
-    check_model_access(&state, authenticated.user.id, &request.model).await?;
-    require_modalities(&state, &request.model, &[], &[Modality::Image]).await?;
+    let stream = request.stream.unwrap_or(false);
+    let info = RequestInfo { endpoint: "/v1/images/generations", model: &request.model, stream, headers: &headers, peer: peer.map(|p| p.0) };
+    let mut metered = Metered::begin(&state, &authenticated, info, || body.to_vec());
+
+    if let Err(e) = check_model_access(&state, authenticated.user.id, &request.model).await {
+        return Err(metered.reject(e));
+    }
+    if let Err(e) = require_modalities(&state, &request.model, &[], &[Modality::Image]).await {
+        return Err(metered.reject(e));
+    }
+    if let Err(e) = metered.admit().await {
+        return Err(metered.reject(e));
+    }
 
     tracing::info!(model = %request.model, n = ?request.n, "Received image generation request");
 
-    let response = state
+    let result = state
         .config
         .router
-        .image_generations(&request, Some(metrics_user(&authenticated)))
-        .await
-        .map_err(|e| router_error(e, "image generation"))?;
-
-    Ok(stream_response(response))
+        .image_generations_traced(&request, Some(metrics_user(&authenticated)), Some(metered.trace()))
+        .await;
+    match result {
+        Ok(response) => Ok(stream_response(metered, response)),
+        Err(e) => {
+            metered.fail(&e.to_string());
+            Err(router_error(e, "image generation"))
+        }
+    }
 }
 
 pub async fn edits(
     state: State<Arc<AppState>>,
     user: Extension<AuthenticatedUser>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     multipart: Multipart,
 ) -> Result<Response, HandlerError> {
-    upload(state, user, multipart, ImageUploadKind::Edit).await
+    upload(state, user, peer, headers, multipart, ImageUploadKind::Edit).await
 }
 
 pub async fn variations(
     state: State<Arc<AppState>>,
     user: Extension<AuthenticatedUser>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     multipart: Multipart,
 ) -> Result<Response, HandlerError> {
-    upload(state, user, multipart, ImageUploadKind::Variation).await
+    upload(state, user, peer, headers, multipart, ImageUploadKind::Variation).await
+}
+
+fn upload_log_body(request: &ImageUploadRequest) -> Vec<u8> {
+    let mut fields = vec![("model", request.model.as_str())];
+    fields.extend(request.fields.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    let files = request
+        .files
+        .iter()
+        .map(|f| UploadedFile::new(&f.field, &f.file_name, f.content_type.as_deref(), &f.data))
+        .collect();
+    serde_json::to_vec(&MultipartBody { fields, files }).unwrap_or_default()
 }
 
 async fn upload(
     State(state): State<Arc<AppState>>,
     Extension(authenticated): Extension<AuthenticatedUser>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     multipart: Multipart,
     kind: ImageUploadKind,
 ) -> Result<Response, HandlerError> {
     let request = parse_upload_form(multipart, kind).await?;
+    let endpoint = match kind {
+        ImageUploadKind::Edit => "/v1/images/edits",
+        ImageUploadKind::Variation => "/v1/images/variations",
+    };
+    let stream = request.fields.iter().any(|(k, v)| k == "stream" && v == "true");
+    let info = RequestInfo { endpoint, model: &request.model, stream, headers: &headers, peer: peer.map(|p| p.0) };
+    let mut metered = Metered::begin(&state, &authenticated, info, || upload_log_body(&request));
 
-    check_model_access(&state, authenticated.user.id, &request.model).await?;
-    require_modalities(&state, &request.model, &[Modality::Image], &[Modality::Image]).await?;
+    if let Err(e) = check_model_access(&state, authenticated.user.id, &request.model).await {
+        return Err(metered.reject(e));
+    }
+    if let Err(e) = require_modalities(&state, &request.model, &[Modality::Image], &[Modality::Image]).await {
+        return Err(metered.reject(e));
+    }
+    if let Err(e) = metered.admit().await {
+        return Err(metered.reject(e));
+    }
 
     tracing::info!(
         model = %request.model,
@@ -85,14 +139,18 @@ async fn upload(
         "Received image upload request"
     );
 
-    let response = state
+    let result = state
         .config
         .router
-        .image_uploads(&request, Some(metrics_user(&authenticated)))
-        .await
-        .map_err(|e| router_error(e, request.operation()))?;
-
-    Ok(stream_response(response))
+        .image_uploads_traced(&request, Some(metrics_user(&authenticated)), Some(metered.trace()))
+        .await;
+    match result {
+        Ok(response) => Ok(stream_response(metered, response)),
+        Err(e) => {
+            metered.fail(&e.to_string());
+            Err(router_error(e, request.operation()))
+        }
+    }
 }
 
 async fn parse_upload_form(

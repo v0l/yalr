@@ -1,5 +1,6 @@
 use crate::metrics::MetricsUser;
 use crate::providers::decision::{DecisionRequest, DecisionResponse};
+use crate::request_log::Trace;
 use crate::router::engine::{Router, RouterError};
 
 impl Router {
@@ -8,9 +9,18 @@ impl Router {
         request: &DecisionRequest,
         user: Option<MetricsUser>,
     ) -> Result<DecisionResponse, RouterError> {
+        self.decide_traced(request, user, None).await
+    }
+
+    pub async fn decide_traced(
+        &self,
+        request: &DecisionRequest,
+        user: Option<MetricsUser>,
+        trace: Option<&Trace>,
+    ) -> Result<DecisionResponse, RouterError> {
         let emitter = self.metrics_store.emitter().clone();
         let requested_model = request.model.as_str();
-        self.capability_failover(requested_model, "decisions", user.clone(), |provider, model| {
+        self.capability_failover(requested_model, "decisions", user.clone(), trace, |provider, model| {
             let mut request = request.clone();
             request.model = model;
             let emitter = emitter.clone();

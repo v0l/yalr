@@ -1,11 +1,14 @@
 use axum::{
-    extract::{Extension, Multipart, State},
-    http::{header, StatusCode},
+    extract::{ConnectInfo, Extension, Multipart, State},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use bytes::Bytes;
+use std::net::SocketAddr;
 use std::sync::Arc;
+
+use crate::api::metered::{response_body, usage_in_body, Metered, MultipartBody, RequestInfo, UploadedFile};
 
 use crate::auth::admin::AuthenticatedUser;
 use crate::api::modalities::require_modalities;
@@ -17,29 +20,65 @@ use crate::state::AppState;
 pub async fn transcriptions(
     state: State<Arc<AppState>>,
     user: Extension<AuthenticatedUser>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     multipart: Multipart,
 ) -> Result<Response, ApiError> {
-    audio_stt(state, user, multipart, false).await
+    audio_stt(state, user, peer, headers, multipart, false).await
 }
 
 pub async fn translations(
     state: State<Arc<AppState>>,
     user: Extension<AuthenticatedUser>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     multipart: Multipart,
 ) -> Result<Response, ApiError> {
-    audio_stt(state, user, multipart, true).await
+    audio_stt(state, user, peer, headers, multipart, true).await
+}
+
+fn transcription_log_body(request: &TranscriptionRequest) -> Vec<u8> {
+    let temperature = request.temperature.map(|t| t.to_string());
+    let mut fields = vec![("model", request.model.as_str())];
+    for (name, value) in [
+        ("language", request.language.as_deref()),
+        ("prompt", request.prompt.as_deref()),
+        ("response_format", request.response_format.as_deref()),
+        ("temperature", temperature.as_deref()),
+    ] {
+        if let Some(value) = value {
+            fields.push((name, value));
+        }
+    }
+    for granularity in &request.timestamp_granularities {
+        fields.push(("timestamp_granularities[]", granularity));
+    }
+    let file = UploadedFile::new("file", &request.file_name, request.content_type.as_deref(), &request.file);
+    serde_json::to_vec(&MultipartBody { fields, files: vec![file] }).unwrap_or_default()
 }
 
 async fn audio_stt(
     State(state): State<Arc<AppState>>,
     Extension(authenticated): Extension<AuthenticatedUser>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     multipart: Multipart,
     translate: bool,
 ) -> Result<Response, ApiError> {
     let request = parse_transcription_form(multipart, translate).await?;
+    let endpoint = if translate { "/v1/audio/translations" } else { "/v1/audio/transcriptions" };
+    let info = RequestInfo { endpoint, model: &request.model, stream: false, headers: &headers, peer: peer.map(|p| p.0) };
+    let mut metered = Metered::begin(&state, &authenticated, info, || transcription_log_body(&request));
 
-    check_model_access(&state, authenticated.user.id, &request.model).await?;
-    require_modalities(&state, &request.model, &[Modality::Audio], &[]).await?;
+    if let Err(e) = check_model_access(&state, authenticated.user.id, &request.model).await {
+        return Err(metered.reject(e));
+    }
+    if let Err(e) = require_modalities(&state, &request.model, &[Modality::Audio], &[]).await {
+        return Err(metered.reject(e));
+    }
+    if let Err(e) = metered.admit().await {
+        return Err(metered.reject(e));
+    }
 
     tracing::info!(
         model = %request.model,
@@ -48,12 +87,20 @@ async fn audio_stt(
         "Received audio transcription request"
     );
 
-    let response = state
+    let response = match state
         .config
         .router
-        .transcriptions(&request, Some(metrics_user(&authenticated)))
+        .transcriptions_traced(&request, Some(metrics_user(&authenticated)), Some(metered.trace()))
         .await
-        .map_err(|e| router_error(e, "audio"))?;
+    {
+        Ok(response) => response,
+        Err(e) => {
+            metered.fail(&e.to_string());
+            return Err(router_error(e, "audio"));
+        }
+    };
+    let usage = usage_in_body(&response.content_type, &response.body);
+    metered.succeed(response_body(&response.content_type, &response.body), usage).await;
 
     Ok((
         [(header::CONTENT_TYPE, response.content_type)],
@@ -88,8 +135,13 @@ pub async fn voices(
 pub async fn speech(
     State(state): State<Arc<AppState>>,
     Extension(authenticated): Extension<AuthenticatedUser>,
-    Json(request): Json<SpeechRequest>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Response, ApiError> {
+    let request: SpeechRequest = serde_json::from_slice(&body).map_err(|e| {
+        (StatusCode::UNPROCESSABLE_ENTITY, error_body(&format!("Invalid request body: {e}"), "invalid_request_error"))
+    })?;
     if request.input.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -97,8 +149,19 @@ pub async fn speech(
         ));
     }
 
-    check_model_access(&state, authenticated.user.id, &request.model).await?;
-    require_modalities(&state, &request.model, &[], &[Modality::Audio]).await?;
+    let stream = request.extra.get("stream_format").and_then(|v| v.as_str()) == Some("sse");
+    let info = RequestInfo { endpoint: "/v1/audio/speech", model: &request.model, stream, headers: &headers, peer: peer.map(|p| p.0) };
+    let mut metered = Metered::begin(&state, &authenticated, info, || body.to_vec());
+
+    if let Err(e) = check_model_access(&state, authenticated.user.id, &request.model).await {
+        return Err(metered.reject(e));
+    }
+    if let Err(e) = require_modalities(&state, &request.model, &[], &[Modality::Audio]).await {
+        return Err(metered.reject(e));
+    }
+    if let Err(e) = metered.admit().await {
+        return Err(metered.reject(e));
+    }
 
     tracing::info!(
         model = %request.model,
@@ -106,14 +169,21 @@ pub async fn speech(
         "Received audio speech request"
     );
 
-    let response = state
+    let response = match state
         .config
         .router
-        .speech(&request, Some(metrics_user(&authenticated)))
+        .speech_traced(&request, Some(metrics_user(&authenticated)), Some(metered.trace()))
         .await
-        .map_err(|e| router_error(e, "audio"))?;
+    {
+        Ok(response) => response,
+        Err(e) => {
+            metered.fail(&e.to_string());
+            return Err(router_error(e, "audio"));
+        }
+    };
 
-    let body = axum::body::Body::from_stream(response.stream);
+    let tapped = metered.tap(response.content_type.clone(), response.stream);
+    let body = axum::body::Body::from_stream(tapped);
     Ok(([(header::CONTENT_TYPE, response.content_type)], body).into_response())
 }
 

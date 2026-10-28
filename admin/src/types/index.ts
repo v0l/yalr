@@ -633,6 +633,8 @@ export interface RequestLogSummary {
   message_count: number | null
   first_diverging_message: number | null
   previous_request_id: string | null
+  endpoint: string
+  cost_msat: number | null
 }
 
 export interface RequestLogAttempt {
@@ -646,7 +648,6 @@ export interface RequestLogAttempt {
 export type HeaderPairs = [string, string][]
 
 export interface RequestLogDetail extends RequestLogSummary {
-  endpoint: string
   user_id: number | null
   upstream_url: string | null
   upstream_status: number | null
@@ -677,4 +678,5 @@ export interface RequestLogQuery {
   status?: string
   user_id?: number
   api_key_id?: number
+  endpoint?: string
 }

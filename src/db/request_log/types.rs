@@ -41,6 +41,7 @@ pub struct Record {
     pub previous_request_id: Option<String>,
     pub request_bytes: i64,
     pub response_bytes: i64,
+    pub cost_msat: Option<i64>,
     pub client_request_packed: Option<Vec<u8>>,
     pub upstream_request_packed: Option<Vec<u8>>,
     pub response_packed: Option<Vec<u8>>,
@@ -80,6 +81,8 @@ pub struct Summary {
     pub message_count: Option<i64>,
     pub first_diverging_message: Option<i64>,
     pub previous_request_id: Option<String>,
+    pub endpoint: String,
+    pub cost_msat: Option<i64>,
 }
 
 #[derive(Default)]
@@ -90,6 +93,7 @@ pub struct Filter<'a> {
     pub user_id: Option<i64>,
     pub api_key_id: Option<i64>,
     pub since_ms: Option<i64>,
+    pub endpoint: Option<&'a str>,
 }
 
 
@@ -135,6 +139,7 @@ pub struct Detail {
     pub previous_request_id: Option<String>,
     pub request_bytes: Option<i64>,
     pub response_bytes: Option<i64>,
+    pub cost_msat: Option<i64>,
 }
 
 #[derive(Debug, sqlx::FromRow)]

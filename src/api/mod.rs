@@ -8,6 +8,7 @@ pub mod decisions;
 pub mod health;
 pub mod images;
 pub mod limits;
+pub mod metered;
 pub mod market;
 pub mod modalities;
 pub mod model_cache;

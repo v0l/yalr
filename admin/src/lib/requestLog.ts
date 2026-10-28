@@ -20,6 +20,29 @@ export function formatBytes(n: number | null | undefined): string {
   return `${(n / 1024 / 1024).toFixed(2)} MB`
 }
 
+export function formatCost(msat: number | null | undefined): string {
+  if (msat === null || msat === undefined) return '-'
+  if (msat === 0) return '0'
+  const sats = msat / 1000
+  return sats < 10 ? sats.toFixed(sats < 1 ? 3 : 2) : Math.round(sats).toLocaleString()
+}
+
+export const ENDPOINTS = [
+  '/v1/chat/completions',
+  '/v1/responses',
+  '/v1/systemone',
+  '/v1/audio/transcriptions',
+  '/v1/audio/translations',
+  '/v1/audio/speech',
+  '/v1/images/generations',
+  '/v1/images/edits',
+  '/v1/images/variations',
+] as const
+
+export function endpointLabel(endpoint: string): string {
+  return endpoint.replace(/^\/v1\//, '')
+}
+
 export function formatTime(ms: number): string {
   const d = new Date(ms)
   const pad = (v: number, w = 2) => String(v).padStart(w, '0')

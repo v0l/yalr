@@ -2,6 +2,7 @@ use crate::metrics::MetricsUser;
 use crate::providers::audio::{
     SpeechRequest, SpeechResponse, TranscriptionRequest, TranscriptionResponse,
 };
+use crate::request_log::Trace;
 use crate::router::engine::{Router, RouterError};
 
 impl Router {
@@ -10,12 +11,21 @@ impl Router {
         request: &TranscriptionRequest,
         user: Option<MetricsUser>,
     ) -> Result<TranscriptionResponse, RouterError> {
+        self.transcriptions_traced(request, user, None).await
+    }
+
+    pub async fn transcriptions_traced(
+        &self,
+        request: &TranscriptionRequest,
+        user: Option<MetricsUser>,
+        trace: Option<&Trace>,
+    ) -> Result<TranscriptionResponse, RouterError> {
         let label = if request.translate {
             "audio.translations"
         } else {
             "audio.transcriptions"
         };
-        self.capability_failover(&request.model, label, user, |provider, model| {
+        self.capability_failover(&request.model, label, user, trace, |provider, model| {
             let mut request = request.clone();
             request.model = model;
             async move { provider.transcriptions(&request).await }
@@ -28,7 +38,16 @@ impl Router {
         request: &SpeechRequest,
         user: Option<MetricsUser>,
     ) -> Result<SpeechResponse, RouterError> {
-        self.capability_failover(&request.model, "audio.speech", user, |provider, model| {
+        self.speech_traced(request, user, None).await
+    }
+
+    pub async fn speech_traced(
+        &self,
+        request: &SpeechRequest,
+        user: Option<MetricsUser>,
+        trace: Option<&Trace>,
+    ) -> Result<SpeechResponse, RouterError> {
+        self.capability_failover(&request.model, "audio.speech", user, trace, |provider, model| {
             let mut request = request.clone();
             request.model = model;
             async move { provider.speech(&request).await }

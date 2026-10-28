@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import { cacheHitRate, firstTokenMs, formatMs, formatTime, formatTokens, STATUSES, statusTone } from '@/lib/requestLog'
+import { cacheHitRate, endpointLabel, ENDPOINTS, firstTokenMs, formatCost, formatMs, formatTime, formatTokens, STATUSES, statusTone } from '@/lib/requestLog'
 import { RefreshCwIcon, LinkIcon } from 'lucide-react'
 
 const PAGE_SIZE = 100
@@ -23,6 +23,7 @@ export default function RequestLog() {
   const status = params.get('status') ?? ''
   const userId = params.get('user_id') ?? ''
   const apiKeyId = params.get('api_key_id') ?? ''
+  const endpoint = params.get('endpoint') ?? ''
   const [modelInput, setModelInput] = useState(model)
   const [rows, setRows] = useState<RequestLogSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -40,8 +41,9 @@ export default function RequestLog() {
       status,
       user_id: userId ? Number(userId) : undefined,
       api_key_id: apiKeyId ? Number(apiKeyId) : undefined,
+      endpoint,
     }),
-    [model, status, userId, apiKeyId],
+    [model, status, userId, apiKeyId, endpoint],
   )
 
   useEffect(() => {
@@ -78,7 +80,7 @@ export default function RequestLog() {
     }
   }
 
-  function setFilter(key: 'model' | 'status' | 'user_id' | 'api_key_id', value: string) {
+  function setFilter(key: 'model' | 'status' | 'user_id' | 'api_key_id' | 'endpoint', value: string) {
     setLoading(true)
     const next = new URLSearchParams(params)
     if (value) next.set(key, value)
@@ -105,6 +107,14 @@ export default function RequestLog() {
               className="h-8 w-44 font-mono text-[12px] bg-surface border-border"
             />
           </form>
+          <select
+            value={endpoint}
+            onChange={e => setFilter('endpoint', e.target.value)}
+            className="h-8 px-2 font-mono text-[11px] bg-surface border border-border text-foreground"
+          >
+            <option value="">all endpoints</option>
+            {ENDPOINTS.map(e => <option key={e} value={e}>{endpointLabel(e)}</option>)}
+          </select>
           <div className="flex border border-border">
             {['', ...STATUSES].map(s => (
               <button
@@ -145,6 +155,7 @@ export default function RequestLog() {
               <tr className="border-b border-border/50 text-left">
                 <th className={th}>Time</th>
                 <th className={th}>Model</th>
+                <th className={th}>Endpoint</th>
                 <th className={th}>Provider</th>
                 <th className={th}>Status</th>
                 <th className={cn(th, 'text-right')}>Headers</th>
@@ -153,6 +164,7 @@ export default function RequestLog() {
                 <th className={cn(th, 'text-right')}>In</th>
                 <th className={cn(th, 'text-right')}>Cache</th>
                 <th className={cn(th, 'text-right')}>Out</th>
+                <th className={cn(th, 'text-right')}>Sats</th>
                 <th className={cn(th, 'text-right')}>Msgs</th>
                 <th className={th}>User</th>
                 <th className={th}>Key</th>
@@ -162,11 +174,11 @@ export default function RequestLog() {
               {loading && rows.length === 0 ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="border-b border-border/50">
-                    <td colSpan={13} className="px-3 py-2"><Skeleton className="h-4 bg-secondary" /></td>
+                    <td colSpan={15} className="px-3 py-2"><Skeleton className="h-4 bg-secondary" /></td>
                   </tr>
                 ))
               ) : rows.length === 0 ? (
-                <tr><td colSpan={13} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO REQUESTS LOGGED</td></tr>
+                <tr><td colSpan={15} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO REQUESTS LOGGED</td></tr>
               ) : rows.map(row => {
                 const hit = cacheHitRate(row)
                 return (
@@ -180,6 +192,7 @@ export default function RequestLog() {
                       <span className="text-foreground">{row.model}</span>
                       {row.stream && <span className="ml-1.5 text-[10px] text-muted-foreground">SSE</span>}
                     </td>
+                    <td className={cn(td, 'text-muted-foreground')}>{endpointLabel(row.endpoint)}</td>
                     <td className={cn(td, 'text-muted-foreground')}>
                       {row.provider ?? '-'}
                       {row.attempts > 1 && <span className="ml-1.5 text-warning">×{row.attempts}</span>}
@@ -195,6 +208,7 @@ export default function RequestLog() {
                       {hit === null ? '-' : `${Math.round(hit * 100)}%`}
                     </td>
                     <td className={cn(td, 'text-right')}>{formatTokens(row.completion_tokens)}</td>
+                    <td className={cn(td, 'text-right')}>{formatCost(row.cost_msat)}</td>
                     <td className={cn(td, 'text-right text-muted-foreground')}>
                       {row.message_count ?? '-'}
                       {row.previous_request_id && <LinkIcon className="inline ml-1 size-3 text-brand/60" />}

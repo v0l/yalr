@@ -7,7 +7,8 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import { cacheHitRate, formatBytes, formatMs, formatTokens, statusTone } from '@/lib/requestLog'
+import { cacheHitRate, formatBytes, formatCost, formatMs, formatTokens, statusTone } from '@/lib/requestLog'
+import { BodyMedia, stripPayloads } from '@/components/BodyView'
 import { ArrowLeftIcon, CopyIcon } from 'lucide-react'
 
 const label = 'font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground'
@@ -145,7 +146,8 @@ function Bodies({ id }: { id: number }) {
           </button>
         ))}
       </div>
-      <Json value={bodies[tab]} />
+      <BodyMedia value={bodies[tab]} />
+      <Json value={stripPayloads(bodies[tab])} />
     </div>
   )
 }
@@ -233,6 +235,7 @@ export default function RequestLogDetail() {
           <Field name="Hit rate">{hit === null ? '-' : `${(hit * 100).toFixed(1)}%`}</Field>
           <Field name="Weighted input">{formatTokens(detail.weighted_input_tokens)}</Field>
           <Field name="Completion">{formatTokens(detail.completion_tokens)}</Field>
+          <Field name="Billed">{detail.cost_msat === null ? '-' : `${formatCost(detail.cost_msat)} sats`}</Field>
         </Panel>
 
         <Panel title="Conversation">

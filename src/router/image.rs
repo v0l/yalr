@@ -1,5 +1,6 @@
 use crate::metrics::MetricsUser;
 use crate::providers::image::{ImageGenerationRequest, ImageResponse, ImageUploadRequest};
+use crate::request_log::Trace;
 use crate::router::engine::{Router, RouterError};
 
 impl Router {
@@ -8,7 +9,16 @@ impl Router {
         request: &ImageGenerationRequest,
         user: Option<MetricsUser>,
     ) -> Result<ImageResponse, RouterError> {
-        self.capability_failover(&request.model, "images.generations", user, |provider, model| {
+        self.image_generations_traced(request, user, None).await
+    }
+
+    pub async fn image_generations_traced(
+        &self,
+        request: &ImageGenerationRequest,
+        user: Option<MetricsUser>,
+        trace: Option<&Trace>,
+    ) -> Result<ImageResponse, RouterError> {
+        self.capability_failover(&request.model, "images.generations", user, trace, |provider, model| {
             let mut request = request.clone();
             request.model = model;
             async move { provider.image_generations(&request).await }
@@ -21,7 +31,16 @@ impl Router {
         request: &ImageUploadRequest,
         user: Option<MetricsUser>,
     ) -> Result<ImageResponse, RouterError> {
-        self.capability_failover(&request.model, request.operation(), user, |provider, model| {
+        self.image_uploads_traced(request, user, None).await
+    }
+
+    pub async fn image_uploads_traced(
+        &self,
+        request: &ImageUploadRequest,
+        user: Option<MetricsUser>,
+        trace: Option<&Trace>,
+    ) -> Result<ImageResponse, RouterError> {
+        self.capability_failover(&request.model, request.operation(), user, trace, |provider, model| {
             let mut request = request.clone();
             request.model = model;
             async move { provider.image_uploads(&request).await }

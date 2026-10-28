@@ -29,6 +29,7 @@ pub struct Outcome {
     pub completion_tokens: Option<u32>,
     pub cached_tokens: Option<u32>,
     pub cache_write_tokens: Option<u32>,
+    pub cost_msat: Option<i64>,
     pub response: Vec<u8>,
 }
 
@@ -121,6 +122,7 @@ pub fn build(inbound: Inbound, trace: &Trace, outcome: Outcome, started_at_ms: i
         previous_request_id: previous,
         request_bytes: upstream.request_body.as_ref().map_or(0, |b| b.len() as i64),
         response_bytes: outcome.response.len() as i64,
+        cost_msat: outcome.cost_msat,
         client_request_packed: pack(&inbound.body),
         upstream_request_packed: upstream.request_body.as_deref().and_then(pack),
         response_packed: if outcome.response.is_empty() { None } else { pack(&outcome.response) },
@@ -185,6 +187,7 @@ pub struct Pending {
     completion_tokens: Option<u32>,
     cached_tokens: Option<u32>,
     cache_write_tokens: Option<u32>,
+    cost_msat: Option<i64>,
 }
 
 impl Pending {
@@ -199,7 +202,19 @@ impl Pending {
             completion_tokens: None,
             cached_tokens: None,
             cache_write_tokens: None,
+            cost_msat: None,
         }
+    }
+
+    pub fn observe_tokens(&mut self, usage: crate::payments::biller::TokenUsage) {
+        self.prompt_tokens = Some(usage.prompt_tokens);
+        self.completion_tokens = Some(usage.completion_tokens);
+        self.cached_tokens = Some(usage.cached_tokens);
+        self.cache_write_tokens = Some(usage.cache_write_tokens);
+    }
+
+    pub fn set_cost(&mut self, cost_msat: i64) {
+        self.cost_msat = Some(cost_msat);
     }
 
     pub fn trace(&self) -> &Trace {
@@ -239,6 +254,7 @@ impl Pending {
             completion_tokens: routed.map(|u| u.completion_tokens).or(self.completion_tokens),
             cached_tokens: routed.map(|u| u.cached_tokens).or(self.cached_tokens),
             cache_write_tokens: routed.map(|u| u.cache_write_tokens).or(self.cache_write_tokens),
+            cost_msat: self.cost_msat,
             response: self.collector.assembled(),
         }
     }

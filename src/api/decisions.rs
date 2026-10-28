@@ -1,31 +1,43 @@
 use axum::{
-    extract::{Extension, State},
-    http::{header, StatusCode},
+    extract::{ConnectInfo, Extension, State},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    Json,
 };
+use bytes::Bytes;
+use std::net::SocketAddr;
 use std::sync::Arc;
+
+use crate::api::metered::{Metered, RequestInfo};
 
 use crate::api::modalities::require_modalities;
 use crate::api::shared::{check_model_access, error_body, metrics_user, router_error, HandlerError};
 use crate::auth::admin::AuthenticatedUser;
-use crate::payments::biller::BillingError;
-use crate::payments::guard::{insufficient_funds_response, BillingGuard};
 use crate::providers::decision::DecisionRequest;
 use crate::state::AppState;
 
 pub async fn decide(
     State(state): State<Arc<AppState>>,
     Extension(authenticated): Extension<AuthenticatedUser>,
-    Json(request): Json<DecisionRequest>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Response, HandlerError> {
+    let request: DecisionRequest = serde_json::from_slice(&body)
+        .map_err(|e| (StatusCode::BAD_REQUEST, error_body(&format!("Invalid request body: {e}"), "invalid_request_error")))?;
     request
         .validate()
         .map_err(|message| (StatusCode::BAD_REQUEST, error_body(&message, "invalid_request_error")))?;
 
-    check_model_access(&state, authenticated.user.id, &request.model).await?;
+    let info = RequestInfo { endpoint: "/v1/systemone", model: &request.model, stream: false, headers: &headers, peer: peer.map(|p| p.0) };
+    let mut metered = Metered::begin(&state, &authenticated, info, || body.to_vec());
+
+    if let Err(e) = check_model_access(&state, authenticated.user.id, &request.model).await {
+        return Err(metered.reject(e));
+    }
     if request.image.is_some() {
-        require_modalities(&state, &request.model, &[crate::router::Modality::Image], &[]).await?;
+        if let Err(e) = require_modalities(&state, &request.model, &[crate::router::Modality::Image], &[]).await {
+            return Err(metered.reject(e));
+        }
     }
 
     tracing::info!(
@@ -35,46 +47,28 @@ pub async fn decide(
         "Received decision request"
     );
 
-    let billing = BillingGuard::try_create(&state, Some(authenticated.user.id), &request.model)
-        .await
-        .map_err(billing_error)?;
+    if let Err(e) = metered.admit().await {
+        return Err(metered.reject(e));
+    }
 
     let result = state
         .config
         .router
-        .decide(&request, Some(metrics_user(&authenticated)))
+        .decide_traced(&request, Some(metrics_user(&authenticated)), Some(metered.trace()))
         .await;
 
-    match result.as_ref() {
-        Ok(r) => {
-            let usage = r.usage().unwrap_or_default();
-            let billed_msat = billing.finalize(usage.input_tokens, usage.output_tokens).await;
-            crate::usage::record(
-                &state,
-                authenticated.api_key.as_ref().map(|k| k.id),
-                &request.model,
-                crate::payments::biller::TokenUsage::plain(usage.input_tokens, usage.output_tokens),
-                billed_msat,
-            )
-            .await;
+    match result {
+        Ok(response) => {
+            let usage = response
+                .usage()
+                .map(|u| crate::payments::biller::TokenUsage::plain(u.input_tokens, u.output_tokens));
+            metered.succeed(response.body.to_vec(), usage).await;
+            Ok(([(header::CONTENT_TYPE, "application/json")], response.body).into_response())
         }
-        Err(_) => {}
-    }
-    let response = result.map_err(|e| router_error(e, "decisions"))?;
-
-    Ok(([(header::CONTENT_TYPE, "application/json")], response.body).into_response())
-}
-
-fn billing_error(e: BillingError) -> HandlerError {
-    match e {
-        BillingError::InsufficientFunds { required, available } => {
-            let (code, json) = insufficient_funds_response(required, available);
-            (code, json.0.to_string())
+        Err(e) => {
+            metered.fail(&e.to_string());
+            Err(router_error(e, "decisions"))
         }
-        e => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error_body(&format!("Billing error: {e}"), "billing_error"),
-        ),
     }
 }
 
