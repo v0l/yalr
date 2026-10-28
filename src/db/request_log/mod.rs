@@ -6,6 +6,14 @@ use super::Database;
 use sqlx::{MySql, QueryBuilder, Transaction};
 
 const DELETE_BATCH: usize = 500;
+
+const BODY_BYTES_TOTAL: &str =
+    "SELECT CAST(COALESCE(SUM(size_bytes), 0) AS SIGNED) FROM request_log_body WHERE log_id > ?";
+
+const BODIES_OVER_BYTE_CAP: &str = "SELECT log_id FROM (
+    SELECT log_id, SUM(size_bytes) OVER (ORDER BY log_id DESC) AS newest_first_total
+    FROM request_log_body
+) totals WHERE newest_first_total > ?";
 const DAY_MS: i64 = 86_400_000;
 
 const SUMMARY_COLUMNS: &str = "id, request_id, started_at_ms, model, stream, provider, status, error, attempts, \
@@ -82,13 +90,14 @@ async fn insert_one(tx: &mut Transaction<'_, MySql>, r: &Record, max_packet: usi
         tracing::warn!(request_id = %r.request_id, bytes = size, "Request log body exceeds max_allowed_packet, not stored");
     } else if r.client_request_packed.is_some() || r.upstream_request_packed.is_some() || r.response_packed.is_some() {
         sqlx::query(
-            "INSERT INTO request_log_body (log_id, client_request_packed, upstream_request_packed, response_packed) \
-             VALUES (?, ?, ?, ?)",
+            "INSERT INTO request_log_body (log_id, client_request_packed, upstream_request_packed, response_packed, \
+             size_bytes) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(&r.client_request_packed)
         .bind(&r.upstream_request_packed)
         .bind(&r.response_packed)
+        .bind(size as i64)
         .execute(&mut **tx)
         .await?;
     }
@@ -143,18 +152,7 @@ impl Database {
             removed += self.delete_ids("request_log_body", "log_id", ids).await?;
         }
         if retention.max_body_bytes > 0 {
-            let ids: Vec<i64> = sqlx::query_scalar(
-                "SELECT log_id FROM (
-                    SELECT log_id, SUM(size) OVER (ORDER BY log_id DESC) AS newest_first_total
-                    FROM (
-                        SELECT log_id,
-                               COALESCE(LENGTH(client_request_packed), 0)
-                             + COALESCE(LENGTH(upstream_request_packed), 0)
-                             + COALESCE(LENGTH(response_packed), 0) AS size
-                        FROM request_log_body
-                    ) sizes
-                ) totals WHERE newest_first_total > ?",
-            )
+            let ids: Vec<i64> = sqlx::query_scalar(BODIES_OVER_BYTE_CAP)
             .bind(i64::try_from(retention.max_body_bytes).unwrap_or(i64::MAX))
             .fetch_all(&self.pool)
             .await?;
@@ -170,15 +168,20 @@ impl Database {
         Ok(removed)
     }
 
-    pub async fn request_log_body_bytes(&self) -> Result<i64, sqlx::Error> {
-        sqlx::query_scalar(
-            "SELECT CAST(COALESCE(SUM(COALESCE(LENGTH(client_request_packed), 0)
-                                    + COALESCE(LENGTH(upstream_request_packed), 0)
-                                    + COALESCE(LENGTH(response_packed), 0)), 0) AS SIGNED)
-             FROM request_log_body",
+    pub async fn backfill_request_log_body_sizes(&self, batch: i64) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE request_log_body SET size_bytes = COALESCE(LENGTH(client_request_packed), 0) \
+             + COALESCE(LENGTH(upstream_request_packed), 0) + COALESCE(LENGTH(response_packed), 0) \
+             WHERE size_bytes IS NULL ORDER BY log_id LIMIT ?",
         )
-        .fetch_one(&self.pool)
-        .await
+        .bind(batch)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn request_log_body_bytes(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar(BODY_BYTES_TOTAL).bind(0i64).fetch_one(&self.pool).await
     }
 
     pub async fn list_request_logs(&self, limit: i64, filter: Filter<'_>) -> Result<Vec<Summary>, sqlx::Error> {

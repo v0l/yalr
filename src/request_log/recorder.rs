@@ -264,7 +264,23 @@ impl Drop for Pending {
     }
 }
 
+const SIZE_BACKFILL_BATCH: i64 = 200;
+
+async fn backfill_body_sizes(db: &Database) {
+    loop {
+        match db.backfill_request_log_body_sizes(SIZE_BACKFILL_BATCH).await {
+            Ok(0) => return,
+            Ok(_) => tokio::task::yield_now().await,
+            Err(e) => {
+                tracing::error!(error = %e, "Request log body size backfill failed");
+                return;
+            }
+        }
+    }
+}
+
 pub async fn prune_now(db: &Database, retention: &Retention) {
+    backfill_body_sizes(db).await;
     let now = chrono::Utc::now().timestamp_millis();
     match db.prune_request_logs(now, retention).await {
         Ok(0) => {}

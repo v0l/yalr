@@ -194,3 +194,36 @@ async fn a_body_over_the_packet_limit_is_dropped_without_losing_the_batch() {
     assert!(db.request_log_detail(ids[1]).await.unwrap().is_some());
     assert!(db.request_log_bodies(ids[1]).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn body_size_queries_read_the_size_index_not_the_blobs() {
+    use sqlx::Row;
+    let db = Database::test().await;
+    for n in 0..20 {
+        db.insert_request_log(sized(&format!("r{n}"), n, 1000)).await.unwrap();
+    }
+    sqlx::query("ANALYZE TABLE request_log_body").execute(&db.pool).await.unwrap();
+    for sql in [BODY_BYTES_TOTAL, BODIES_OVER_BYTE_CAP] {
+        let rows = sqlx::query(&format!("EXPLAIN {sql}")).bind(1i64).fetch_all(&db.pool).await.unwrap();
+        let body_scan = rows
+            .iter()
+            .find(|r| r.try_get::<Option<String>, _>("table").unwrap().as_deref() == Some("request_log_body"))
+            .expect("plan touches request_log_body");
+        let extra: Option<String> = body_scan.try_get("Extra").unwrap();
+        assert!(extra.unwrap_or_default().contains("Using index"), "{sql} reads the blobs");
+    }
+}
+
+#[tokio::test]
+async fn bodies_without_a_recorded_size_are_backfilled_in_batches() {
+    let db = Database::test().await;
+    for n in 0..5 {
+        db.insert_request_log(sized(&format!("r{n}"), n, 1000)).await.unwrap();
+    }
+    db.execute_raw("UPDATE request_log_body SET size_bytes = NULL").await.unwrap();
+    assert_eq!(db.request_log_body_bytes().await.unwrap(), 0);
+    assert_eq!(db.backfill_request_log_body_sizes(2).await.unwrap(), 2);
+    assert_eq!(db.request_log_body_bytes().await.unwrap(), 4_000);
+    while db.backfill_request_log_body_sizes(2).await.unwrap() > 0 {}
+    assert_eq!(db.request_log_body_bytes().await.unwrap(), 10_000);
+}
