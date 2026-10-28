@@ -148,7 +148,7 @@ mod tests {
     use crate::metrics::MetricsStore;
 
     async fn setup() -> Arc<AppState> {
-        let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+        let db = Arc::new(Database::test().await);
         let metrics_store = Arc::new(MetricsStore::new(100));
         let router = Arc::new(crate::router::engine::Router::new(
             (*metrics_store).clone(),

@@ -23,7 +23,7 @@ pub struct ModelUsage {
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct HourUsage {
-    pub hour: String,
+    pub hour: super::Timestamp,
     #[sqlx(flatten)]
     #[serde(flatten)]
     pub usage: ApiKeyUsage,
@@ -36,9 +36,14 @@ struct KeyUsage {
     usage: ApiKeyUsage,
 }
 
-const SUMS: &str = "SUM(requests) AS requests, SUM(prompt_tokens) AS prompt_tokens,
-    SUM(completion_tokens) AS completion_tokens, SUM(cached_tokens) AS cached_tokens,
-    SUM(cache_write_tokens) AS cache_write_tokens, SUM(cost_msat) AS cost_msat";
+const SUMS: &str = "CAST(COALESCE(SUM(requests), 0) AS SIGNED) AS requests,
+    CAST(COALESCE(SUM(prompt_tokens), 0) AS SIGNED) AS prompt_tokens,
+    CAST(COALESCE(SUM(completion_tokens), 0) AS SIGNED) AS completion_tokens,
+    CAST(COALESCE(SUM(cached_tokens), 0) AS SIGNED) AS cached_tokens,
+    CAST(COALESCE(SUM(cache_write_tokens), 0) AS SIGNED) AS cache_write_tokens,
+    CAST(COALESCE(SUM(cost_msat), 0) AS SIGNED) AS cost_msat";
+
+const CURRENT_HOUR: &str = "DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%d %H:00:00')";
 
 impl Database {
     pub async fn record_api_key_usage(
@@ -48,19 +53,19 @@ impl Database {
         usage: TokenUsage,
         cost_msat: i64,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query(
+        sqlx::query(&format!(
             "INSERT INTO api_key_usage
                 (api_key_id, hour, model, requests, prompt_tokens, completion_tokens,
                  cached_tokens, cache_write_tokens, cost_msat)
-             VALUES (?, strftime('%Y-%m-%dT%H:00:00Z', 'now'), ?, 1, ?, ?, ?, ?, ?)
-             ON CONFLICT (api_key_id, hour, model) DO UPDATE SET
+             VALUES (?, {CURRENT_HOUR}, ?, 1, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
                 requests = requests + 1,
-                prompt_tokens = prompt_tokens + excluded.prompt_tokens,
-                completion_tokens = completion_tokens + excluded.completion_tokens,
-                cached_tokens = cached_tokens + excluded.cached_tokens,
-                cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
-                cost_msat = cost_msat + excluded.cost_msat",
-        )
+                prompt_tokens = prompt_tokens + VALUES(prompt_tokens),
+                completion_tokens = completion_tokens + VALUES(completion_tokens),
+                cached_tokens = cached_tokens + VALUES(cached_tokens),
+                cache_write_tokens = cache_write_tokens + VALUES(cache_write_tokens),
+                cost_msat = cost_msat + VALUES(cost_msat)",
+        ))
         .bind(api_key_id)
         .bind(model)
         .bind(usage.prompt_tokens as i64)
@@ -92,13 +97,7 @@ impl Database {
         let (filter, id) = scope.filter();
         let since = since_clause(hours);
         let total = sqlx::query_as::<_, ApiKeyUsage>(&format!(
-            "SELECT COALESCE(SUM(requests), 0) AS requests,
-                COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-                COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
-                COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
-                COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
-                COALESCE(SUM(cost_msat), 0) AS cost_msat
-             FROM api_key_usage WHERE {filter} AND {since}"
+            "SELECT {SUMS} FROM api_key_usage WHERE {filter} AND {since}"
         ))
         .bind(id)
         .fetch_one(&self.pool)
@@ -145,7 +144,7 @@ pub struct UsageReport {
 }
 
 fn since_clause(hours: u32) -> String {
-    format!("hour > strftime('%Y-%m-%dT%H:00:00Z', 'now', '-{hours} hours')")
+    format!("hour > {CURRENT_HOUR} - INTERVAL {hours} HOUR")
 }
 
 #[cfg(test)]
@@ -154,7 +153,7 @@ mod tests {
 
     #[tokio::test]
     async fn usage_accumulates_per_key_and_model() {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
         sqlx::query("INSERT INTO users (username, user_type, is_admin) VALUES ('u', 0, 0)")
             .execute(&db.pool)
             .await
@@ -192,15 +191,14 @@ mod tests {
         assert_eq!(report.by_model.len(), 2);
         assert_eq!(report.by_model[0].model, "gpt");
         assert_eq!(report.by_hour.len(), 1);
-        assert!(report.by_hour[0].hour.ends_with(":00:00Z"));
+        assert_eq!(report.by_hour[0].hour.timestamp() % 3600, 0);
 
         let user = db.usage_report(UsageScope::User(1), 24).await.unwrap();
         assert_eq!(user.total.requests, 4);
 
         assert_eq!(db.usage_report(UsageScope::Key(3), 24).await.unwrap().total, ApiKeyUsage::default());
 
-        sqlx::query("UPDATE api_key_usage SET hour = strftime('%Y-%m-%dT%H:00:00Z', 'now', '-30 hours') WHERE api_key_id = 2")
-            .execute(&db.pool)
+        db.execute_raw(&format!("UPDATE api_key_usage SET hour = {CURRENT_HOUR} - INTERVAL 30 HOUR WHERE api_key_id = 2"))
             .await
             .unwrap();
         assert_eq!(db.usage_report(UsageScope::Key(2), 24).await.unwrap().total.requests, 0);

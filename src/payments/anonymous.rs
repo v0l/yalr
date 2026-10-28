@@ -80,11 +80,6 @@ pub fn derive_api_key(secret: &str, public_id: &str) -> String {
     format!("sk-{}", hex::encode(hasher.finalize()))
 }
 
-fn unix(timestamp: &str) -> Option<i64> {
-    chrono::NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S")
-        .ok()
-        .map(|dt| dt.and_utc().timestamp())
-}
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
@@ -224,7 +219,7 @@ async fn status_for(
 ) -> Response {
     let mut status = row.status.clone();
     if status == "pending" {
-        if let Some(expires) = row.expires_at.as_deref().and_then(unix) {
+        if let Some(expires) = row.expires_at.map(|t| t.timestamp()) {
             if chrono::Utc::now().timestamp() > expires {
                 let _ = state.db.update_lightning_invoice_status(&row.payment_hash, "expired").await;
                 status = "expired".to_string();
@@ -242,9 +237,9 @@ async fn status_for(
         status,
         api_key,
         amount_sats: row.amount_sats,
-        paid_at: row.paid_at.as_deref().and_then(unix),
-        created_at: unix(&row.created_at).unwrap_or_default(),
-        expires_at: row.expires_at.as_deref().and_then(unix).unwrap_or_default(),
+        paid_at: row.paid_at.map(|t| t.timestamp()),
+        created_at: row.created_at.timestamp(),
+        expires_at: row.expires_at.map_or(0, |t| t.timestamp()),
     })
     .into_response()
 }

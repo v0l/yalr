@@ -65,11 +65,7 @@ impl LightningService {
             amount_sats: amount_sats as i64,
             amount_msat: amount_msat as i64,
             memo: Some(memo.to_string()),
-            expires_at: db_invoice.expires_at.and_then(|s| {
-                chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
-                    .ok()
-                    .map(|dt| dt.and_utc().timestamp())
-            }),
+            expires_at: db_invoice.expires_at.map(|t| t.timestamp()),
             invoice_id: Some(db_invoice.id),
         })
     }
@@ -90,20 +86,9 @@ impl LightningService {
         }
 
         // Check expiry
-        if let Some(ref expires_at) = db_invoice.expires_at {
-            // SQLite timestamps are "YYYY-MM-DD HH:MM:SS"
-            if let Ok(exp) = chrono::NaiveDateTime::parse_from_str(expires_at, "%Y-%m-%d %H:%M:%S") {
-                if chrono::Utc::now().naive_utc() > exp {
-                    let _ = self
-                        .db
-                        .update_lightning_invoice_status(payment_hash, "expired")
-                        .await;
-                    return Ok(InvoiceResponse {
-                        status: "expired".to_string(),
-                        ..db_invoice.into()
-                    });
-                }
-            }
+        if db_invoice.expires_at.is_some_and(|exp| chrono::Utc::now() > exp) {
+            let _ = self.db.update_lightning_invoice_status(payment_hash, "expired").await;
+            return Ok(InvoiceResponse { status: "expired".to_string(), ..db_invoice.into() });
         }
 
         // Still pending — return as is
@@ -228,8 +213,8 @@ pub struct InvoiceResponse {
     pub amount_sats: i64,
     pub amount_msat: i64,
     pub status: String,
-    pub created_at: String,
-    pub expires_at: Option<String>,
+    pub created_at: crate::db::Timestamp,
+    pub expires_at: Option<crate::db::Timestamp>,
 }
 
 impl From<LightningInvoiceRow> for InvoiceResponse {
@@ -275,8 +260,8 @@ mod tests {
             amount_sats: 1000,
             amount_msat: 1_000_000,
             status: "pending".to_string(),
-            created_at: "2025-01-01T00:00:00".to_string(),
-            expires_at: Some("2025-01-01T01:00:00".to_string()),
+            created_at: Default::default(),
+            expires_at: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("lnbc..."));

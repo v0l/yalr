@@ -15,8 +15,8 @@ pub struct UserResponse {
     pub external_id: Option<String>,
     pub user_type: String,
     pub is_admin: bool,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: crate::db::Timestamp,
+    pub updated_at: crate::db::Timestamp,
 }
 
 #[derive(Serialize)]
@@ -38,8 +38,8 @@ pub struct UserApiKeyResponse {
     pub id: i64,
     pub name: String,
     pub last_four: String,
-    pub created_at: String,
-    pub expires_at: Option<String>,
+    pub created_at: crate::db::Timestamp,
+    pub expires_at: Option<crate::db::Timestamp>,
     pub is_active: bool,
 }
 
@@ -228,55 +228,34 @@ pub async fn update_user(
             }
     }
 
-    let mut updates = Vec::new();
-    let mut bindings: Vec<String> = Vec::new();
-
-    if let Some(new_username) = &request.username {
-        updates.push("username = ?".to_string());
-        bindings.push(new_username.clone());
-    }
-
-    if let Some(new_password) = &request.password {
-        if existing_user.user_type == UserType::Internal {
+    let password_hash = match &request.password {
+        Some(new_password) if existing_user.user_type == UserType::Internal => {
             let salt = SaltString::generate(&mut OsRng);
-            let argon2 = Argon2::default();
-            let hash = argon2
+            let hash = Argon2::default()
                 .hash_password(new_password.as_bytes(), &salt)
                 .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
                 .to_string();
-            updates.push("password_hash = ?".to_string());
-            bindings.push(hash);
+            Some(hash)
         }
-    }
+        _ => None,
+    };
 
-    if request.is_admin.is_some() {
-        updates.push("is_admin = ?".to_string());
-    }
-
-    if updates.is_empty() {
+    if request.username.is_none() && password_hash.is_none() && request.is_admin.is_none() {
         return Err((axum::http::StatusCode::BAD_REQUEST, "No updates provided".to_string()));
     }
 
-    let mut query = format!("UPDATE users SET updated_at = CURRENT_TIMESTAMP, {}", updates.join(", "));
-    query.push_str(" WHERE id = ? RETURNING *");
-
-    let mut query_builder = sqlx::query_as::<_, crate::db::User>(&query);
-
-    for binding in &bindings {
-        query_builder = query_builder.bind(binding);
-    }
-
-    if let Some(is_admin) = request.is_admin {
-        query_builder = query_builder.bind(is_admin);
-    }
-
-    query_builder = query_builder.bind(user_id);
-
-    let updated_user = query_builder
-        .fetch_one(&state.db.pool)
+    let updated_user = state
+        .db
+        .update_user(
+            user_id,
+            crate::db::UserChanges {
+                username: request.username.as_deref(),
+                password_hash: password_hash.as_deref(),
+                is_admin: request.is_admin,
+            },
+        )
         .await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    state.db.invalidate_auth_cache();
 
     let user_response = UserResponse {
         id: updated_user.id,
@@ -351,7 +330,7 @@ pub async fn get_user(
             name: k.name,
             last_four: k.last_four,
             created_at: k.created_at,
-            expires_at: k.expires_at.map(|e| e.to_string()),
+            expires_at: k.expires_at,
             is_active: k.is_active,
         }
     }).collect();
@@ -526,8 +505,8 @@ pub struct UserModelPermissionResponse {
     pub user_id: i64,
     pub model: String,
     pub allow: bool,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: crate::db::Timestamp,
+    pub updated_at: crate::db::Timestamp,
 }
 
 #[derive(serde::Deserialize)]
@@ -580,18 +559,15 @@ pub async fn create_user_model_permission(
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, "User not found".to_string()))?;
 
-    // Upsert permission (INSERT OR REPLACE)
-    let permission = sqlx::query_as::<_, crate::db::UserModelPermission>(
-        "INSERT INTO user_model_permissions (user_id, model, allow) VALUES (?, ?, ?)
-         ON CONFLICT(user_id, model) DO UPDATE SET allow = excluded.allow, updated_at = CURRENT_TIMESTAMP
-         RETURNING *"
-    )
-    .bind(request.user_id)
-    .bind(request.model)
-    .bind(request.allow)
-    .fetch_one(&state.db.pool)
-    .await
-    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let permission = state
+        .db
+        .upsert_user_model_permission(crate::db::NewUserModelPermission {
+            user_id: request.user_id,
+            model: &request.model,
+            allow: request.allow,
+        })
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(UserModelPermissionResponse {
         id: permission.id,

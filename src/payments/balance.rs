@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use crate::db::{Database, BalanceTransactionRow};
+use crate::db::{BalanceTransactionRow, Database, Debit, LedgerEntry};
 
 pub fn is_deposit(tx_type: &str) -> bool {
     !matches!(tx_type, "refund" | "refund_reversal")
@@ -33,40 +33,9 @@ impl BalanceService {
         if amount_msat <= 0 {
             return Err(BalanceError::InvalidAmount(amount_msat));
         }
-
         let deposited = if is_deposit(tx_type) { amount_msat } else { 0 };
-        let mut tx = self.db.pool.begin().await?;
-
-        let new_balance = sqlx::query_scalar::<_, i64>(
-            r#"INSERT INTO user_balances (user_id, balance_msat, lifetime_deposited_msat)
-               VALUES (?, ?, ?)
-               ON CONFLICT(user_id) DO UPDATE SET
-                   balance_msat = balance_msat + ?,
-                   lifetime_deposited_msat = lifetime_deposited_msat + ?,
-                   updated_at = CURRENT_TIMESTAMP
-               RETURNING balance_msat"#,
-        )
-        .bind(user_id)
-        .bind(amount_msat)
-        .bind(deposited)
-        .bind(amount_msat)
-        .bind(deposited)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            r#"INSERT INTO balance_transactions (user_id, amount_msat, transaction_type, reference_id)
-               VALUES (?, ?, ?, ?)"#,
-        )
-        .bind(user_id)
-        .bind(amount_msat)
-        .bind(tx_type)
-        .bind(reference_id)
-        .execute(&mut *tx)
-        .await?;
-
-        tx.commit().await?;
-        Ok(new_balance)
+        let entry = LedgerEntry { user_id, amount_msat, tx_type, reference_id, metadata: None };
+        Ok(self.db.apply_balance_change(entry, deposited).await?)
     }
 
     pub async fn charge(
@@ -80,37 +49,8 @@ impl BalanceService {
         if amount_msat <= 0 {
             return Err(BalanceError::InvalidAmount(amount_msat));
         }
-        let negative = -amount_msat;
-        let mut tx = self.db.pool.begin().await?;
-
-        let new_balance = sqlx::query_scalar::<_, i64>(
-            r#"INSERT INTO user_balances (user_id, balance_msat, lifetime_deposited_msat)
-               VALUES (?, ?, 0)
-               ON CONFLICT(user_id) DO UPDATE SET
-                   balance_msat = balance_msat + ?,
-                   updated_at = CURRENT_TIMESTAMP
-               RETURNING balance_msat"#,
-        )
-        .bind(user_id)
-        .bind(negative)
-        .bind(negative)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            r#"INSERT INTO balance_transactions (user_id, amount_msat, transaction_type, reference_id, metadata)
-               VALUES (?, ?, ?, ?, ?)"#,
-        )
-        .bind(user_id)
-        .bind(negative)
-        .bind(tx_type)
-        .bind(reference_id)
-        .bind(metadata)
-        .execute(&mut *tx)
-        .await?;
-
-        tx.commit().await?;
-        Ok(new_balance)
+        let entry = LedgerEntry { user_id, amount_msat: -amount_msat, tx_type, reference_id, metadata };
+        Ok(self.db.apply_balance_change(entry, 0).await?)
     }
 
     /// Debit (subtract) from a user's balance. Fails if insufficient funds.
@@ -135,52 +75,13 @@ impl BalanceService {
         if amount_msat <= 0 {
             return Err(BalanceError::InvalidAmount(amount_msat));
         }
-
-        let negative = -amount_msat;
-        let mut tx = self.db.pool.begin().await?;
-
-        // Ensure balance row exists and check sufficiency atomically
-        let current = sqlx::query_scalar::<_, i64>(
-            "SELECT balance_msat FROM user_balances WHERE user_id = ?",
-        )
-        .bind(user_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .unwrap_or(0);
-
-        if current < amount_msat {
-            return Err(BalanceError::InsufficientFunds {
-                required: amount_msat,
-                available: current,
-            });
+        let entry = LedgerEntry { user_id, amount_msat: -amount_msat, tx_type, reference_id, metadata };
+        match self.db.debit_balance(entry).await? {
+            Debit::Done(balance) => Ok(balance),
+            Debit::Insufficient { available } => {
+                Err(BalanceError::InsufficientFunds { required: amount_msat, available })
+            }
         }
-
-        let new_balance = sqlx::query_scalar::<_, i64>(
-            r#"UPDATE user_balances SET
-                   balance_msat = balance_msat + ?,
-                   updated_at = CURRENT_TIMESTAMP
-               WHERE user_id = ?
-               RETURNING balance_msat"#,
-        )
-        .bind(negative)
-        .bind(user_id)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            r#"INSERT INTO balance_transactions (user_id, amount_msat, transaction_type, reference_id, metadata)
-               VALUES (?, ?, ?, ?, ?)"#,
-        )
-        .bind(user_id)
-        .bind(negative)
-        .bind(tx_type)
-        .bind(reference_id)
-        .bind(metadata)
-        .execute(&mut *tx)
-        .await?;
-
-        tx.commit().await?;
-        Ok(new_balance)
     }
 
     /// Get recent transactions for a user.
@@ -214,12 +115,9 @@ mod tests {
     use super::*;
 
     async fn setup() -> (BalanceService, Arc<Database>) {
-        let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+        let db = Arc::new(Database::test().await);
         // Create a user for the tests
-        sqlx::query("INSERT INTO users (username, user_type, is_admin) VALUES ('test', 0, 0)")
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        db.execute_raw("INSERT INTO users (username, user_type, is_admin) VALUES ('test', 0, 0)").await.unwrap();
         (BalanceService::new(db.clone()), db)
     }
 
@@ -274,6 +172,21 @@ mod tests {
         svc.credit(1, 10_000, "deposit", "ref1").await.unwrap();
         let result = svc.debit(1, 20_000, "charge", "req1").await;
         assert!(matches!(result, Err(BalanceError::InsufficientFunds { .. })));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_debits_never_overdraw() {
+        let (svc, _db) = setup().await;
+        svc.credit(1, 10_000, "deposit", "seed").await.unwrap();
+        let svc = Arc::new(svc);
+        let debits = (0..40).map(|n| {
+            let svc = svc.clone();
+            tokio::spawn(async move { svc.debit(1, 1_000, "usage", &format!("d{n}")).await.is_ok() })
+        });
+        let succeeded = futures::future::join_all(debits).await.into_iter().filter(|r| *r.as_ref().unwrap()).count();
+        assert_eq!(succeeded, 10);
+        assert_eq!(svc.get_balance(1).await.unwrap(), 0);
+        assert_eq!(svc.get_transactions(1, 100).await.unwrap().len(), 11);
     }
 
     #[tokio::test]

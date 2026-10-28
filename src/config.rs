@@ -6,6 +6,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct Config {
     pub server: ServerConfig,
+    #[serde(default)]
     pub database: DatabaseConfig,
     pub auth: Option<AuthConfig>,
     pub payments: Option<PaymentsConfig>,
@@ -86,6 +87,12 @@ pub struct DatabaseConfig {
     pub url: String,
 }
 
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self { url: "mysql://yalr:yalr@127.0.0.1:3306/yalr".to_string() }
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct AuthConfig {
     pub enabled: bool,
@@ -100,9 +107,7 @@ impl Default for Config {
                 port: 3000,
                 admin_ui_path: default_admin_ui_path(),
             },
-            database: DatabaseConfig {
-                url: "sqlite:llm_router.db?mode=rwc".to_string(),
-            },
+            database: DatabaseConfig::default(),
             auth: None,
             payments: None,
             discovery: None,
@@ -190,6 +195,16 @@ pub struct AppConfig {
     pub port: u16,
 }
 
+impl Config {
+    pub fn load_file() -> Config {
+        config::Config::builder()
+            .add_source(config::File::with_name("config").required(false).format(config::FileFormat::Yaml))
+            .build()
+            .and_then(|c| c.try_deserialize())
+            .unwrap_or_default()
+    }
+}
+
 impl AppConfig {
     pub async fn load(metrics_store: std::sync::Arc<MetricsStore>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let config: Config = config::Config::builder()
@@ -197,7 +212,8 @@ impl AppConfig {
             .build()?
             .try_deserialize()?;
 
-        let db = Arc::new(Database::new(&config.database.url).await?);
+        let database_url = std::env::var("DATABASE_URL").unwrap_or(config.database.url.clone());
+        let db = Arc::new(Database::new(&database_url).await?);
 
         let router = Arc::new(Router::new(
             (*metrics_store).clone(),
@@ -232,5 +248,22 @@ impl AppConfig {
 
     pub async fn load_providers(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.router.reload_config().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_config_without_a_database_block_parses_so_database_url_can_supply_it() {
+        let yaml = "server:\n  host: \"0.0.0.0\"\n  port: 3000\n  admin_ui_path: \"/app/admin/dist\"\n";
+        let config: Config = config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(config.database.url, Config::default().database.url);
     }
 }

@@ -215,7 +215,7 @@ mod tests {
     const BOUNDARY: &str = "----yalrtestboundary";
 
     async fn setup(upstream: &str) -> (Arc<AppState>, String) {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
         let metrics_store = MetricsStore::new(1000);
 
         let router = Arc::new(crate::router::engine::Router::new(

@@ -7,7 +7,7 @@ server:
   admin_ui_path: "/app/admin/dist"
 
 database:
-  url: "sqlite:/app/data/yalr.db?mode=rwc"
+  url: "mysql://yalr:yalr@db:3306/yalr"
 
 auth:
   enabled: false

@@ -5,7 +5,7 @@ async fn app() -> (Arc<AppState>, axum::Router) {
     use crate::metrics::MetricsStore;
     use crate::payments::{balance::BalanceService, pricing::PricingResolver, PaymentsState};
 
-    let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+    let db = Arc::new(Database::test().await);
     let metrics_store = Arc::new(MetricsStore::new(100));
     let router = Arc::new(crate::router::engine::Router::new((*metrics_store).clone(), db.clone()));
     let payments = PaymentsState {
@@ -181,10 +181,7 @@ async fn plain_user_sees_and_can_use_only_models_for_sale() {
             .await
             .unwrap();
     }
-    sqlx::query("INSERT INTO model_pricing (model_name, is_advertised) VALUES ('sale', 1)")
-        .execute(&state.db.pool)
-        .await
-        .unwrap();
+    state.db.execute_raw("INSERT INTO model_pricing (model_name, is_advertised) VALUES ('sale', 1)").await.unwrap();
 
     let secret = state.db.server_secret().await.unwrap();
     let public_id = random_hex();
@@ -236,13 +233,8 @@ async fn public_model_list_matches_the_routstr_shape_and_hides_unsold_models() {
             .await
             .unwrap();
     }
-    sqlx::query(
-        "INSERT INTO model_pricing (model_name, is_advertised, price_per_1m_input_sats, price_per_1m_output_sats, price_per_request_sats, context_window)
-         VALUES ('sale', 1, 21, 42, 1, 256000)",
-    )
-    .execute(&state.db.pool)
-    .await
-    .unwrap();
+    state.db.execute_raw("INSERT INTO model_pricing (model_name, is_advertised, price_per_1m_input_sats, price_per_1m_output_sats, price_per_request_sats, context_window)
+         VALUES ('sale', 1, 21, 42, 1, 256000)").await.unwrap();
 
     let (code, body) = get(&app, "/v1/models", None).await;
     assert_eq!(code, StatusCode::OK);
@@ -372,7 +364,7 @@ fn derived_key_is_stable_and_scoped() {
 
 #[tokio::test]
 async fn created_account_accepts_the_derived_key_and_is_not_admin() {
-    let db = Database::new("sqlite::memory:").await.unwrap();
+    let db = Database::test().await;
     let secret = db.server_secret().await.unwrap();
     let public_id = random_hex();
     let user_id = create_account(&db, &secret, &public_id).await.unwrap();
@@ -391,12 +383,6 @@ fn amount_bounds_and_purpose_names() {
     let req: InvoiceRequest = serde_json::from_str(r#"{"amount_sats":500,"purpose":"topup"}"#).unwrap();
     assert_eq!(req.purpose, Purpose::Topup);
     assert!(serde_json::from_str::<InvoiceRequest>(r#"{"amount_sats":5,"purpose":"x"}"#).is_err());
-}
-
-#[test]
-fn parses_sqlite_timestamps() {
-    assert_eq!(unix("1970-01-01 00:01:00"), Some(60));
-    assert_eq!(unix("garbage"), None);
 }
 
 #[tokio::test]
@@ -424,14 +410,9 @@ async fn cached_prompt_tokens_are_billed_at_the_cache_read_price() {
     let provider = Arc::new(OpenAiProvider::new("up", Some("up"), &format!("{}/", upstream.uri()), None));
     state.config.router.add_provider(provider.clone()).await;
     state.config.router.register_route("sale", vec![provider]).await;
-    sqlx::query(
-        "INSERT INTO model_pricing (model_name, is_advertised, price_per_1m_input_sats, price_per_1m_output_sats,
+    state.db.execute_raw("INSERT INTO model_pricing (model_name, is_advertised, price_per_1m_input_sats, price_per_1m_output_sats,
          price_per_1m_cache_read_sats, price_per_1m_cache_write_sats, price_per_request_sats, context_window, max_output_tokens)
-         VALUES ('sale', 1, 1000, 4000, 100, 1250, 0, 1000000, 100)",
-    )
-    .execute(&state.db.pool)
-    .await
-    .unwrap();
+         VALUES ('sale', 1, 1000, 4000, 100, 1250, 0, 1000000, 100)").await.unwrap();
 
     let secret = state.db.server_secret().await.unwrap();
     let public_id = random_hex();
@@ -503,10 +484,7 @@ async fn context_length_comes_from_the_smallest_backend_in_the_pool() {
         .await
         .unwrap();
     let _servers = pool_of(&state, "pool", vec![("pool", 1_000_000), ("pool", 131_072)]).await;
-    sqlx::query("INSERT INTO model_pricing (model_name, is_advertised) VALUES ('pool', 1)")
-        .execute(&state.db.pool)
-        .await
-        .unwrap();
+    state.db.execute_raw("INSERT INTO model_pricing (model_name, is_advertised) VALUES ('pool', 1)").await.unwrap();
 
     let secret = state.db.server_secret().await.unwrap();
     let public_id = random_hex();
@@ -533,12 +511,7 @@ async fn an_explicit_context_window_beats_what_the_upstream_reports() {
         .await
         .unwrap();
     let _servers = pool_of(&state, "pinned", vec![("pinned", 1_000_000)]).await;
-    sqlx::query(
-        "INSERT INTO model_pricing (model_name, is_advertised, context_window, max_output_tokens) VALUES ('pinned', 1, 64000, 8000)",
-    )
-    .execute(&state.db.pool)
-    .await
-    .unwrap();
+    state.db.execute_raw("INSERT INTO model_pricing (model_name, is_advertised, context_window, max_output_tokens) VALUES ('pinned', 1, 64000, 8000)").await.unwrap();
 
     let secret = state.db.server_secret().await.unwrap();
     let public_id = random_hex();

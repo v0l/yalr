@@ -119,7 +119,7 @@ mod tests {
     }
 
     async fn router() -> Router {
-        let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+        let db = Arc::new(Database::test().await);
         Router::new(MetricsStore::new(100), db)
     }
 

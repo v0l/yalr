@@ -14,13 +14,9 @@ pub struct AuthCache {
     generation: Arc<AtomicU64>,
 }
 
-fn already_expired_or_unparsable(key: &ApiKey) -> bool {
-    let Some(expires_at) = &key.expires_at else {
-        return false;
-    };
-    chrono::NaiveDateTime::parse_from_str(expires_at, "%Y-%m-%d %H:%M:%S%.f")
-        .map(|at| at.and_utc().timestamp() - chrono::Utc::now().timestamp() < TTL.as_secs() as i64)
-        .unwrap_or(true)
+fn expires_within_ttl(key: &ApiKey) -> bool {
+    key.expires_at
+        .is_some_and(|at| at.timestamp() - chrono::Utc::now().timestamp() < TTL.as_secs() as i64)
 }
 
 impl AuthCache {
@@ -41,7 +37,7 @@ impl AuthCache {
     }
 
     fn put(&self, generation: u64, key_hash: &str, key: ApiKey, user: User) {
-        if already_expired_or_unparsable(&key) {
+        if expires_within_ttl(&key) {
             return;
         }
         let mut entries = self.entries.lock().unwrap();
@@ -94,7 +90,7 @@ mod tests {
     use crate::db::{NewApiKey, NewUser, UserType};
 
     async fn db_with_key() -> (Database, i64) {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
         let user = db
             .create_user(NewUser { username: Some("u"), password_hash: None, external_id: None, user_type: UserType::Internal, is_admin: false })
             .await
@@ -126,12 +122,12 @@ mod tests {
 
     #[tokio::test]
     async fn keys_about_to_expire_are_not_cached() {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
         let user = db
             .create_user(NewUser { username: Some("u"), password_hash: None, external_id: None, user_type: UserType::Internal, is_admin: false })
             .await
             .unwrap();
-        let soon = chrono::Utc::now().naive_utc() + chrono::Duration::seconds(5);
+        let soon = chrono::Utc::now() + chrono::Duration::seconds(5);
         db.create_api_key(NewApiKey { key_hash: "e", name: "k", user_id: user.id, last_four: "abcd", expires_at: Some(soon) })
             .await
             .unwrap();
@@ -141,17 +137,28 @@ mod tests {
 
     #[tokio::test]
     async fn keys_with_a_distant_expiry_are_cached() {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
         let user = db
             .create_user(NewUser { username: Some("u"), password_hash: None, external_id: None, user_type: UserType::Internal, is_admin: false })
             .await
             .unwrap();
-        let later = chrono::Utc::now().naive_utc() + chrono::Duration::days(30);
+        let later = chrono::Utc::now() + chrono::Duration::days(30);
         db.create_api_key(NewApiKey { key_hash: "l", name: "k", user_id: user.id, last_four: "abcd", expires_at: Some(later) })
             .await
             .unwrap();
         assert!(db.authenticate_api_key("l").await.unwrap().is_some());
         assert!(db.auth_cache.get("l").is_some());
+    }
+
+    #[tokio::test]
+    async fn expired_keys_are_rejected() {
+        let db = Database::test().await;
+        let user = db.add_test_user("u", false).await;
+        let past = chrono::Utc::now() - chrono::Duration::minutes(1);
+        db.create_api_key(NewApiKey { key_hash: "x", name: "k", user_id: user.id, last_four: "abcd", expires_at: Some(past) })
+            .await
+            .unwrap();
+        assert!(db.authenticate_api_key("x").await.unwrap().is_none());
     }
 
     #[tokio::test]

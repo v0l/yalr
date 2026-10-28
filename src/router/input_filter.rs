@@ -136,7 +136,7 @@ mod tests {
     }
 
     async fn router(backends: Vec<Arc<dyn Provider>>) -> Router {
-        let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+        let db = Arc::new(Database::test().await);
         let router = Router::new(MetricsStore::new(100), db);
         router.register_route("pool", backends).await;
         router

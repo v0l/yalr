@@ -22,22 +22,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = config::AppConfig::load(metrics_store.clone()).await.expect("Failed to load config");
     config.load_providers().await.expect("Failed to load providers");
 
-    let background_pool = config.db.pool.clone();
+    let background_db = config.db.clone();
     let background_metrics = metrics_store.clone();
     tokio::spawn(async move {
-        background_metrics.set_db_pool(background_pool.clone());
+        background_metrics.set_db(background_db.clone());
         background_metrics.load_history_from_db().await;
         background_metrics.start_history_snapshots(300);
 
         let log_settings = yalr::request_log::settings::get();
         if log_settings.enabled {
-            let retention = yalr::request_log::store::Retention {
+            let retention = yalr::db::Retention {
                 body_days: log_settings.body_retention_days,
                 metadata_days: log_settings.metadata_retention_days,
                 max_body_bytes: log_settings.max_body_bytes,
             };
-            yalr::request_log::recorder::prepare_storage(&background_pool, &retention).await;
-            yalr::request_log::recorder::spawn_pruner(background_pool, retention);
+            yalr::request_log::recorder::prune_now(&background_db, &retention).await;
+            yalr::request_log::recorder::spawn_pruner((*background_db).clone(), retention);
         }
     });
 

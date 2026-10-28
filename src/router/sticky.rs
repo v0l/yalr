@@ -172,7 +172,7 @@ mod tests {
                 .iter()
                 .map(|n| Arc::new(Backend { name: n.to_string(), calls: AtomicUsize::new(0), failing: AtomicBool::new(false) }))
                 .collect();
-            let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+            let db = Arc::new(Database::test().await);
             let router = Router::new(MetricsStore::new(100), db);
             router
                 .register_route("pool", backends.iter().map(|b| b.clone() as Arc<dyn Provider>).collect())

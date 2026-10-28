@@ -1,4 +1,5 @@
-use crate::request_log::{codec::unpack, store};
+use crate::db::{Detail, Filter, Summary};
+use crate::request_log::codec::unpack;
 use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
@@ -27,9 +28,9 @@ pub struct ListQuery {
 pub async fn list(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ListQuery>,
-) -> Result<Json<Vec<store::Summary>>, ApiError> {
+) -> Result<Json<Vec<Summary>>, ApiError> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let filter = store::Filter {
+    let filter = Filter {
         before: query.before,
         model: query.model.as_deref(),
         status: query.status.as_deref(),
@@ -37,7 +38,7 @@ pub async fn list(
         api_key_id: query.api_key_id,
         since_ms: None,
     };
-    store::list(&state.db.pool, limit, filter)
+    state.db.list_request_logs(limit, filter)
         .await
         .map(Json)
         .map_err(internal)
@@ -46,7 +47,7 @@ pub async fn list(
 #[derive(Serialize)]
 pub struct DetailResponse {
     #[serde(flatten)]
-    detail: store::Detail,
+    detail: Detail,
     client_headers_parsed: serde_json::Value,
     upstream_request_headers_parsed: serde_json::Value,
     upstream_response_headers_parsed: serde_json::Value,
@@ -66,13 +67,13 @@ pub async fn detail(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Json<DetailResponse>, ApiError> {
-    let detail = store::detail(&state.db.pool, id)
+    let detail = state.db.request_log_detail(id)
         .await
         .map_err(internal)?
         .ok_or((StatusCode::NOT_FOUND, "no such request".to_string()))?;
-    let has_bodies = store::has_bodies(&state.db.pool, id).await.map_err(internal)?;
+    let has_bodies = state.db.request_log_has_bodies(id).await.map_err(internal)?;
     let previous_log_id = match detail.previous_request_id.as_deref() {
-        Some(previous) => store::id_for_request(&state.db.pool, previous).await.map_err(internal)?,
+        Some(previous) => state.db.request_log_id(previous).await.map_err(internal)?,
         None => None,
     };
     Ok(Json(DetailResponse {
@@ -106,7 +107,7 @@ pub async fn bodies(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Json<BodiesResponse>, ApiError> {
-    let bodies = store::bodies(&state.db.pool, id)
+    let bodies = state.db.request_log_bodies(id)
         .await
         .map_err(internal)?
         .ok_or((StatusCode::NOT_FOUND, "no bodies stored for this request (expired or disabled)".to_string()))?;

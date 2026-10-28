@@ -86,7 +86,7 @@ mod tests {
     }
 
     async fn app() -> (axum::Router, String) {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
         let metrics_store = MetricsStore::new(100);
         let router = Arc::new(crate::router::engine::Router::new(
             metrics_store.clone(),

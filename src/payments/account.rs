@@ -22,7 +22,7 @@ pub struct HistoryEntry {
     pub kind: &'static str,
     pub amount_msat: i64,
     pub detail: Option<String>,
-    pub created_at: String,
+    pub created_at: crate::db::Timestamp,
 }
 
 #[derive(Serialize)]
@@ -39,8 +39,8 @@ pub struct InvoiceEntry {
     pub purpose: String,
     pub amount_sats: i64,
     pub status: String,
-    pub created_at: String,
-    pub paid_at: Option<String>,
+    pub created_at: crate::db::Timestamp,
+    pub paid_at: Option<crate::db::Timestamp>,
 }
 
 fn kind(tx_type: &str) -> &'static str {
@@ -163,7 +163,7 @@ mod tests {
             transaction_type: tx.into(),
             reference_id: Some(reference.into()),
             metadata: None,
-            created_at: format!("2026-10-20 14:00:{id:02}"),
+            created_at: chrono::DateTime::from_timestamp(1_792_504_800 + id, 0).unwrap(),
         }
     }
 

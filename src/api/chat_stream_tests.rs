@@ -51,7 +51,7 @@ async fn slow_upstream() -> String {
 }
 
 async fn serve_router(upstream: &str) -> (String, String) {
-    let db = Database::new("sqlite::memory:").await.unwrap();
+    let db = Database::test().await;
     let metrics_store = MetricsStore::new(1000);
     let router = Arc::new(crate::router::engine::Router::new(metrics_store.clone(), Arc::new(db.clone())));
     let provider = Arc::new(OpenAiProvider::new("slow", Some("slow"), upstream, None));

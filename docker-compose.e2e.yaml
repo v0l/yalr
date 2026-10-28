@@ -19,6 +19,7 @@ volumes:
   e2e-lnd-alice:
   e2e-lnd-bob:
   e2e-yalr-data:
+  e2e-yalr-db:
 
 services:
   # ── Bitcoin Core (regtest) ──────────────────────────────────────────────
@@ -126,6 +127,23 @@ services:
       retries: 30
       start_period: 10s
 
+  # ── MariaDB for YALR ────────────────────────────────────────────────────
+  db:
+    image: mariadb:11
+    command: ["--max-allowed-packet=64M"]
+    environment:
+      MARIADB_DATABASE: yalr
+      MARIADB_USER: yalr
+      MARIADB_PASSWORD: yalr
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    volumes:
+      - "e2e-yalr-db:/var/lib/mysql"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
   # ── YALR (LLM Router with payments enabled) ─────────────────────────────
   yalr:
     build:
@@ -137,12 +155,14 @@ services:
         condition: service_healthy
       mock-llm:
         condition: service_healthy
+      db:
+        condition: service_healthy
     volumes:
       # Mount LND Alice's data directory so YALR can read TLS cert + macaroon
       - "e2e-lnd-alice:/lnd-data:ro"
       # Mount e2e config
       - ./config.e2e.yaml:/app/config.yaml:ro
-      # Named volume for YALR data (SQLite DB)
+      # Named volume for YALR data
       - "e2e-yalr-data:/app/data"
     environment:
       - RUST_LOG=info

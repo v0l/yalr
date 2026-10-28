@@ -218,7 +218,7 @@ mod tests {
 
     #[tokio::test]
     async fn generated_identity_is_stable() {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
         let first = load_keys(&config(), &db).await.unwrap();
         let second = load_keys(&config(), &db).await.unwrap();
         assert_eq!(first.public_key(), second.public_key());
@@ -226,14 +226,9 @@ mod tests {
 
     #[tokio::test]
     async fn only_priced_and_advertised_models_are_listed() {
-        let db = Database::new("sqlite::memory:").await.unwrap();
-        for (name, advertised) in [("b-model", 1), ("a-model", 1), ("secret", 0)] {
-            sqlx::query("INSERT INTO model_pricing (model_name, is_advertised) VALUES (?, ?)")
-                .bind(name)
-                .bind(advertised)
-                .execute(&db.pool)
-                .await
-                .unwrap();
+        let db = Database::test().await;
+        for (name, advertised) in [("b-model", true), ("a-model", true), ("secret", false)] {
+            db.price_model(name, advertised).await;
         }
         db.create_routing_config(crate::db::NewRoutingConfig {
             name: "unpriced".into(),

@@ -130,7 +130,7 @@ mod tests {
     use std::sync::Arc;
 
     async fn setup_test_state() -> (Arc<AppState>, MetricsStore) {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
         let metrics_store = MetricsStore::new(1000);
 
         let app_config = crate::config::AppConfig {

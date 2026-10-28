@@ -7,8 +7,8 @@ impl Database {
     pub async fn is_billing_exempt(&self, user_id: i64) -> Result<bool, sqlx::Error> {
         sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM billing_exempt_users WHERE user_id = ?)
-                 OR EXISTS(SELECT 1 FROM user_model_permissions WHERE user_id = ? AND allow = 1)
-                 OR COALESCE((SELECT is_admin FROM users WHERE id = ?), 0)",
+                 OR EXISTS(SELECT 1 FROM user_model_permissions WHERE user_id = ? AND allow = TRUE)
+                 OR COALESCE((SELECT is_admin FROM users WHERE id = ?), FALSE)",
         )
         .bind(user_id)
         .bind(user_id)
@@ -24,7 +24,7 @@ mod tests {
 
     #[tokio::test]
     async fn admins_and_listed_users_are_exempt() {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
         for (name, admin) in [("root", 1), ("friend", 0), ("stranger", 0)] {
             sqlx::query("INSERT INTO users (username, user_type, is_admin) VALUES (?, 0, ?)")
                 .bind(name)

@@ -176,7 +176,7 @@ mod tests {
     const IMAGES: &str = r#"{"created":1,"data":[{"b64_json":"aGk="}]}"#;
 
     async fn app(upstream: &str) -> (axum::Router, String) {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
         let metrics_store = MetricsStore::new(1000);
         let router = Arc::new(crate::router::engine::Router::new(
             metrics_store.clone(),

@@ -9,7 +9,10 @@ cargo run --bin yalr-server
 # Run CLI
 cargo run --bin yalr-cli
 
-# Run all tests
+# Test database (once): every test creates and drops its own database here
+docker run -d --name yalr-test-mariadb -e MARIADB_ROOT_PASSWORD=root -p 127.0.0.1:3307:3306 mariadb:11
+
+# Run all tests (YALR_TEST_DATABASE_URL overrides mysql://root:root@127.0.0.1:3307)
 cargo test
 
 # Run library tests only
@@ -71,7 +74,13 @@ audio.
 
 **Metrics**: `src/metrics.rs` - Shared metrics store for health/load tracking
 
-**Database**: `src/db/mod.rs` - SQLite via sqlx with migrations in `./migrations/`
+**Database**: `src/db/` - MariaDB via sqlx, migrations in `./migrations/`. Every SQL query
+lives on `Database`, split by domain (`providers.rs`, `routing.rs`, `users.rs`, `payments.rs`,
+`pricing.rs`, `usage.rs`, `request_log/`, ...). Nothing outside `src/db/` touches the pool;
+add a method there instead. Joins and aggregates for admin pages and reports get their own
+named method (`usage_report`, `list_all_user_balances`, `list_request_logs`), not ad hoc SQL
+in a handler. `migrations-sqlite/` is the frozen legacy schema, used only by
+`yalr-cli import-sqlite` (`src/db/import/`).
 
 ## Model Routing Rules
 
@@ -126,7 +135,13 @@ failure. Neither consumes a retry or touches health.
 - All tests inline in source files: `#[cfg(test)] mod tests { ... }` at bottom of file
 - No separate `*_test.rs` files (integration tests in `/tests/` are exceptions)
 - Use `wiremock` for HTTP mocking in provider tests
-- Use in-memory SQLite (`sqlite::memory:`) for DB tests
+- DB tests use `Database::test().await`: a fresh MariaDB database, dropped when the last clone
+  of it goes away. Seed with `Database` methods (`add_test_user`, `price_model`), or
+  `execute_raw` for state no method can make (backdated rows).
+- MariaDB quirks: no `RETURNING` through sqlx prepared statements (insert, then select by
+  `last_insert_id()`), `SUM()` decodes as DECIMAL (cast to `SIGNED`), timestamps are UTC
+  `DATETIME(3)` decoded as `chrono::DateTime<Utc>`. Tables use `utf8mb4_uca1400_as_cs`, so
+  string `=` stays case sensitive.
 
 ## Provider Implementation Rules
 
@@ -144,7 +159,7 @@ All Router instances share the same `MetricsStore` for:
 
 ## Configuration
 
-- Providers loaded from SQLite database (`llm_router.db`) via `src/config.rs`
+- Providers loaded from MariaDB (`database.url`, overridden by `DATABASE_URL`) via `src/config.rs`
 - Config file (`config.yaml`) loaded from working directory - see example in repo
 - Environment vars: `HOST`, `PORT`, `RUST_LOG`
 - Auth uses NIP-98 (Nostr) - pubkeys configured in `config.yaml`

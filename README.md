@@ -16,7 +16,7 @@ High-performance async LLM router with load balancing, provider management, inte
 - **Retry & Fallback**: Automatic retry with exponential backoff and fallback to next available provider on failure
 - **Admin UI**: React-based web interface for managing providers, API keys, and viewing metrics
 - **Authentication**: Session-based auth with NIP-98 (Nostr), API keys, and internal user/password accounts
-- **Database-Backed Config**: SQLite database for persistent provider, routing, user, and payment configuration
+- **Database-Backed Config**: MariaDB database for persistent provider, routing, user, and payment configuration
 - **CLI Tool**: Command-line interface for additional operations
 - **Top-up System**: Lightning Network payment integration (Routstr/PPQ) with auto-generated invoices
 
@@ -87,13 +87,25 @@ server:
   port: 3000
 
 database:
-  url: "sqlite:data/llm_router.db?mode=rwc"
+  url: "mysql://yalr:yalr@127.0.0.1:3306/yalr"
 
 auth:
   enabled: true
   allowed_pubkeys:
     - "your-nostr-pubkey"
 ```
+
+`DATABASE_URL` overrides `database.url`. Migrations in `migrations/` run at startup.
+
+To move an existing SQLite install over, stop the server, start it once against an empty
+MariaDB database (or just let the import create the schema), then copy the data:
+
+```bash
+yalr-cli import-sqlite data/llm_router.db --database-url mysql://yalr:yalr@db:3306/yalr
+```
+
+The import brings the SQLite file up to date with `migrations-sqlite/` first, keeps every id,
+and refuses to run against a database that already has rows.
 
 ### Routstr Discovery
 
@@ -352,7 +364,7 @@ src/
 ├── api/
 │   └── handlers.rs  # HTTP request handlers
 ├── auth/            # Authentication (NIP-98, sessions)
-├── db/              # Database layer (SQLite, migrations)
+├── db/              # Database layer (MariaDB, all SQL lives here)
 ├── router/
 │   ├── engine.rs    # Core routing engine
 │   ├── model_router.rs  # Model-specific routing
@@ -394,7 +406,7 @@ cargo test --lib router::model_router
 
 Tests use:
 - `wiremock` for HTTP mocking in provider tests
-- In-memory SQLite (`sqlite::memory:`) for DB tests
+- A throwaway MariaDB database per test (`Database::test()`), see Testing Conventions in `AGENTS.md`
 - Inline test modules: `#[cfg(test)] mod tests { ... }`
 
 ## Deployment

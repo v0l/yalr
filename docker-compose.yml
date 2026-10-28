@@ -1,15 +1,37 @@
 version: '3.8'
 
 services:
+  db:
+    image: mariadb:11
+    container_name: yalr-db
+    restart: unless-stopped
+    command: ["--max-allowed-packet=64M"]
+    environment:
+      - MARIADB_DATABASE=yalr
+      - MARIADB_USER=yalr
+      - MARIADB_PASSWORD=yalr
+      - MARIADB_RANDOM_ROOT_PASSWORD=1
+    volumes:
+      - ./data/mariadb:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   yalr:
     build: .
     container_name: yalr
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml:ro
     environment:
       - RUST_LOG=info
+      - DATABASE_URL=mysql://yalr:yalr@db:3306/yalr
     command: ["yalr-server"]
     ports:
       - "127.0.0.1:3000:3000"

@@ -97,9 +97,9 @@ struct InvoiceStatusResponse {
     status: String,
     payment_hash: String,
     amount_sats: i64,
-    created_at: String,
+    created_at: crate::db::Timestamp,
     #[serde(skip_serializing_if = "Option::is_none")]
-    expires_at: Option<String>,
+    expires_at: Option<crate::db::Timestamp>,
 }
 
 /// Upstream invoice request body (RIP-08)

@@ -416,8 +416,8 @@ pub struct MetricsStore {
     /// History snapshots for graphing (timestamp -> list of provider+model metric snapshots)
     history: Arc<RwLock<VecDeque<MetricsSnapshot>>>,
     max_history_snapshots: usize,
-    /// SQLite pool for persisting history snapshots across restarts
-    db: Arc<std::sync::Mutex<Option<sqlx::SqlitePool>>>,
+    /// Database for persisting history snapshots across restarts
+    db: Arc<std::sync::Mutex<Option<Arc<crate::db::Database>>>>,
 }
 
 /// Type alias for MetricsStore - now cloneable with internal Arc<Mutex>
@@ -479,26 +479,21 @@ impl MetricsStore {
         }
     }
 
-    /// Set the DB pool for persisting history snapshots.
+    /// Set the database for persisting history snapshots.
     /// Must be called before start_history_snapshots.
-    pub fn set_db_pool(&self, pool: sqlx::SqlitePool) {
-        *self.db.lock().unwrap() = Some(pool);
+    pub fn set_db(&self, db: Arc<crate::db::Database>) {
+        *self.db.lock().unwrap() = Some(db);
     }
 
     /// Load history snapshots from DB and populate the in-memory buffer.
-    /// Call after set_db_pool, before start_history_snapshots.
+    /// Call after set_db, before start_history_snapshots.
     pub async fn load_history_from_db(&self) {
-        let pool = match self.db.lock().unwrap().as_ref() {
-            Some(p) => p.clone(),
+        let db = match self.db.lock().unwrap().as_ref() {
+            Some(db) => db.clone(),
             None => return,
         };
 
-        let rows: Result<Vec<(i64, String)>, _> = sqlx::query_as::<_, (i64, String)>(
-            "SELECT timestamp_ms, snapshot_json FROM metrics_history ORDER BY timestamp_ms DESC LIMIT ?"
-        )
-        .bind(self.max_history_snapshots as i64)
-        .fetch_all(&pool)
-        .await;
+        let rows = db.recent_metrics_snapshots(self.max_history_snapshots as i64).await;
 
         match rows {
             Ok(rows) => {
@@ -513,10 +508,7 @@ impl MetricsStore {
                 snapshots.retain(|s| s.timestamp_ms >= cutoff);
 
                 // Also clean expired ones from DB
-                let _ = sqlx::query("DELETE FROM metrics_history WHERE timestamp_ms < ?")
-                    .bind(cutoff as i64)
-                    .execute(&pool)
-                    .await;
+                let _ = db.prune_metrics_snapshots(cutoff as i64, self.max_history_snapshots as i64).await;
 
                 let mut history = self.history.write().await;
                 history.clear();
@@ -826,28 +818,13 @@ impl MetricsStore {
 
         let snapshot = MetricsSnapshot { timestamp_ms: now, providers: provider_snapshots, provider_health };
 
-        // Persist to SQLite if pool is configured
-        let pool = self.db.lock().unwrap().clone();
-        if let Some(pool) = &pool {
+        let db = self.db.lock().unwrap().clone();
+        if let Some(db) = &db {
             match serde_json::to_string(&snapshot) {
                 Ok(json) => {
-                    let _ = sqlx::query(
-                        "INSERT OR REPLACE INTO metrics_history (timestamp_ms, snapshot_json) VALUES (?, ?)"
-                    )
-                    .bind(now as i64)
-                    .bind(&json)
-                    .execute(pool)
-                    .await;
-
-                    // Prune rows older than 24h and cap to max_history_snapshots
+                    let _ = db.save_metrics_snapshot(now as i64, &json).await;
                     let cutoff = now.saturating_sub(24 * 3600 * 1000);
-                    let _ = sqlx::query(
-                        "DELETE FROM metrics_history WHERE timestamp_ms < ? OR timestamp_ms NOT IN (SELECT timestamp_ms FROM metrics_history ORDER BY timestamp_ms DESC LIMIT ?)"
-                    )
-                    .bind(cutoff as i64)
-                    .bind(self.max_history_snapshots as i64)
-                    .execute(pool)
-                    .await;
+                    let _ = db.prune_metrics_snapshots(cutoff as i64, self.max_history_snapshots as i64).await;
                 }
                 Err(e) => {
                     tracing::warn!(err = %e, "Failed to serialize metrics snapshot for DB");

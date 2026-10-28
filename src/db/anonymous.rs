@@ -1,4 +1,4 @@
-use super::{Database, LightningInvoiceRow};
+use super::Database;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct PublicInvoice {
@@ -13,13 +13,13 @@ pub struct AccountInvoice {
     pub purpose: String,
     pub amount_sats: i64,
     pub status: String,
-    pub created_at: String,
-    pub paid_at: Option<String>,
+    pub created_at: super::Timestamp,
+    pub paid_at: Option<super::Timestamp>,
 }
 
 impl Database {
     pub async fn server_secret(&self) -> Result<String, sqlx::Error> {
-        sqlx::query("INSERT OR IGNORE INTO server_secret (id, secret) VALUES (1, ?)")
+        sqlx::query("INSERT IGNORE INTO server_secret (id, secret) VALUES (1, ?)")
             .bind(random_hex())
             .execute(&self.pool)
             .await?;
@@ -45,7 +45,7 @@ impl Database {
 
     pub async fn prune_unpaid_anonymous_users(&self) -> Result<u64, sqlx::Error> {
         let done = sqlx::query(
-            "DELETE FROM users WHERE created_at < datetime('now', '-2 days') AND created_at >= datetime('now', '-3 days')
+            "DELETE FROM users WHERE created_at < UTC_TIMESTAMP(3) - INTERVAL 2 DAY AND created_at >= UTC_TIMESTAMP(3) - INTERVAL 3 DAY
              AND username LIKE 'anon_%'
              AND NOT EXISTS (SELECT 1 FROM lightning_invoices WHERE user_id = users.id AND status = 'paid')",
         )
@@ -104,14 +104,6 @@ impl Database {
         .await
     }
 
-    pub async fn get_invoice_by_bolt11(&self, bolt11: &str) -> Result<Option<LightningInvoiceRow>, sqlx::Error> {
-        sqlx::query_as::<_, LightningInvoiceRow>(
-            "SELECT id, user_id, payment_hash, bolt11, amount_msat, amount_sats, status, created_at, expires_at, paid_at FROM lightning_invoices WHERE bolt11 = ?",
-        )
-        .bind(bolt11)
-        .fetch_optional(&self.pool)
-        .await
-    }
 }
 
 pub fn random_hex() -> String {
@@ -127,14 +119,15 @@ mod tests {
 
     #[tokio::test]
     async fn prunes_only_old_unpaid_anonymous_users() {
-        let db = Database::new("sqlite::memory:").await.unwrap();
-        for (name, age) in [("anon_old", "-60 hours"), ("anon_new", "-1 hours"), ("alice", "-60 hours")] {
-            sqlx::query("INSERT INTO users (username, user_type, is_admin, created_at) VALUES (?, 0, 0, datetime('now', ?))")
-                .bind(name)
-                .bind(age)
-                .execute(&db.pool)
-                .await
-                .unwrap();
+        let db = Database::test().await;
+        for (name, hours) in [("anon_old", 60), ("anon_new", 1), ("alice", 60)] {
+            let user = db.add_test_user(name, false).await;
+            db.execute_raw(&format!(
+                "UPDATE users SET created_at = UTC_TIMESTAMP(3) - INTERVAL {hours} HOUR WHERE id = {}",
+                user.id
+            ))
+            .await
+            .unwrap();
         }
         assert_eq!(db.prune_unpaid_anonymous_users().await.unwrap(), 1);
         assert!(db.get_user_by_username("anon_old").await.unwrap().is_none());
@@ -144,7 +137,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_secret_is_stable() {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
         let first = db.server_secret().await.unwrap();
         assert_eq!(first.len(), 32);
         assert_eq!(db.server_secret().await.unwrap(), first);

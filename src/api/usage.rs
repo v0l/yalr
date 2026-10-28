@@ -1,6 +1,6 @@
 use crate::auth::admin::AuthenticatedUser;
 use crate::db::{UsageReport, UsageScope};
-use crate::request_log::store;
+use crate::db::{Filter, Summary};
 use crate::state::AppState;
 use axum::{
     extract::{Extension, Path, Query, State},
@@ -73,18 +73,18 @@ pub async fn my_requests(
     Extension(authenticated): Extension<AuthenticatedUser>,
     Query(query): Query<MyRequestsQuery>,
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<store::Summary>>, ApiError> {
+) -> Result<Json<Vec<Summary>>, ApiError> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let since_ms = query.hours.map(|h| {
         let now = chrono::Utc::now().timestamp_millis();
         now - i64::from(h.clamp(1, MAX_HOURS)) * 3_600_000
     });
-    let filter = store::Filter {
+    let filter = Filter {
         before: query.before,
         user_id: Some(authenticated.user.id),
         api_key_id: authenticated.api_key.as_ref().map(|k| k.id),
         since_ms,
         ..Default::default()
     };
-    store::list(&state.db.pool, limit, filter).await.map(Json).map_err(internal)
+    state.db.list_request_logs(limit, filter).await.map(Json).map_err(internal)
 }

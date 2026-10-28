@@ -143,12 +143,9 @@ mod tests {
     use crate::db::Database;
 
     async fn setup() -> BillingEngine {
-        let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+        let db = Arc::new(Database::test().await);
         // Create a test user
-        sqlx::query("INSERT INTO users (username, user_type, is_admin) VALUES ('test', 0, 0)")
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        db.execute_raw("INSERT INTO users (username, user_type, is_admin) VALUES ('test', 0, 0)").await.unwrap();
 
         let defaults = DefaultPricingConfig {
             price_per_1m_input_sats: 5,    // 5 sats per 1M input tokens
@@ -265,19 +262,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_free_model_skips_charges() {
-        let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
-        sqlx::query("INSERT INTO users (username, user_type, is_admin) VALUES ('test', 0, 0)")
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        let db = Arc::new(Database::test().await);
+        db.execute_raw("INSERT INTO users (username, user_type, is_admin) VALUES ('test', 0, 0)").await.unwrap();
 
         // Create a free model pricing
-        sqlx::query(
-            "INSERT INTO model_pricing (model_name, is_free, is_advertised) VALUES ('free-model', 1, 1)"
-        )
-        .execute(&db.pool)
-        .await
-        .unwrap();
+        db.execute_raw("INSERT INTO model_pricing (model_name, is_free, is_advertised) VALUES ('free-model', 1, 1)").await.unwrap();
 
         let defaults = DefaultPricingConfig::default();
         let balance_service = Arc::new(BalanceService::new(db.clone()));

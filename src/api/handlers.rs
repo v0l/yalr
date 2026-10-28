@@ -26,7 +26,7 @@ mod tests {
     use tower::util::ServiceExt;
 
     async fn setup_test_state() -> (Arc<AppState>, MetricsStore) {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
 
         let metrics_store = MetricsStore::new(1000);
 
@@ -37,7 +37,7 @@ mod tests {
                 admin_ui_path: "/app/admin/dist".to_string(),
             },
             database: DatabaseConfig {
-                url: "sqlite::memory:".to_string(),
+                url: db.test_url().unwrap(),
             },
             auth: None,
             payments: None,

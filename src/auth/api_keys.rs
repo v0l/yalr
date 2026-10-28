@@ -34,7 +34,7 @@ pub async fn create_api_key(
         name: &req.name,
         user_id,
         last_four: &last_four,
-        expires_at: expires_at.map(|dt| dt.naive_utc()),
+        expires_at,
     }).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(ApiKeyResponse {
@@ -43,7 +43,7 @@ pub async fn create_api_key(
         key: plain_key,
         last_four: api_key.last_four,
         created_at: api_key.created_at,
-        expires_at: expires_at.map(|dt| dt.to_string()),
+        expires_at,
     }))
 }
 
@@ -71,7 +71,7 @@ pub async fn create_api_key_for_user(
         name: &req.name,
         user_id,
         last_four: &last_four,
-        expires_at: expires_at.map(|dt| dt.naive_utc()),
+        expires_at,
     }).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(ApiKeyResponse {
@@ -80,7 +80,7 @@ pub async fn create_api_key_for_user(
         key: plain_key,
         last_four: api_key.last_four,
         created_at: api_key.created_at,
-        expires_at: expires_at.map(|dt| dt.to_string()),
+        expires_at,
     }))
 }
 
@@ -117,8 +117,8 @@ pub struct ApiKeyResponse {
     pub name: String,
     pub key: String, // Only shown once at creation
     pub last_four: String,
-    pub created_at: String,
-    pub expires_at: Option<String>,
+    pub created_at: crate::db::Timestamp,
+    pub expires_at: Option<crate::db::Timestamp>,
 }
 
 #[derive(serde::Serialize)]
@@ -127,8 +127,8 @@ pub struct ApiKeyListItem {
     pub id: i64,
     pub name: String,
     pub last_four: String,
-    pub created_at: String,
-    pub expires_at: Option<String>,
+    pub created_at: crate::db::Timestamp,
+    pub expires_at: Option<crate::db::Timestamp>,
     pub is_active: bool,
 }
 

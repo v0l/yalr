@@ -64,7 +64,7 @@ impl Database {
         modalities: &DeclaredModalities,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE routing_config SET input_modalities = ?, output_modalities = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            "UPDATE routing_config SET input_modalities = ?, output_modalities = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
         )
         .bind(encode(&modalities.input))
         .bind(encode(&modalities.output))
@@ -94,7 +94,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_config_declares_nothing() {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
         let rc = config(&db).await;
         assert_eq!(rc.declared_modalities(), DeclaredModalities::default());
         assert_eq!(rc.declared_modalities().rejection(&[Modality::Image], &[Modality::Audio]), None);
@@ -102,7 +102,7 @@ mod tests {
 
     #[tokio::test]
     async fn modalities_round_trip_through_the_database() {
-        let db = Database::new("sqlite::memory:").await.unwrap();
+        let db = Database::test().await;
         let rc = config(&db).await;
         let declared = DeclaredModalities {
             input: Some(vec![Modality::Text, Modality::Image]),

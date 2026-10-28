@@ -19,8 +19,8 @@ pub struct ModelPricingResponse {
     pub price_per_request_sats: Option<i64>,
     pub context_window: Option<i32>,
     pub max_output_tokens: Option<i32>,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: crate::db::Timestamp,
+    pub updated_at: crate::db::Timestamp,
 }
 
 #[derive(Deserialize)]

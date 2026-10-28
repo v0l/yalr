@@ -1,10 +1,9 @@
 use clap::{Parser, Subcommand};
 use futures::StreamExt;
-use sqlx::SqlitePool;
 use std::io::Write;
 use std::sync::Arc;
 use yalr::{
-    api, config, db::{Database, Provider}, metrics, ChatCompletionRequest,
+    api, config, db::{Database, NewProvider}, metrics, ChatCompletionRequest,
     ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageContent,
     ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
     ChatCompletionRequestUserMessageContent, Router, ChatRequest,
@@ -29,6 +28,14 @@ enum Commands {
     Version,
     /// Check configuration
     CheckConfig,
+    /// Copy a legacy SQLite database into the configured MariaDB database
+    ImportSqlite {
+        /// Path to the SQLite file, e.g. data/llm_router.db
+        path: String,
+        /// Target database URL, defaults to DATABASE_URL or config.yaml
+        #[arg(long)]
+        database_url: Option<String>,
+    },
     /// Manage providers
     #[command(subcommand)]
     Provider(ProviderCommands),
@@ -94,6 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             api::server::run(config, &addr, emitter, std::sync::Arc::new(metrics_store)).await?;
         }
+        Commands::ImportSqlite { path, database_url } => import_sqlite(&path, database_url).await,
         Commands::Version => {
             println!("yalr-cli 0.1.0");
         }
@@ -114,17 +122,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let db = config.db;
 
             match provider_cmd {
-                ProviderCommands::List => list_providers(&db.pool).await,
+                ProviderCommands::List => list_providers(&db).await,
                 ProviderCommands::Add {
                     name,
                     slug,
                     base_url,
                     api_key,
                 } => {
-                    add_provider(&db.pool, &name, &slug, &base_url, &api_key).await;
+                    add_provider(&db, &name, &slug, &base_url, &api_key).await;
                 }
                 ProviderCommands::Remove { name } => {
-                    remove_provider(&db.pool, &name).await;
+                    remove_provider(&db, &name).await;
                 }
             }
         }
@@ -150,13 +158,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn list_providers(pool: &SqlitePool) {
-    let providers = sqlx::query_as::<_, Provider>(
-        "SELECT id, name, slug, base_url, api_key, created_at, updated_at FROM providers ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await
-    .expect("Failed to fetch providers");
+async fn import_sqlite(path: &str, database_url: Option<String>) {
+    let url = database_url
+        .or_else(|| std::env::var("DATABASE_URL").ok())
+        .unwrap_or_else(|| config::Config::load_file().database.url);
+    let db = Database::new(&url).await.expect("Failed to open target database");
+    let report = db.import_sqlite(&format!("sqlite://{path}")).await.expect("Import failed");
+    for (table, rows) in report.tables {
+        println!("{table:<28} {rows}");
+    }
+    for (table, rows) in report.skipped {
+        println!("{table:<28} {rows} skipped, larger than max_allowed_packet");
+    }
+}
+
+async fn list_providers(db: &Database) {
+    let providers = db.list_providers().await.expect("Failed to fetch providers");
 
     if providers.is_empty() {
         println!("No providers configured");
@@ -166,40 +183,22 @@ async fn list_providers(pool: &SqlitePool) {
     println!("{:<20} {:<20} {:<50}", "NAME", "SLUG", "BASE_URL");
     println!("{}", "-".repeat(100));
     for provider in providers {
-        println!(
-            "{:<20} {:<20} {:<50}",
-            provider.name, provider.slug, provider.base_url
-        );
+        println!("{:<20} {:<20} {:<50}", provider.name, provider.slug, provider.base_url);
     }
 }
 
-async fn add_provider(pool: &SqlitePool, name: &str, slug: &str, base_url: &str, api_key: &str) {
-    match sqlx::query("INSERT INTO providers (name, slug, base_url, api_key) VALUES (?, ?, ?, ?)")
-        .bind(name)
-        .bind(slug)
-        .bind(base_url)
-        .bind(api_key)
-        .execute(pool)
-        .await
-    {
+async fn add_provider(db: &Database, name: &str, slug: &str, base_url: &str, api_key: &str) {
+    let provider = NewProvider { name, slug, base_url, api_key: Some(api_key), provider_type: None };
+    match db.create_provider(provider).await {
         Ok(_) => println!("Provider '{}' added successfully", name),
         Err(e) => eprintln!("Failed to add provider: {}", e),
     }
 }
 
-async fn remove_provider(pool: &SqlitePool, name: &str) {
-    match sqlx::query("DELETE FROM providers WHERE name = ?")
-        .bind(name)
-        .execute(pool)
-        .await
-    {
-        Ok(result) => {
-            if result.rows_affected() > 0 {
-                println!("Provider '{}' removed successfully", name);
-            } else {
-                println!("Provider '{}' not found", name);
-            }
-        }
+async fn remove_provider(db: &Database, name: &str) {
+    match db.delete_provider_by_name(name).await {
+        Ok(true) => println!("Provider '{}' removed successfully", name),
+        Ok(false) => println!("Provider '{}' not found", name),
         Err(e) => eprintln!("Failed to remove provider: {}", e),
     }
 }

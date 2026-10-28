@@ -214,7 +214,7 @@ impl Provider for MockProvider {
 }
 
 async fn create_test_db() -> Arc<Database> {
-    Arc::new(Database::new("sqlite::memory:").await.unwrap())
+    Arc::new(Database::test().await)
 }
 
 fn create_test_router_with_db(db: Arc<Database>) -> (Router, MetricsStore) {

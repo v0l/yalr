@@ -199,8 +199,8 @@ fn anonymous_viewer() -> crate::db::User {
         external_id: None,
         user_type: crate::db::UserType::Internal,
         is_admin: false,
-        created_at: String::new(),
-        updated_at: String::new(),
+        created_at: Default::default(),
+        updated_at: Default::default(),
     }
 }
 

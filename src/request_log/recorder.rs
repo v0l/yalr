@@ -1,11 +1,10 @@
 use super::fingerprint::{fingerprint, tracker};
-use super::store::{self, Record};
+use crate::db::{Database, Record, Retention};
 use super::trace::Trace;
 use super::codec::pack;
 #[cfg(test)]
 use super::codec::unpack;
 use serde_json::Value;
-use sqlx::SqlitePool;
 
 pub struct Inbound {
     pub request_id: String,
@@ -133,16 +132,21 @@ const WRITE_BATCH: usize = 64;
 
 #[derive(Clone)]
 pub struct Writer {
-    sender: tokio::sync::mpsc::Sender<store::Record>,
+    sender: tokio::sync::mpsc::Sender<Record>,
 }
 
 impl Writer {
-    pub fn spawn(pool: SqlitePool) -> Self {
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<store::Record>(WRITE_QUEUE);
+    pub fn disconnected() -> Self {
+        let (sender, _) = tokio::sync::mpsc::channel::<Record>(1);
+        Self { sender }
+    }
+
+    pub fn spawn(db: Database) -> Self {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<Record>(WRITE_QUEUE);
         tokio::spawn(async move {
             let mut batch = Vec::with_capacity(WRITE_BATCH);
             while receiver.recv_many(&mut batch, WRITE_BATCH).await > 0 {
-                if let Err(e) = store::insert_batch(&pool, &batch).await {
+                if let Err(e) = db.insert_request_logs(&batch).await {
                     tracing::error!(error = %e, rows = batch.len(), "Failed to write request log");
                 }
                 batch.clear();
@@ -151,7 +155,7 @@ impl Writer {
         Self { sender }
     }
 
-    pub async fn write(&self, record: store::Record) {
+    pub async fn write(&self, record: Record) {
         if self.sender.send(record).await.is_err() {
             tracing::error!("Request log writer stopped");
         }
@@ -260,35 +264,21 @@ impl Drop for Pending {
     }
 }
 
-pub async fn prune_now(pool: &SqlitePool, retention: &store::Retention) {
+pub async fn prune_now(db: &Database, retention: &Retention) {
     let now = chrono::Utc::now().timestamp_millis();
-    match store::prune(pool, now, retention).await {
+    match db.prune_request_logs(now, retention).await {
         Ok(0) => {}
-        Ok(n) => {
-            tracing::info!(rows = n, "Pruned request log");
-            if let Err(e) = store::release_freed_pages(pool).await {
-                tracing::error!(error = %e, "Request log vacuum failed");
-            }
-        }
+        Ok(n) => tracing::info!(rows = n, "Pruned request log"),
         Err(e) => tracing::error!(error = %e, "Request log prune failed"),
     }
 }
 
-pub async fn prepare_storage(pool: &SqlitePool, retention: &store::Retention) {
-    prune_now(pool, retention).await;
-    match store::enable_incremental_vacuum(pool).await {
-        Ok(true) => tracing::info!("Request log storage compacted and set to release freed pages"),
-        Ok(false) => {}
-        Err(e) => tracing::error!(error = %e, "Request log compaction failed"),
-    }
-}
-
-pub fn spawn_pruner(pool: SqlitePool, retention: store::Retention) {
+pub fn spawn_pruner(db: Database, retention: Retention) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
         loop {
             interval.tick().await;
-            prune_now(&pool, &retention).await;
+            prune_now(&db, &retention).await;
         }
     });
 }

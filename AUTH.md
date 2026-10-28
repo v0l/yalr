@@ -191,7 +191,7 @@ server:
   admin_ui_path: "admin/dist"
 
 database:
-  url: "sqlite:llm_router.db?mode=rwc"
+  url: "mysql://yalr:yalr@127.0.0.1:3306/yalr"
 
 auth:
   enabled: true

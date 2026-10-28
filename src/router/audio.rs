@@ -129,7 +129,7 @@ mod tests {
     }
 
     async fn router_with(providers: Vec<Arc<dyn Provider>>) -> Router {
-        let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+        let db = Arc::new(Database::test().await);
         let router = Router::new(MetricsStore::new(100), db);
         router.register_route("whisper-1", providers).await;
         router

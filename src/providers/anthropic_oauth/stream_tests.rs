@@ -9,7 +9,7 @@ use crate::db::{Database, Provider as ProviderRecord, ProviderType};
 use crate::providers::{ChatRequest, Provider, ProviderError};
 
 async fn provider(base_url: &str) -> AnthropicOAuthProvider {
-    let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+    let db = Arc::new(Database::test().await);
     let record = ProviderRecord {
         id: 1,
         name: "claude".into(),
@@ -22,8 +22,8 @@ async fn provider(base_url: &str) -> AnthropicOAuthProvider {
         oauth_expires_at: Some(i64::MAX),
         oauth_account_id: None,
         client_version: None,
-        created_at: String::new(),
-        updated_at: String::new(),
+        created_at: Default::default(),
+        updated_at: Default::default(),
     };
     AnthropicOAuthProvider::new(&record, db)
 }

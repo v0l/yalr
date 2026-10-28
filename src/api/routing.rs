@@ -77,8 +77,8 @@ pub struct RoutingConfigFullResponse {
     pub health_check_enabled: bool,
     pub health_check_interval_seconds: i32,
     pub health_check_timeout_seconds: i32,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: crate::db::Timestamp,
+    pub updated_at: crate::db::Timestamp,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_modalities: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,8 +96,8 @@ pub struct RoutingConfigProviderFullResponse {
     pub model: Option<String>,
     pub weight: i32,
     pub is_active: bool,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: crate::db::Timestamp,
+    pub updated_at: crate::db::Timestamp,
 }
 
 fn provider_responses(

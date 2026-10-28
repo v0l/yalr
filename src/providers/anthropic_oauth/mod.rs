@@ -610,7 +610,7 @@ event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason
 event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
 
     async fn provider(server: &MockServer) -> AnthropicOAuthProvider {
-        let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+        let db = Arc::new(Database::test().await);
         let record = crate::db::Provider {
             id: 1,
             name: "Claude Max".into(),
@@ -623,8 +623,8 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
             oauth_expires_at: Some(i64::MAX / 2),
             oauth_account_id: None,
             client_version: None,
-            created_at: String::new(),
-            updated_at: String::new(),
+            created_at: Default::default(),
+            updated_at: Default::default(),
         };
         AnthropicOAuthProvider::new(&record, db)
     }

@@ -55,15 +55,13 @@ FROM rust-deps AS rust-build
 # Copy actual source code (specific files needed for build)
 COPY src ./src
 COPY migrations ./migrations
+COPY migrations-sqlite ./migrations-sqlite
 
 # Touch entry points so Cargo sees them as changed vs. the stubs above
 RUN touch src/lib.rs src/bin/server.rs src/bin/cli.rs
 
 # Rebuild - dependencies cached from the layer above, only our crate recompiles.
 RUN cargo build --release --bin yalr-server --bin yalr-cli
-
-# Run tests reusing the release artifacts (avoids a full dev-profile recompile).
-RUN cargo test --release --lib
 
 # Runtime image
 FROM debian:trixie-slim
@@ -72,7 +70,6 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3t64 \
-    libsqlite3-0 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

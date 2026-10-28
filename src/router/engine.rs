@@ -1672,7 +1672,7 @@ mod tests {
     }
 
     async fn setup_test_router() -> (Router, MetricsStore) {
-        let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
+        let db = Arc::new(Database::test().await);
         let metrics_store = MetricsStore::new(1000);
         
         let router = Router::new(

@@ -14,8 +14,8 @@ pub struct ProviderResponse {
     pub slug: String,
     pub base_url: String,
     pub provider_type: String,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: crate::db::Timestamp,
+    pub updated_at: crate::db::Timestamp,
     /// Live health+metrics for this provider.
     /// Only present when the router has the provider loaded.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,7 +78,7 @@ pub struct ProviderCreateResponse {
     pub name: String,
     pub slug: String,
     pub base_url: String,
-    pub created_at: String,
+    pub created_at: crate::db::Timestamp,
 }
 
 #[derive(Serialize)]
@@ -365,10 +365,10 @@ pub async fn delete_provider(
 ) -> Result<Json<ProviderDeleteResponse>, (axum::http::StatusCode, String)> {
     tracing::info!(provider_slug = slug, "Deleting provider");
 
-    // Delete from database
-    sqlx::query("DELETE FROM providers WHERE slug = ?")
-        .bind(&slug)
-        .execute(&state.config.db.pool)
+    state
+        .config
+        .db
+        .delete_provider_by_slug(&slug)
         .await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
