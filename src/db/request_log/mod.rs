@@ -10,6 +10,9 @@ const DELETE_BATCH: usize = 500;
 const BODY_BYTES_TOTAL: &str =
     "SELECT CAST(COALESCE(SUM(size_bytes), 0) AS SIGNED) FROM request_log_body WHERE log_id > ?";
 
+const UNSIZED_BODY_IDS: &str =
+    "SELECT log_id FROM request_log_body WHERE size_bytes IS NULL ORDER BY size_bytes, log_id LIMIT ?";
+
 const BODIES_OVER_BYTE_CAP: &str = "SELECT log_id FROM (
     SELECT log_id, SUM(size_bytes) OVER (ORDER BY log_id DESC) AS newest_first_total
     FROM request_log_body
@@ -169,15 +172,21 @@ impl Database {
     }
 
     pub async fn backfill_request_log_body_sizes(&self, batch: i64) -> Result<u64, sqlx::Error> {
-        let result = sqlx::query(
+        let ids: Vec<i64> = sqlx::query_scalar(UNSIZED_BODY_IDS).bind(batch).fetch_all(&self.pool).await?;
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut query = QueryBuilder::new(
             "UPDATE request_log_body SET size_bytes = COALESCE(LENGTH(client_request_packed), 0) \
              + COALESCE(LENGTH(upstream_request_packed), 0) + COALESCE(LENGTH(response_packed), 0) \
-             WHERE size_bytes IS NULL ORDER BY log_id LIMIT ?",
-        )
-        .bind(batch)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected())
+             WHERE size_bytes IS NULL AND log_id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for id in &ids {
+            separated.push_bind(*id);
+        }
+        separated.push_unseparated(")");
+        Ok(query.build().execute(&self.pool).await?.rows_affected())
     }
 
     pub async fn request_log_body_bytes(&self) -> Result<i64, sqlx::Error> {

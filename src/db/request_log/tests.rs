@@ -227,3 +227,18 @@ async fn bodies_without_a_recorded_size_are_backfilled_in_batches() {
     while db.backfill_request_log_body_sizes(2).await.unwrap() > 0 {}
     assert_eq!(db.request_log_body_bytes().await.unwrap(), 10_000);
 }
+
+#[tokio::test]
+async fn the_size_backfill_picks_its_batch_from_an_index() {
+    use sqlx::Row;
+    let db = Database::test().await;
+    for n in 0..20 {
+        db.insert_request_log(sized(&format!("r{n}"), n, 1000)).await.unwrap();
+    }
+    db.execute_raw("UPDATE request_log_body SET size_bytes = NULL").await.unwrap();
+    sqlx::query("ANALYZE TABLE request_log_body").execute(&db.pool).await.unwrap();
+    let row = sqlx::query(&format!("EXPLAIN {UNSIZED_BODY_IDS}")).bind(5i64).fetch_one(&db.pool).await.unwrap();
+    let extra: Option<String> = row.try_get("Extra").unwrap();
+    let extra = extra.unwrap_or_default();
+    assert!(extra.contains("Using index") && !extra.contains("filesort"), "{extra}");
+}
