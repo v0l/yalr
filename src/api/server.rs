@@ -24,8 +24,10 @@ use super::compression::with_compression;
 /// and others require on every assistant turn) and base64 images push a single
 /// request well past it, and the client sees
 /// `413 Failed to buffer the request body: length limit exceeded` before any
-/// routing happens.
-const INFERENCE_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+/// routing happens. A long session with base64 image renders replayed on every
+/// turn reached ~32 MB at 650k tokens (gcad fox benchmark, 2026-11-03), so the
+/// limit is 64 MB.
+const INFERENCE_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Upload cap for `/v1/audio/transcriptions`. OpenAI rejects anything over
 /// 25 MB; local whisper backends accept more, so leave headroom for an hour of

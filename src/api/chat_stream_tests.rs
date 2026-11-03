@@ -142,3 +142,26 @@ async fn first_chunk_arrives_before_the_upstream_finishes() {
         "chunks were not spread out: {arrivals:?}"
     );
 }
+
+#[tokio::test]
+async fn a_40mb_inference_body_is_not_rejected_with_413() {
+    let upstream = slow_upstream().await;
+    let (base, token) = serve_router(&upstream).await;
+
+    // 40 MiB of message content. Past the old 32 MB limit; the body limit
+    // buffers the whole request before routing, so anything other than 413
+    // proves the limit no longer rejects it.
+    let payload = format!(
+        "{{\"model\":\"slow\",\"stream\":false,\"messages\":[{{\"role\":\"user\",\"content\":\"{}\"}}]}}",
+        "x".repeat(40 * 1024 * 1024)
+    );
+    let response = reqwest::Client::new()
+        .post(format!("{base}/v1/chat/completions"))
+        .bearer_auth(token)
+        .header("content-type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(response.status(), 413);
+}
