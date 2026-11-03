@@ -363,10 +363,10 @@ impl ProviderError {
         matches!(
             self,
             ProviderError::ServerError {
-                status_code: Some(400 | 413 | 422),
+                status_code: Some(400..=499),
                 ..
             }
-        )
+        ) && !matches!(self.status_code(), Some(401 | 402 | 403 | 408 | 429))
     }
 
     pub fn is_recoverable(&self) -> bool {
@@ -416,6 +416,17 @@ mod tests {
         let cloned = original.clone().to_string();
         assert!(cloned.starts_with("OpenAI error: http error: error sending request"), "{cloned}");
         assert!(cloned.to_lowercase().contains("connect"), "{cloned}");
+    }
+
+    #[test]
+    fn only_non_throttling_4xx_are_client_errors() {
+        let status = |code| ProviderError::ServerError { message: String::new(), status_code: Some(code) };
+        for code in [400, 404, 413, 422] {
+            assert!(status(code).is_client_error(), "{code}");
+        }
+        for code in [401, 402, 403, 408, 429, 500, 503] {
+            assert!(!status(code).is_client_error(), "{code}");
+        }
     }
 
     #[test]

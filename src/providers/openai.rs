@@ -20,6 +20,7 @@ enum ErrorResponse {
 /// Error detail structure - code can be string or int (OpenRouter returns int)
 #[derive(Debug, Clone, Deserialize)]
 struct ErrorDetail {
+    #[serde(default, deserialize_with = "deserialize_message")]
     message: String,
     #[serde(default, deserialize_with = "deserialize_optional_string_or_number")]
     code: Option<String>,
@@ -51,6 +52,13 @@ where
         Value::Null => Ok(None),
         _ => Err(D::Error::custom("expected string or number")),
     }
+}
+
+fn deserialize_message<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// Nested detail wrapper for { "detail": { "error": ... } }
@@ -396,7 +404,7 @@ impl Provider for OpenAiProvider {
                                     error = %e,
                                     "Stream failed"
                                 );
-                                Err(ProviderError::OpenAIError(e))
+                                Err(map_openai_error(e))
                             }
                         }
                     })) as BoxStream<'static, Result<StreamingChunk, ProviderError>>
@@ -410,7 +418,7 @@ impl Provider for OpenAiProvider {
                         "Stream setup failed"
                     );
                     Box::pin(futures::stream::once(async move {
-                        Err(ProviderError::OpenAIError(e))
+                        Err(map_openai_error(e))
                     })) as BoxStream<'static, Result<StreamingChunk, ProviderError>>
                 }
             }
@@ -870,6 +878,65 @@ mod tests {
                 assert!(sent[field].as_str().unwrap().starts_with("yalr-"), "{hint:?}");
             }
             assert!(sent.get(absent).is_none(), "{hint:?} must not set {absent}");
+        }
+    }
+
+    #[tokio::test]
+    async fn vllm_bad_request_with_integer_code_is_a_client_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let body = r#"{"error":{"message":"Failed to apply Qwen3VLProcessor on data=...","type":"BadRequestError","param":null,"code":400}}"#;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(body, "application/json"))
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::new("Kieran", None, &format!("{}/v1", server.uri()), Some("k"));
+        let request: ChatRequest =
+            serde_json::from_str(r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#).unwrap();
+        let error = provider.chat_completions(&request).await.unwrap_err();
+        assert!(error.is_client_error(), "{error:?}");
+        assert!(!error.is_transient(), "{error:?}");
+        assert!(error.to_string().contains("Qwen3VLProcessor"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn vllm_bad_request_on_a_stream_is_a_client_error() {
+        use futures::StreamExt;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let body = r#"{"error":{"message":"Failed to apply Qwen3VLProcessor on data=...","type":"BadRequestError","param":null,"code":400}}"#;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(body, "application/json"))
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::new("Kieran", None, &format!("{}/v1", server.uri()), Some("k"));
+        let request: ChatRequest = serde_json::from_str(
+            r#"{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .unwrap();
+        let mut stream = provider.chat_completions_stream(&request).unwrap();
+        let error = stream.next().await.unwrap().unwrap_err();
+        assert!(error.is_client_error(), "{error:?}");
+        assert!(!error.is_transient(), "{error:?}");
+        assert!(error.to_string().contains("Qwen3VLProcessor"), "{error}");
+    }
+
+    #[test]
+    fn error_detail_tolerates_null_and_missing_fields() {
+        for body in [
+            r#"{"error":{"message":"m","code":null}}"#,
+            r#"{"error":{"message":"m"}}"#,
+            r#"{"error":{"message":null,"code":400}}"#,
+            r#"{"error":{"code":400}}"#,
+            r#"{"error":{"message":"m","code":"bad","metadata":null}}"#,
+        ] {
+            assert!(serde_json::from_str::<ErrorResponse>(body).is_ok(), "{body}");
         }
     }
 
