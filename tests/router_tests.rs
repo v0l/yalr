@@ -22,6 +22,7 @@ enum StreamMode {
     /// Role-only + usage-only chunks, then a clean stop — mimics upstream
     /// models (e.g. kimi on OpenRouter) that return an empty completion.
     Empty,
+    ContentFilter,
     /// A transient rate-limit error before any data, then end of stream.
     RateLimitBeforeData,
 }
@@ -67,6 +68,11 @@ impl MockProvider {
 
     fn with_empty_stream(mut self) -> Self {
         self.stream_mode = StreamMode::Empty;
+        self
+    }
+
+    fn with_content_filter_stream(mut self) -> Self {
+        self.stream_mode = StreamMode::ContentFilter;
         self
     }
 
@@ -167,8 +173,8 @@ impl Provider for MockProvider {
                 });
                 vec![Ok(chunk)]
             }
-            StreamMode::Empty => {
-                // Role-only chunk, then a clean stop with usage — zero content.
+            StreamMode::Empty | StreamMode::ContentFilter => {
+                let finish = if self.stream_mode == StreamMode::ContentFilter { "content_filter" } else { "stop" };
                 let mut role_chunk = self.base_chunk(&request.model);
                 role_chunk.choices.push(StreamingChoice {
                     index: 0,
@@ -194,7 +200,7 @@ impl Provider for MockProvider {
                         reasoning_content: None,
                         extra_fields: std::collections::HashMap::new(),
                     },
-                    finish_reason: Some("stop".to_string()),
+                    finish_reason: Some(finish.to_string()),
                     logprobs: None,
                 });
                 vec![Ok(role_chunk), Ok(stop_chunk)]
@@ -547,6 +553,33 @@ async fn test_router_streaming_empty_completion_fails_over() {
 
     assert!(saw_content, "should have received content from the healthy provider");
     assert!(!saw_error, "failover should be transparent (no error surfaced)");
+}
+
+#[tokio::test]
+async fn test_router_streaming_content_filter_keeps_provider_healthy() {
+    let db = create_test_db().await;
+    let (router, metrics) = create_test_router_with_db(db);
+
+    let filtered = Arc::new(MockProvider::new("filtered").with_content_filter_stream());
+    router.add_provider(filtered.clone()).await;
+    router.register_route("test-model", vec![filtered.clone()]).await;
+
+    let request = create_test_stream_request("test-model");
+    let mut stream = router.chat_completions_stream(&request, None).await.unwrap();
+
+    let mut finish_reasons = Vec::new();
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.expect("content_filter must not surface an error");
+        finish_reasons.extend(chunk.choices.iter().filter_map(|c| c.finish_reason.clone()));
+    }
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    assert_eq!(finish_reasons, vec!["content_filter".to_string()]);
+    assert_eq!(metrics.get_recent_failures("filtered").await, 0);
+    assert_eq!(
+        metrics.get_provider_health("filtered").await,
+        yalr::metrics::HealthState::Healthy
+    );
 }
 
 #[tokio::test]

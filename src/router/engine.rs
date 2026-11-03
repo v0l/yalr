@@ -1154,6 +1154,7 @@ impl Router {
                         // that ghost turn is forwarded to the client as a valid
                         // empty answer, silently halting agent loops.
                         let mut saw_content = false;
+                        let mut content_filtered = false;
                         let mut total_tokens = 0u32;
                         let mut prompt_tokens = 0u32;
                         let mut completion_tokens = 0u32;
@@ -1198,6 +1199,10 @@ impl Router {
                                     // it so the client sees a clean chunk.
                                     if let Some(v) = chunk.extra_fields.remove(crate::providers::CACHE_WRITE_TOKENS_FIELD) {
                                         cache_write_tokens = v.as_u64().unwrap_or(0) as u32;
+                                    }
+
+                                    if chunk.choices.iter().any(|c| c.finish_reason.as_deref() == Some("content_filter")) {
+                                        content_filtered = true;
                                     }
 
                                     if !saw_content && crate::router::chunk::chunk_has_content(&chunk) {
@@ -1306,7 +1311,7 @@ impl Router {
                         // to another provider rather than surfacing an empty
                         // completion to the client. A stream that already errored
                         // is reported with its real error, not as empty.
-                        if !saw_content && !stream_errored {
+                        if !saw_content && !content_filtered && !stream_errored {
                             let empty_err = ProviderError::Other(
                                 format!(
                                     "provider '{}' returned an empty completion (no content, reasoning, or tool calls)",
