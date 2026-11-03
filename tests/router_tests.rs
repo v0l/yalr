@@ -122,6 +122,15 @@ impl Provider for MockProvider {
             tokio::time::sleep(std::time::Duration::from_millis(self.response_delay_ms)).await;
         }
 
+        if self.stream_mode == StreamMode::ContentFilter {
+            let body = format!(
+                r#"{{"id":"mock-{}","object":"chat.completion","created":0,"model":"{}","choices":[{{"index":0,"message":{{"role":"assistant","content":null}},"finish_reason":"content_filter"}}],"usage":{{"prompt_tokens":10,"completion_tokens":0,"total_tokens":10}}}}"#,
+                self.name, request.model
+            );
+            let response: CreateChatCompletionResponse = serde_json::from_str(&body).unwrap();
+            return Ok(response.into());
+        }
+
         Ok(CreateChatCompletionResponse {
             id: format!("mock-{}", self.name),
             object: "chat.completion".to_string(),
@@ -575,6 +584,30 @@ async fn test_router_streaming_content_filter_keeps_provider_healthy() {
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     assert_eq!(finish_reasons, vec!["content_filter".to_string()]);
+    assert_eq!(metrics.get_recent_failures("filtered").await, 0);
+    assert_eq!(
+        metrics.get_provider_health("filtered").await,
+        yalr::metrics::HealthState::Healthy
+    );
+}
+
+#[tokio::test]
+async fn test_router_content_filter_completion_keeps_provider_healthy() {
+    let db = create_test_db().await;
+    let (router, metrics) = create_test_router_with_db(db);
+
+    let filtered = Arc::new(MockProvider::new("filtered").with_content_filter_stream());
+    router.add_provider(filtered.clone()).await;
+    router.register_route("test-model", vec![filtered.clone()]).await;
+
+    let request = create_test_request("test-model");
+    let response = router.chat_completions(&request, None).await.expect("content_filter is a valid completion");
+    assert_eq!(
+        response.choices[0].finish_reason,
+        Some(async_openai::types::chat::FinishReason::ContentFilter)
+    );
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
     assert_eq!(metrics.get_recent_failures("filtered").await, 0);
     assert_eq!(
         metrics.get_provider_health("filtered").await,
