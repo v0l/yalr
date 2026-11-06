@@ -35,6 +35,14 @@ async fn admin(server: &str) -> Result<sqlx::MySqlConnection, sqlx::Error> {
 
 async fn drop_database(server: &str, name: &str) {
     if let Ok(mut conn) = admin(server).await {
+        let ids: Vec<u64> = sqlx::query_scalar("SELECT ID FROM information_schema.PROCESSLIST WHERE DB = ?")
+            .bind(name)
+            .fetch_all(&mut conn)
+            .await
+            .unwrap_or_default();
+        for id in ids {
+            let _ = sqlx::query(&format!("KILL {id}")).execute(&mut conn).await;
+        }
         let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS `{name}`")).execute(&mut conn).await;
     }
 }
