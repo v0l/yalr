@@ -165,3 +165,29 @@ async fn a_40mb_inference_body_is_not_rejected_with_413() {
         .unwrap();
     assert_ne!(response.status(), 413);
 }
+
+#[tokio::test]
+async fn body_over_the_limit_is_an_openai_json_error_with_the_limit() {
+    let upstream = slow_upstream().await;
+    let (base, token) = serve_router(&upstream).await;
+
+    let limit = crate::api::server::INFERENCE_BODY_LIMIT_BYTES;
+    let payload = format!(
+        "{{\"model\":\"slow\",\"stream\":false,\"messages\":[{{\"role\":\"user\",\"content\":\"{}\"}}]}}",
+        "x".repeat(limit + 1024)
+    );
+    let response = reqwest::Client::new()
+        .post(format!("{base}/v1/chat/completions"))
+        .bearer_auth(token)
+        .header("content-type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 413);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(body["error"]["code"], "request_too_large");
+    assert_eq!(body["error"]["message"], "request body is over the 64 MiB limit");
+    assert_eq!(body["error"]["limit_bytes"], limit);
+}

@@ -27,7 +27,7 @@ use super::compression::with_compression;
 /// routing happens. A long session with base64 image renders replayed on every
 /// turn reached ~32 MB at 650k tokens (gcad fox benchmark, 2026-11-03), so the
 /// limit is 64 MB.
-const INFERENCE_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const INFERENCE_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Upload cap for `/v1/audio/transcriptions`. OpenAI rejects anything over
 /// 25 MB; local whisper backends accept more, so leave headroom for an hour of
@@ -222,11 +222,13 @@ pub async fn run_with_shutdown<F>(
     let chat_completions_routes = Router::new()
         .route("/v1/chat/completions", post(chat_handler))
         .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(INFERENCE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let responses_routes = Router::new()
         .route("/v1/responses", post(responses_handlers::create_response))
         .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(INFERENCE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let audio_routes = Router::new()
@@ -235,6 +237,7 @@ pub async fn run_with_shutdown<F>(
         .route("/v1/audio/speech", post(crate::api::audio::speech))
         .route("/v1/audio/voices", get(crate::api::audio::voices))
         .layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(AUDIO_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let image_routes = Router::new()
@@ -242,12 +245,14 @@ pub async fn run_with_shutdown<F>(
         .route("/v1/images/edits", post(crate::api::images::edits))
         .route("/v1/images/variations", post(crate::api::images::variations))
         .layer(DefaultBodyLimit::max(IMAGE_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(IMAGE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let decision_routes = Router::new()
         .route("/v1/systemone", post(crate::api::decisions::decide))
         .route("/api/alpha/decisions", post(crate::api::decisions::decide))
         .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(INFERENCE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let routstr_protected_routes = Router::new()
@@ -397,11 +402,13 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
     let chat_completions_routes = Router::new()
         .route("/v1/chat/completions", post(chat_handler))
         .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(INFERENCE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let responses_routes = Router::new()
         .route("/v1/responses", post(responses_handlers::create_response))
         .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(INFERENCE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let audio_routes = Router::new()
@@ -410,6 +417,7 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/v1/audio/speech", post(crate::api::audio::speech))
         .route("/v1/audio/voices", get(crate::api::audio::voices))
         .layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(AUDIO_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let image_routes = Router::new()
@@ -417,12 +425,14 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/v1/images/edits", post(crate::api::images::edits))
         .route("/v1/images/variations", post(crate::api::images::variations))
         .layer(DefaultBodyLimit::max(IMAGE_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(IMAGE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let decision_routes = Router::new()
         .route("/v1/systemone", post(crate::api::decisions::decide))
         .route("/api/alpha/decisions", post(crate::api::decisions::decide))
         .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
+        .layer(axum::middleware::from_fn_with_state(INFERENCE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let routstr_protected_routes = Router::new()

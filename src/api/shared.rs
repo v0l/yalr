@@ -22,15 +22,29 @@ pub struct ApiErrorDetail {
     pub error_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_bytes: Option<usize>,
 }
 
 impl ApiError {
+    pub fn request_too_large(limit_bytes: usize) -> Self {
+        Self {
+            error: ApiErrorDetail {
+                message: format!("request body is over the {} MiB limit", limit_bytes / (1024 * 1024)),
+                error_type: "invalid_request_error".into(),
+                code: Some("request_too_large".into()),
+                limit_bytes: Some(limit_bytes),
+            },
+        }
+    }
+
     pub fn new(message: impl Into<String>, error_type: impl Into<String>) -> Self {
         Self {
             error: ApiErrorDetail {
                 message: message.into(),
                 error_type: error_type.into(),
                 code: None,
+                limit_bytes: None,
             },
         }
     }
@@ -41,6 +55,7 @@ impl ApiError {
                 message: "Insufficient funds".into(),
                 error_type: "payment_required".into(),
                 code: None,
+                limit_bytes: None,
             },
         }
     }
