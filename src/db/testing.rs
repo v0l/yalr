@@ -35,7 +35,7 @@ async fn admin(server: &str) -> Result<sqlx::MySqlConnection, sqlx::Error> {
 
 async fn drop_database(server: &str, name: &str) {
     if let Ok(mut conn) = admin(server).await {
-        let ids: Vec<u64> = sqlx::query_scalar("SELECT ID FROM information_schema.PROCESSLIST WHERE DB = ?")
+        let ids: Vec<i64> = sqlx::query_scalar("SELECT ID FROM information_schema.PROCESSLIST WHERE DB = ?")
             .bind(name)
             .fetch_all(&mut conn)
             .await
@@ -126,5 +126,58 @@ impl Database {
 
     pub async fn execute_raw(&self, sql: &str) -> Result<u64, sqlx::Error> {
         Ok(sqlx::query(sql).execute(&self.pool).await?.rows_affected())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::Connection;
+    use std::time::Duration;
+
+    fn target(db: &Database) -> (String, String) {
+        let guard = db._test_guard.as_ref().unwrap();
+        (guard.server.clone(), guard.name.clone())
+    }
+
+    async fn database_exists(server: &str, name: &str) -> bool {
+        let mut conn = admin(server).await.unwrap();
+        let found: Vec<String> = sqlx::query_scalar(&format!("SHOW DATABASES LIKE '{name}'")).fetch_all(&mut conn).await.unwrap();
+        !found.is_empty()
+    }
+
+    #[tokio::test]
+    async fn drop_database_succeeds_while_a_connection_holds_an_open_transaction() {
+        let db = Database::test().await;
+        let bystander = Database::test().await;
+        let (server, name) = target(&db);
+        let (_, bystander_name) = target(&bystander);
+
+        let mut holder = sqlx::MySqlConnection::connect(&db.test_url().unwrap()).await.unwrap();
+        sqlx::query("BEGIN").execute(&mut holder).await.unwrap();
+        sqlx::query("INSERT INTO model_pricing (model_name) VALUES ('held')").execute(&mut holder).await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(20), drop_database(&server, &name))
+            .await
+            .expect("drop_database blocked on a lingering connection");
+
+        assert!(!database_exists(&server, &name).await);
+        assert!(database_exists(&server, &bystander_name).await);
+        assert!(bystander.execute_raw("SELECT 1").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn drop_database_ignores_connections_that_vanish_and_missing_databases() {
+        let db = Database::test().await;
+        let (server, name) = target(&db);
+        let conn = sqlx::MySqlConnection::connect(&db.test_url().unwrap()).await.unwrap();
+        drop(conn);
+        tokio::time::timeout(Duration::from_secs(20), async {
+            drop_database(&server, &name).await;
+            drop_database(&server, &name).await;
+        })
+        .await
+        .unwrap();
+        assert!(!database_exists(&server, &name).await);
     }
 }
