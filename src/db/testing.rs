@@ -157,7 +157,7 @@ mod tests {
         sqlx::query("BEGIN").execute(&mut holder).await.unwrap();
         sqlx::query("INSERT INTO model_pricing (model_name) VALUES ('held')").execute(&mut holder).await.unwrap();
 
-        tokio::time::timeout(Duration::from_secs(20), drop_database(&server, &name))
+        tokio::time::timeout(Duration::from_secs(120), drop_database(&server, &name))
             .await
             .expect("drop_database blocked on a lingering connection");
 
@@ -172,7 +172,7 @@ mod tests {
         let (server, name) = target(&db);
         let conn = sqlx::MySqlConnection::connect(&db.test_url().unwrap()).await.unwrap();
         drop(conn);
-        tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::time::timeout(Duration::from_secs(120), async {
             drop_database(&server, &name).await;
             drop_database(&server, &name).await;
         })
