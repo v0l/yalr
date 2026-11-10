@@ -1,40 +1,85 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use axum::{extract::State, Extension, Json};
+use axum::{
+    extract::{Query, State},
+    Extension, Json,
+};
+use serde::Deserialize;
 
 use crate::auth::admin::AuthenticatedUser;
-use crate::quota_report::{build_report, ProviderQuota, QuotaReport};
+use crate::quota_report::{build_model, build_report, summary_of, ProviderQuota, QuotaReport};
+use crate::serving::{ModelServing, ServingReport};
 use crate::state::AppState;
 
+pub async fn model_quotas(state: &AppState, model: &str) -> Vec<ProviderQuota> {
+    let mut out = Vec::new();
+    for (provider, _) in state.config.router.candidate_backends(model).await {
+        let quotas = state.metrics_store.get_quota(provider.name()).await.unwrap_or_default();
+        out.push(ProviderQuota { label: provider.name().to_string(), quotas });
+    }
+    out
+}
+
+async fn allowed_models(state: &AppState, authenticated: &AuthenticatedUser) -> Vec<String> {
+    let mut models = state.config.router.routed_models().await;
+    models.sort();
+    let mut allowed = Vec::new();
+    for model in models {
+        if crate::api::shared::check_model_access(state, authenticated.user.id, &model).await.is_ok() {
+            allowed.push(model);
+        }
+    }
+    allowed
+}
+
 pub async fn routable_quotas(state: &AppState, authenticated: &AuthenticatedUser) -> Vec<ProviderQuota> {
-    let router = &state.config.router;
     let mut seen = HashSet::new();
     let mut out = Vec::new();
-    for model in router.routed_models().await {
-        let allowed = crate::api::shared::check_model_access(state, authenticated.user.id, &model).await.is_ok();
-        if !allowed {
-            continue;
-        }
-        for (provider, _) in router.candidate_backends(&model).await {
-            if !seen.insert(provider.name().to_string()) {
-                continue;
+    for model in allowed_models(state, authenticated).await {
+        for quota in model_quotas(state, &model).await {
+            if seen.insert(quota.label.clone()) {
+                out.push(quota);
             }
-            let quotas = state.metrics_store.get_quota(provider.name()).await.unwrap_or_default();
-            out.push(ProviderQuota { label: provider.name().to_string(), quotas });
         }
     }
     out.sort_by(|a, b| a.label.cmp(&b.label));
     out
 }
 
+pub async fn with_model(state: &AppState, mut serving: ServingReport, model: &str) -> ServingReport {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let summary = summary_of(&model_quotas(state, model).await, now_ms);
+    serving.model = Some(ModelServing {
+        name: model.to_string(),
+        exhausted: summary.as_ref().map(|s| s.exhausted),
+        next_available_at: summary.and_then(|s| s.next_available_at),
+    });
+    serving
+}
+
+#[derive(Deserialize)]
+pub struct QuotaQuery {
+    model: Option<String>,
+}
+
 pub async fn get_quota(
     State(state): State<Arc<AppState>>,
     Extension(authenticated): Extension<AuthenticatedUser>,
+    Query(query): Query<QuotaQuery>,
 ) -> Json<QuotaReport> {
     let providers = routable_quotas(&state, &authenticated).await;
     let now_ms = chrono::Utc::now().timestamp_millis();
-    Json(build_report(providers, authenticated.user.is_admin, now_ms))
+    let reveal = authenticated.user.is_admin;
+    let mut report = build_report(providers, reveal, now_ms);
+    for model in allowed_models(&state, &authenticated).await {
+        if query.model.as_ref().is_some_and(|wanted| *wanted != model) {
+            continue;
+        }
+        let quotas = model_quotas(&state, &model).await;
+        report.models.insert(model, build_model(&quotas, reveal, now_ms));
+    }
+    Json(report)
 }
 
 #[cfg(test)]
@@ -125,8 +170,12 @@ mod tests {
     }
 
     async fn fetch(state: &Arc<AppState>, key: &str) -> serde_json::Value {
+        fetch_at(state, key, "/v1/quota").await
+    }
+
+    async fn fetch_at(state: &Arc<AppState>, key: &str, uri: &str) -> serde_json::Value {
         let request = Request::builder()
-            .uri("/v1/quota")
+            .uri(uri)
             .header("authorization", format!("Bearer {key}"))
             .body(Body::empty())
             .unwrap();
@@ -167,5 +216,46 @@ mod tests {
         assert_eq!(body["summary"]["exhausted"], true);
         assert_eq!(body["summary"]["window"], "5h");
         assert_eq!(body["summary"]["next_available_at"], now + 1_800_000);
+    }
+
+    async fn two_model_setup() -> (Arc<AppState>, i64) {
+        let (state, now) = setup(true, false).await;
+        let router = &state.config.router;
+        let tenx = router.candidate_backends("claude").await.remove(0).0;
+        let fivex = router.candidate_backends("claude").await.remove(1).0;
+        router.register_route("code-x-high", vec![tenx]).await;
+        router.register_route("code-high", vec![fivex]).await;
+        (state, now)
+    }
+
+    #[tokio::test]
+    async fn models_report_each_routed_model_on_its_own() {
+        let (state, now) = two_model_setup().await;
+        let body = fetch(&state, ADMIN_KEY).await;
+        let models = body["models"].as_object().unwrap();
+        assert_eq!(models["code-x-high"]["summary"]["exhausted"], true);
+        assert_eq!(models["code-x-high"]["summary"]["window"], "7d");
+        assert_eq!(models["code-x-high"]["summary"]["next_available_at"], now + 387_042_000);
+        assert_eq!(models["code-high"]["summary"]["exhausted"], false);
+        assert!(models["code-high"]["summary"]["next_available_at"].is_null());
+        assert_eq!(models["code-high"]["windows"].as_array().unwrap().len(), 2);
+        assert_eq!(models["code-high"]["windows"][0]["provider"], "claude-max-5x");
+        assert_eq!(body["summary"]["exhausted"], false);
+        assert_eq!(body["summary"]["used_pct"], 17.0);
+        assert_eq!(body["windows"].as_array().unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn model_query_filters_and_plain_keys_get_no_provider_names() {
+        let (state, _) = two_model_setup().await;
+        let body = fetch_at(&state, PLAIN_KEY, "/v1/quota?model=code-x-high").await;
+        let models = body["models"].as_object().unwrap();
+        assert_eq!(models.len(), 1);
+        let windows = models["code-x-high"]["windows"].as_array().unwrap();
+        assert_eq!(windows.len(), 2);
+        assert!(windows.iter().all(|w| w["provider"].is_null()));
+        assert!(!body.to_string().contains("claude-max"));
+        let none = fetch_at(&state, PLAIN_KEY, "/v1/quota?model=missing").await;
+        assert!(none["models"].as_object().unwrap().is_empty());
     }
 }

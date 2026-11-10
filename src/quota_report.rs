@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
 use crate::providers::provider_trait::QuotaSnapshot;
@@ -22,18 +24,28 @@ pub struct QuotaSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ModelQuota {
+    pub summary: Option<QuotaSummary>,
+    pub windows: Vec<QuotaWindow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct QuotaReport {
     pub windows: Vec<QuotaWindow>,
     pub summary: Option<QuotaSummary>,
+    pub models: BTreeMap<String, ModelQuota>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ServingQuota {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub window: Option<String>,
     pub used_pct: Option<f32>,
     pub resets_at: Option<i64>,
 }
 
+#[derive(Clone)]
 pub struct ProviderQuota {
     pub label: String,
     pub quotas: Vec<QuotaSnapshot>,
@@ -42,6 +54,7 @@ pub struct ProviderQuota {
 pub fn serving_quota(quotas: &[QuotaSnapshot]) -> Option<ServingQuota> {
     let worst = worst_quota(quotas)?;
     Some(ServingQuota {
+        model: None,
         used_pct: quota_used_pct(&worst),
         window: worst.window,
         resets_at: worst.resets_at,
@@ -121,6 +134,15 @@ fn summarize(providers: &[ProviderQuota], now_ms: i64) -> Option<QuotaSummary> {
     })
 }
 
+pub fn summary_of(providers: &[ProviderQuota], now_ms: i64) -> Option<QuotaSummary> {
+    summarize(providers, now_ms)
+}
+
+pub fn build_model(providers: &[ProviderQuota], reveal_providers: bool, now_ms: i64) -> ModelQuota {
+    let report = build_report(providers.to_vec(), reveal_providers, now_ms);
+    ModelQuota { summary: report.summary, windows: report.windows }
+}
+
 pub fn build_report(providers: Vec<ProviderQuota>, reveal_providers: bool, now_ms: i64) -> QuotaReport {
     let summary = summarize(&providers, now_ms);
     let windows = providers
@@ -130,7 +152,7 @@ pub fn build_report(providers: Vec<ProviderQuota>, reveal_providers: bool, now_m
             p.quotas.iter().map(move |q| window_of(label.clone(), q))
         })
         .collect();
-    QuotaReport { windows, summary }
+    QuotaReport { windows, summary, models: BTreeMap::new() }
 }
 
 #[cfg(test)]

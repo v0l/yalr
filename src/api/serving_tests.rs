@@ -93,10 +93,14 @@ fn assert_headers(response: &axum::response::Response) {
     assert_eq!(header("x-yalr-quota-window"), "7d");
     assert_eq!(header("x-yalr-quota-resets-at"), "1794628800000");
     assert_eq!(header("x-yalr-cost-usd"), "0.010500");
+    assert_eq!(header("x-yalr-quota-model"), MODEL);
+    assert_eq!(header("x-yalr-quota-exhausted"), "false");
+    assert!(response.headers().get("x-yalr-quota-next-available-at").is_none());
 }
 
 fn assert_report(usage: &serde_json::Value) {
     assert!((usage["cost_usd"].as_f64().unwrap() - 0.0105).abs() < 1e-9, "{usage}");
+    assert_eq!(usage["quota"]["model"], MODEL);
     assert_eq!(usage["quota"]["window"], "7d");
     assert_eq!(usage["quota"]["used_pct"], 80.0);
     assert_eq!(usage["quota"]["resets_at"], 1_794_628_800_000i64);

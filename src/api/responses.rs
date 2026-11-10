@@ -67,6 +67,7 @@ pub async fn create_response(
             tracing::info!(model = %model, response_id = response.id, "Response created successfully");
             let logged = serde_json::to_vec(&response).unwrap_or_default();
             let serving = metered.trace().serving().unwrap_or_default();
+            let serving = crate::api::quota::with_model(&state, serving, &model).await;
             metered.succeed(logged, billed(&response)).await;
             let mut body = serde_json::to_value(&response).unwrap_or_default();
             serving.patch_body(&mut body);

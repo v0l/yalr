@@ -13,6 +13,15 @@ pub struct ServingReport {
     pub cost_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quota: Option<ServingQuota>,
+    #[serde(skip)]
+    pub model: Option<ModelServing>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ModelServing {
+    pub name: String,
+    pub exhausted: Option<bool>,
+    pub next_available_at: Option<i64>,
 }
 
 impl ServingReport {
@@ -24,7 +33,7 @@ impl ServingReport {
         reported_cost: Option<f64>,
     ) -> Self {
         let quota = store.get_quota(provider).await.and_then(|q| serving_quota(&q));
-        Self { cost_usd: crate::list_price::cost_usd(models, usage, reported_cost), quota }
+        Self { cost_usd: crate::list_price::cost_usd(models, usage, reported_cost), quota, model: None }
     }
 
     pub fn cost_usd_micro(&self) -> i64 {
@@ -35,10 +44,15 @@ impl ServingReport {
         if let Some(cost) = self.cost_usd {
             usage.insert("cost_usd".into(), Value::from(cost));
         }
-        if let Some(quota) = &self.quota {
-            if let Ok(value) = serde_json::to_value(quota) {
-                usage.insert("quota".into(), value);
-            }
+        let mut quota = match &self.quota {
+            Some(quota) => serde_json::to_value(quota).unwrap_or_default(),
+            None => Value::Object(Map::new()),
+        };
+        if let (Some(model), Some(object)) = (&self.model, quota.as_object_mut()) {
+            object.insert("model".into(), Value::from(model.name.clone()));
+        }
+        if quota.as_object().is_some_and(|o| !o.is_empty()) {
+            usage.insert("quota".into(), quota);
         }
     }
 
@@ -59,6 +73,15 @@ impl ServingReport {
             }
             if let Some(reset) = quota.resets_at {
                 out.push(("x-yalr-quota-resets-at", reset.to_string()));
+            }
+        }
+        if let Some(model) = &self.model {
+            out.push(("x-yalr-quota-model", model.name.clone()));
+            if let Some(exhausted) = model.exhausted {
+                out.push(("x-yalr-quota-exhausted", exhausted.to_string()));
+            }
+            if let Some(at) = model.next_available_at {
+                out.push(("x-yalr-quota-next-available-at", at.to_string()));
             }
         }
         if let Some(cost) = self.cost_usd {

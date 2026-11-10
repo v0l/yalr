@@ -257,10 +257,29 @@ is blocked, `exhausted` is `true` and `next_available_at` is the earliest reset 
 `provider` is only filled in for admin keys, others get `null` with the same numbers.
 `resets_at` and `next_available_at` are epoch milliseconds.
 
+`models` breaks the same report down by routed model name, exactly as configured in the routing
+tables, for each model the key may use. Each entry has its own `windows` (only that model's
+providers) and a `summary` worked out over those providers alone, so a client can check whether the
+model it is about to call is exhausted:
+
+```json
+{"models":{
+  "code-high":{"summary":{"used_pct":17.0,"window":"7d","resets_at":1794628800000,"exhausted":false,"next_available_at":null},
+               "windows":[{"provider":null,"window":"5h","used_pct":2.0,"resets_at":1794321000000,"status":"allowed"}]}}}
+```
+
+The top-level `windows` and `summary` still cover every model. `GET /v1/quota?model=code-high`
+returns only that model in `models`. Provider names stay admin-only here too.
+
 Every chat and responses completion (stream or not) carries the serving provider's state in
 `usage.cost_usd` and `usage.quota` (`{window, used_pct, resets_at}`, the tightest window). Streams put
 them in the final usage chunk. Non-stream responses also get the headers `x-yalr-quota-used-pct`,
 `x-yalr-quota-window`, `x-yalr-quota-resets-at` and `x-yalr-cost-usd`.
+
+The requested routed model name is added as `usage.quota.model` (stream and non-stream) and the
+header `x-yalr-quota-model`. `x-yalr-quota-exhausted` (`true`/`false`) and
+`x-yalr-quota-next-available-at` (epoch ms, only when exhausted) come from that model's own
+summary, not the serving provider's.
 
 `cost_usd` is the list price of the request, for reporting only; subscription providers still
 bill users nothing. It uses the cost the upstream reports (OpenRouter's `usage.cost`) when present,

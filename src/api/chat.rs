@@ -250,6 +250,7 @@ pub async fn chat_completions_handler(
             );
 
             let serving = request.trace().and_then(|t| t.serving()).unwrap_or_default();
+            let serving = crate::api::quota::with_model(&state, serving, &request.model).await;
             let mut body = serde_json::to_value(&response).unwrap_or_default();
             serving.patch_body(&mut body);
             let mut http = Json(body).into_response();
@@ -382,9 +383,9 @@ pub async fn chat_completions_stream(
                                 chunk_count += 1;
                                 let mut value = serde_json::to_value(&chunk).unwrap_or_default();
                                 if chunk.usage.is_some() {
-                                    if let Some(serving) = request.trace().and_then(|t| t.serving()) {
-                                        serving.patch_body(&mut value);
-                                    }
+                                    let serving = request.trace().and_then(|t| t.serving()).unwrap_or_default();
+                                    let serving = crate::api::quota::with_model(&state, serving, &model).await;
+                                    serving.patch_body(&mut value);
                                 }
                                 yield Ok(Event::default().json_data(&value).unwrap_or_else(|_| Event::default()));
                             }
