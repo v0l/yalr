@@ -1,6 +1,7 @@
 use crate::db::Database;
 use crate::metrics::{MetricsStore, MetricsUser};
 use crate::providers::{create_provider_from_record, ChatRequest, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
+use crate::router::errors::keep_useful;
 use crate::router::input_filter;
 use crate::router::sticky::{SessionKey, StickySessions};
 use crate::router::strategies::ProviderEntry;
@@ -1007,7 +1008,7 @@ impl Router {
                         trace.end_attempt(Some(e.to_string()));
                     }
 
-                    last_error = Some(RouterError::ProviderError(e.clone()));
+                    last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
                     self.metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
 
@@ -1256,7 +1257,7 @@ impl Router {
                                         if let Some(trace) = actual_request.trace() {
                                             trace.end_attempt(Some(e.to_string()));
                                         }
-                                        last_error = Some(RouterError::ProviderError(e));
+                                        last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e)));
                                         guard.decrement();
 
                                         // Backoff before trying next provider
@@ -1427,7 +1428,7 @@ impl Router {
                             trace.end_attempt(Some(e.to_string()));
                         }
 
-                        last_error = Some(RouterError::ProviderError(e.clone()));
+                        last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
                         metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
 
@@ -1611,7 +1612,7 @@ impl Router {
                 Err(e) => {
                     guard.decrement();
 
-                    last_error = Some(RouterError::ProviderError(e.clone()));
+                    last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
                     self.metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
 

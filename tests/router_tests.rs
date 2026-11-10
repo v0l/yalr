@@ -33,6 +33,7 @@ struct MockProvider {
     should_fail: bool,
     response_delay_ms: u64,
     stream_mode: StreamMode,
+    rate_limit_ms: Option<u64>,
 }
 
 impl MockProvider {
@@ -43,6 +44,7 @@ impl MockProvider {
             should_fail: false,
             response_delay_ms: 0,
             stream_mode: StreamMode::Content,
+            rate_limit_ms: None,
         }
     }
 
@@ -53,7 +55,13 @@ impl MockProvider {
             should_fail: false,
             response_delay_ms: 0,
             stream_mode: StreamMode::Content,
+            rate_limit_ms: None,
         }
+    }
+
+    fn with_rate_limit(mut self, retry_after_ms: u64) -> Self {
+        self.rate_limit_ms = Some(retry_after_ms);
+        self
     }
 
     fn with_failure(mut self) -> Self {
@@ -114,6 +122,9 @@ impl Provider for MockProvider {
         &self,
         request: &ChatRequest,
     ) -> Result<yalr::ChatResponse, ProviderError> {
+        if let Some(retry_after_ms) = self.rate_limit_ms {
+            return Err(ProviderError::RateLimit { retry_after_ms, message: "rate limit".to_string() });
+        }
         if self.should_fail {
             return Err(ProviderError::Other("Mock failure".to_string().into()));
         }
@@ -775,4 +786,34 @@ async fn test_router_streaming_tool_calls_count_as_content() {
 
     assert!(saw_tool_call, "tool call chunk should pass through");
     assert!(!saw_error, "tool-call-only completion must not be treated as empty");
+}
+
+#[tokio::test]
+async fn a_weekly_rate_limited_provider_fails_over_to_the_healthy_one() {
+    let db = create_test_db().await;
+    let (router, _metrics) = create_test_router_with_db(db);
+    let tenx = Arc::new(MockProvider::new("claude-max-10x").with_rate_limit(387_042_000));
+    let fivex = Arc::new(MockProvider::new("claude-max-5x"));
+    router.add_provider(tenx.clone()).await;
+    router.add_provider(fivex.clone()).await;
+    router.register_route("claude", vec![tenx.clone(), fivex.clone()]).await;
+
+    for _ in 0..3 {
+        let response = router.chat_completions(&create_test_request("claude"), None).await;
+        assert_eq!(response.unwrap().id, "mock-claude-max-5x");
+    }
+}
+
+#[tokio::test]
+async fn the_rate_limit_error_carries_the_soonest_reset() {
+    let db = create_test_db().await;
+    let (router, _metrics) = create_test_router_with_db(db);
+    let tenx = Arc::new(MockProvider::new("claude-max-10x").with_rate_limit(387_042_000));
+    let fivex = Arc::new(MockProvider::new("claude-max-5x").with_rate_limit(600_000));
+    router.add_provider(tenx.clone()).await;
+    router.add_provider(fivex.clone()).await;
+    router.register_route("claude", vec![fivex.clone(), tenx.clone()]).await;
+
+    let error = router.chat_completions(&create_test_request("claude"), None).await.unwrap_err();
+    assert_eq!(error.rate_limit_retry_ms(), Some(600_000));
 }

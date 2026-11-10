@@ -116,10 +116,11 @@ impl ProviderAgg {
     fn quota_reset(&self, now_ms: u64) -> Option<i64> {
         let start = Self::window_start(now_ms);
         let (quotas, ts) = self.last_quota.as_ref()?;
-        if *ts < start {
+        let reset = quota_snapshot_issue_reset(quotas, now_ms as i64)?;
+        if *ts < start && reset <= now_ms as i64 {
             return None;
         }
-        quota_snapshot_issue_reset(quotas, now_ms as i64)
+        Some(reset)
     }
 
     pub fn health(&self, now_ms: u64) -> HealthState {
@@ -293,6 +294,27 @@ mod tests {
         );
         assert_eq!(a.health(now), HealthState::Degraded);
         assert!(a.backoff(now) > Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_stale_snapshot_keeps_blocking_until_its_reset() {
+        let now = 1_000_000_000u64;
+        let reset = now as i64 + 387_042_000;
+        let mut a = ProviderAgg::default();
+        let seen_at = now - 3_600_000;
+        a.apply(
+            &MetricsEvent::Quota(vec![QuotaSnapshot {
+                used_pct: Some(100.0),
+                resets_at: Some(reset),
+                window: Some("7d".into()),
+                status: Some("rejected".into()),
+                ..Default::default()
+            }]),
+            seen_at,
+            seen_at,
+        );
+        assert_eq!(a.health(now), HealthState::Degraded);
+        assert!(a.time_until_retry(now) > Duration::from_secs(300_000));
     }
 
     #[test]

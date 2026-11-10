@@ -5,6 +5,7 @@ use crate::metrics::MetricsUser;
 use crate::request_log::Trace;
 use crate::providers::Provider;
 use crate::router::engine::{InFlightGuard, Router, RouterError};
+use crate::router::errors::keep_useful;
 use crate::ProviderError;
 
 /// Outcome of one provider attempt, before metrics are recorded.
@@ -164,7 +165,7 @@ impl Router {
                     attempt += 1;
                     self.metrics_store.emitter().emit_provider_error(&provider_name, model, &e, user.clone());
 
-                    last_error = Some(RouterError::ProviderError(e.clone()));
+                    last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
                     if !e.is_transient() {
                         tracing::warn!(provider = %provider_name, op, error = %e, "Request failed, aborting");
