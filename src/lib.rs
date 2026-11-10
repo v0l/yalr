@@ -12,6 +12,7 @@ pub mod payments;
 pub mod providers;
 pub mod request_log;
 pub mod router;
+pub mod serving;
 pub mod state;
 pub mod usage;
 

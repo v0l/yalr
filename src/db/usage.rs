@@ -3,7 +3,7 @@ use crate::payments::biller::TokenUsage;
 use serde::Serialize;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Default, Serialize, sqlx::FromRow, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, sqlx::FromRow, PartialEq)]
 pub struct ApiKeyUsage {
     pub requests: i64,
     pub prompt_tokens: i64,
@@ -11,6 +11,7 @@ pub struct ApiKeyUsage {
     pub cached_tokens: i64,
     pub cache_write_tokens: i64,
     pub cost_msat: i64,
+    pub cost_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -41,7 +42,8 @@ const SUMS: &str = "CAST(COALESCE(SUM(requests), 0) AS SIGNED) AS requests,
     CAST(COALESCE(SUM(completion_tokens), 0) AS SIGNED) AS completion_tokens,
     CAST(COALESCE(SUM(cached_tokens), 0) AS SIGNED) AS cached_tokens,
     CAST(COALESCE(SUM(cache_write_tokens), 0) AS SIGNED) AS cache_write_tokens,
-    CAST(COALESCE(SUM(cost_msat), 0) AS SIGNED) AS cost_msat";
+    CAST(COALESCE(SUM(cost_msat), 0) AS SIGNED) AS cost_msat,
+    CAST(COALESCE(SUM(cost_usd), 0) AS DOUBLE) AS cost_usd";
 
 const CURRENT_HOUR: &str = "DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%d %H:00:00')";
 
@@ -52,19 +54,21 @@ impl Database {
         model: &str,
         usage: TokenUsage,
         cost_msat: i64,
+        cost_usd: f64,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(&format!(
             "INSERT INTO api_key_usage
                 (api_key_id, hour, model, requests, prompt_tokens, completion_tokens,
-                 cached_tokens, cache_write_tokens, cost_msat)
-             VALUES (?, {CURRENT_HOUR}, ?, 1, ?, ?, ?, ?, ?)
+                 cached_tokens, cache_write_tokens, cost_msat, cost_usd)
+             VALUES (?, {CURRENT_HOUR}, ?, 1, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
                 requests = requests + 1,
                 prompt_tokens = prompt_tokens + VALUES(prompt_tokens),
                 completion_tokens = completion_tokens + VALUES(completion_tokens),
                 cached_tokens = cached_tokens + VALUES(cached_tokens),
                 cache_write_tokens = cache_write_tokens + VALUES(cache_write_tokens),
-                cost_msat = cost_msat + VALUES(cost_msat)",
+                cost_msat = cost_msat + VALUES(cost_msat),
+                cost_usd = cost_usd + VALUES(cost_usd)",
         ))
         .bind(api_key_id)
         .bind(model)
@@ -73,6 +77,7 @@ impl Database {
         .bind(usage.cached_tokens as i64)
         .bind(usage.cache_write_tokens as i64)
         .bind(cost_msat)
+        .bind(cost_usd)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -167,10 +172,10 @@ mod tests {
                 .unwrap();
         }
         let usage = TokenUsage { prompt_tokens: 100, completion_tokens: 20, cached_tokens: 40, cache_write_tokens: 10 };
-        db.record_api_key_usage(1, "gpt", usage, 500).await.unwrap();
-        db.record_api_key_usage(1, "gpt", usage, 500).await.unwrap();
-        db.record_api_key_usage(1, "other", TokenUsage::plain(5, 5), 7).await.unwrap();
-        db.record_api_key_usage(2, "gpt", TokenUsage::plain(1, 1), 1).await.unwrap();
+        db.record_api_key_usage(1, "gpt", usage, 500, 0.25).await.unwrap();
+        db.record_api_key_usage(1, "gpt", usage, 500, 0.25).await.unwrap();
+        db.record_api_key_usage(1, "other", TokenUsage::plain(5, 5), 7, 0.5).await.unwrap();
+        db.record_api_key_usage(2, "gpt", TokenUsage::plain(1, 1), 1, 0.0).await.unwrap();
 
         let by_key = db.api_key_usage_for_user(1).await.unwrap();
         assert_eq!(
@@ -182,6 +187,7 @@ mod tests {
                 cached_tokens: 80,
                 cache_write_tokens: 20,
                 cost_msat: 1007,
+                cost_usd: 1.0,
             }
         );
         assert_eq!(by_key[&2].requests, 1);

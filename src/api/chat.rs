@@ -105,8 +105,7 @@ pub async fn chat_handler(
         let stream_response = chat_completions_stream(State(state), Extension(authenticated_user), request, log).await;
         Ok(stream_response.into_response())
     } else {
-        let response = chat_completions_handler(State(state), Extension(authenticated_user), request, log).await?;
-        Ok(response.into_response())
+        chat_completions_handler(State(state), Extension(authenticated_user), request, log).await
     }
 }
 
@@ -147,11 +146,11 @@ pub async fn chat_completions_handler(
     Extension(authenticated_user): Extension<crate::auth::admin::AuthenticatedUser>,
     request: ChatRequest,
     mut log: Option<Pending>,
-) -> Result<Json<crate::ChatCompletionResponse>, (axum::http::StatusCode, String)> {
+) -> Result<axum::response::Response, (axum::http::StatusCode, String)> {
     let user = &authenticated_user.user;
     let request = match &log {
         Some(pending) => request.with_trace(pending.trace().clone()),
-        None => request,
+        None => request.with_trace(Trace::new()),
     };
 
     tracing::info!(
@@ -218,7 +217,7 @@ pub async fn chat_completions_handler(
                         Some(guard) => guard.finalize_usage(billed).await,
                         None => 0,
                     };
-                    crate::usage::record(&state, authenticated_user.api_key.as_ref().map(|k| k.id), &request.model, billed, billed_msat).await;
+                    crate::usage::record(&state, authenticated_user.api_key.as_ref().map(|k| k.id), &request.model, billed, billed_msat, request.trace().and_then(|t| t.serving()).and_then(|s| s.cost_usd).unwrap_or(0.0)).await;
                     billed_msat
                 }
                 None => 0,
@@ -250,7 +249,12 @@ pub async fn chat_completions_handler(
                 "Request completed successfully"
             );
 
-            Ok(Json(response))
+            let serving = request.trace().and_then(|t| t.serving()).unwrap_or_default();
+            let mut body = serde_json::to_value(&response).unwrap_or_default();
+            serving.patch_body(&mut body);
+            let mut http = Json(body).into_response();
+            serving.apply_headers(&mut http);
+            Ok(http)
         },
         Err(e) => {
             if let Some(pending) = log.take() {
@@ -261,6 +265,9 @@ pub async fn chat_completions_handler(
                 error = %e,
                 "Routing failed"
             );
+            if let Some(limited) = crate::api::shared::rate_limited(&e) {
+                return Err(limited);
+            }
             let body = serde_json::json!({
                 "error": {
                     "message": e.to_string(),
@@ -281,7 +288,7 @@ pub async fn chat_completions_stream(
     let user = &authenticated_user.user;
     let request = match &log {
         Some(pending) => request.with_trace(pending.trace().clone()),
-        None => request,
+        None => request.with_trace(Trace::new()),
     };
 
     tracing::info!(
@@ -373,7 +380,13 @@ pub async fn chat_completions_stream(
                                     completion_tokens = usage.completion_tokens;
                                 }
                                 chunk_count += 1;
-                                yield Ok(Event::default().json_data(&chunk).unwrap_or_else(|_| Event::default()));
+                                let mut value = serde_json::to_value(&chunk).unwrap_or_default();
+                                if chunk.usage.is_some() {
+                                    if let Some(serving) = request.trace().and_then(|t| t.serving()) {
+                                        serving.patch_body(&mut value);
+                                    }
+                                }
+                                yield Ok(Event::default().json_data(&value).unwrap_or_else(|_| Event::default()));
                             }
                             Err(e) => {
                                 stream_error = Some(e.to_string());
@@ -409,7 +422,7 @@ pub async fn chat_completions_stream(
                         _ => 0,
                     };
                     if prompt_tokens + completion_tokens > 0 {
-                        crate::usage::record(&state, api_key_id, &model, billed, billed_msat).await;
+                        crate::usage::record(&state, api_key_id, &model, billed, billed_msat, request.trace().and_then(|t| t.serving()).and_then(|s| s.cost_usd).unwrap_or(0.0)).await;
                     }
                     if let Some(mut pending) = log.take() {
                         pending.set_cost(billed_msat);

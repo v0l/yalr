@@ -3,6 +3,8 @@ pub mod body_limit;
 pub mod chat;
 #[cfg(test)]
 mod chat_stream_tests;
+#[cfg(test)]
+mod serving_tests;
 pub mod compression;
 pub mod config;
 pub mod decisions;

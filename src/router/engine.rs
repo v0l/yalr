@@ -943,6 +943,24 @@ impl Router {
                         .emit_success(&provider_name, &original_model, user.clone());
 
                     if let Some(tokens) = response.usage.as_ref() {
+                        let traced = actual_request.trace().and_then(|t| t.usage());
+                        let counted = crate::payments::biller::TokenUsage {
+                            prompt_tokens: tokens.prompt_tokens,
+                            completion_tokens: tokens.completion_tokens,
+                            cached_tokens: traced.map(|u| u.cached_tokens).unwrap_or_else(|| {
+                                tokens.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens).unwrap_or(0)
+                            }),
+                            cache_write_tokens: traced.map_or(0, |u| u.cache_write_tokens),
+                        };
+                        crate::serving::record(
+                            actual_request.trace(),
+                            &self.metrics_store,
+                            &provider_name,
+                            &[&original_model, &resolved_model],
+                            &counted,
+                            response.reported_cost(),
+                        )
+                        .await;
                         let latency_secs = total_latency.as_secs_f64().max(0.001);
                         let output_tokens_per_sec = tokens.completion_tokens as f32 / latency_secs as f32;
                         let input_tokens_per_sec = tokens.prompt_tokens as f32 / latency_secs as f32;
@@ -1204,6 +1222,28 @@ impl Router {
                                     // it so the client sees a clean chunk.
                                     if let Some(v) = chunk.extra_fields.remove(crate::providers::CACHE_WRITE_TOKENS_FIELD) {
                                         cache_write_tokens = v.as_u64().unwrap_or(0) as u32;
+                                    }
+
+                                    let reported_cost = chunk
+                                        .extra_fields
+                                        .remove(crate::serving::REPORTED_COST_FIELD)
+                                        .and_then(|v| v.as_f64());
+                                    if chunk.usage.is_some() {
+                                        let counted = crate::payments::biller::TokenUsage {
+                                            prompt_tokens,
+                                            completion_tokens,
+                                            cached_tokens,
+                                            cache_write_tokens,
+                                        };
+                                        crate::serving::record(
+                                            actual_request.trace(),
+                                            &metrics_store,
+                                            &provider_name,
+                                            &[&original_model, &resolved_model],
+                                            &counted,
+                                            reported_cost,
+                                        )
+                                        .await;
                                     }
 
                                     if chunk.choices.iter().any(|c| c.finish_reason.as_deref() == Some("content_filter")) {
@@ -1603,6 +1643,24 @@ impl Router {
                     self.metrics_store
                         .emitter()
                         .emit_success(&provider_name, &original_model, user.clone());
+
+                    if let Some(usage) = response.usage.as_ref() {
+                        let counted = crate::payments::biller::TokenUsage {
+                            prompt_tokens: usage.input_tokens,
+                            completion_tokens: usage.output_tokens,
+                            cached_tokens: usage.input_tokens_details.cached_tokens,
+                            cache_write_tokens: 0,
+                        };
+                        crate::serving::record(
+                            trace,
+                            &self.metrics_store,
+                            &provider_name,
+                            &[&original_model, &resolved_model],
+                            &counted,
+                            None,
+                        )
+                        .await;
+                    }
 
                     tracing::info!(
                         provider = provider_name,

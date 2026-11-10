@@ -35,6 +35,7 @@ pub struct Usage {
 #[derive(Debug, Default)]
 struct Inner {
     usage: Option<Usage>,
+    serving: Option<crate::serving::ServingReport>,
     provider: Option<String>,
     upstream: Upstream,
     attempts: Vec<Attempt>,
@@ -133,6 +134,14 @@ impl Trace {
 
     pub fn usage(&self) -> Option<Usage> {
         self.with(|inner| inner.usage).flatten()
+    }
+
+    pub fn set_serving(&self, report: crate::serving::ServingReport) {
+        self.with(|inner| inner.serving = Some(report));
+    }
+
+    pub fn serving(&self) -> Option<crate::serving::ServingReport> {
+        self.with(|inner| inner.serving.clone()).flatten()
     }
 
     pub fn attempts(&self) -> Vec<Attempt> {

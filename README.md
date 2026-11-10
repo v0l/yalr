@@ -235,10 +235,50 @@ See [AGENTS.md](AGENTS.md) for full design philosophy, theme system rules, and i
 - `GET /health` - Health check
 - `POST /v1/chat/completions` - Chat completion endpoint
 - `GET /v1/models` - List available models
+- `GET /v1/quota` - Quota windows and headroom for the key's providers
+- `GET /v1/usage` - Token, `cost_msat` and `cost_usd` totals for the key
 - `POST /v1/audio/transcriptions` - Speech to text (multipart upload)
 - `POST /v1/audio/translations` - Speech to English text (multipart upload)
 - `POST /v1/audio/speech` - Text to speech, audio streamed back
 - `POST /v1/systemone` - Decision models (Jev), also at `POST /api/alpha/decisions`
+
+### Quota and cost reporting
+
+`GET /v1/quota` works for any API key. It lists the quota windows (`5h`, `7d`, ...) of the
+providers the key can route to, and a `summary` a client can act on:
+
+```json
+{"windows":[{"provider":"claude-max-2","window":"5h","used_pct":2.0,"resets_at":1794321000000,"status":"allowed"}],
+ "summary":{"used_pct":17.0,"window":"7d","resets_at":1794628800000,"exhausted":false,"next_available_at":null}}
+```
+
+`summary` is the best provider still routable: its tightest window. When every tracked provider
+is blocked, `exhausted` is `true` and `next_available_at` is the earliest reset that frees one.
+`provider` is only filled in for admin keys, others get `null` with the same numbers.
+`resets_at` and `next_available_at` are epoch milliseconds.
+
+Every chat and responses completion (stream or not) carries the serving provider's state in
+`usage.cost_usd` and `usage.quota` (`{window, used_pct, resets_at}`, the tightest window). Streams put
+them in the final usage chunk. Non-stream responses also get the headers `x-yalr-quota-used-pct`,
+`x-yalr-quota-window`, `x-yalr-quota-resets-at` and `x-yalr-cost-usd`.
+
+`cost_usd` is the list price of the request, for reporting only; subscription providers still
+bill users nothing. It uses the cost the upstream reports (OpenRouter's `usage.cost`) when present,
+else a per-model table seeded with Anthropic's published prices (USD per 1M tokens). Override or
+extend it in `config.yaml`:
+
+```yaml
+list_prices:
+  claude-sonnet-4-5:
+    input: 3.0
+    output: 15.0
+    cache_read: 0.3
+    cache_write: 3.75
+```
+
+When no routable provider can serve a request because of rate limits, the response is a `429`
+whose error body carries `next_available_at` (epoch ms) for the soonest reset across providers,
+not the longest. A provider that is rate limited fails over to the next healthy one first.
 
 ### Audio (STT / TTS)
 

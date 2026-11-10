@@ -222,7 +222,7 @@ impl Metered {
             None => 0,
         };
         let api_key_id = self.authenticated.api_key.as_ref().map(|k| k.id);
-        crate::usage::record(&self.state, api_key_id, &self.model, usage, billed_msat).await;
+        crate::usage::record(&self.state, api_key_id, &self.model, usage, billed_msat, self.trace.serving().and_then(|s| s.cost_usd).unwrap_or(0.0)).await;
         billed_msat
     }
 

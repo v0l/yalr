@@ -5,6 +5,7 @@ use async_openai::types::responses::{CreateResponse, Response as ApiResponse};
 use axum::{
     extract::{ConnectInfo, Extension, State},
     http::{HeaderMap, StatusCode},
+    response::IntoResponse,
     Json,
 };
 use bytes::Bytes;
@@ -31,7 +32,7 @@ pub async fn create_response(
     peer: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<ApiResponse>, HandlerError> {
+) -> Result<axum::response::Response, HandlerError> {
     let request: CreateResponse = serde_json::from_slice(&body).map_err(|e| {
         (StatusCode::UNPROCESSABLE_ENTITY, error_body(&format!("Invalid request body: {e}"), "invalid_request_error"))
     })?;
@@ -65,12 +66,20 @@ pub async fn create_response(
         Ok(response) => {
             tracing::info!(model = %model, response_id = response.id, "Response created successfully");
             let logged = serde_json::to_vec(&response).unwrap_or_default();
+            let serving = metered.trace().serving().unwrap_or_default();
             metered.succeed(logged, billed(&response)).await;
-            Ok(Json(response))
+            let mut body = serde_json::to_value(&response).unwrap_or_default();
+            serving.patch_body(&mut body);
+            let mut http = Json(body).into_response();
+            serving.apply_headers(&mut http);
+            Ok(http)
         }
         Err(e) => {
             tracing::error!(model = %model, error = %e, "Response creation failed");
             metered.fail(&e.to_string());
+            if let Some(limited) = crate::api::shared::rate_limited(&e) {
+                return Err(limited);
+            }
             Err((StatusCode::BAD_REQUEST, error_body(&e.to_string(), "router_error")))
         }
     }

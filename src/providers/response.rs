@@ -9,6 +9,7 @@ const UNTYPED_MESSAGE_FIELDS: &[&str] = &["audio"];
 pub struct ChatResponse {
     inner: CreateChatCompletionResponse,
     raw_choices: Vec<RawChoice>,
+    reported_cost: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -24,10 +25,16 @@ impl ChatResponse {
             .and_then(Value::as_array_mut)
             .map(|choices| choices.iter_mut().map(take_raw_choice).collect())
             .unwrap_or_default();
+        let reported_cost = value.pointer("/usage/cost").and_then(Value::as_f64);
         Ok(Self {
             inner: serde_json::from_value(value)?,
             raw_choices,
+            reported_cost,
         })
+    }
+
+    pub fn reported_cost(&self) -> Option<f64> {
+        self.reported_cost
     }
 
     pub fn inner(&self) -> &CreateChatCompletionResponse {
@@ -73,6 +80,7 @@ impl From<CreateChatCompletionResponse> for ChatResponse {
         Self {
             inner,
             raw_choices: Vec::new(),
+            reported_cost: None,
         }
     }
 }

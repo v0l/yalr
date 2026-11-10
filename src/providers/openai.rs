@@ -380,9 +380,14 @@ impl Provider for OpenAiProvider {
                                     return Err(error_detail_to_provider_error(error_detail));
                                 }
 
-                                // Not an error, try to deserialize as streaming chunk
+                                let reported_cost = json_value.pointer("/usage/cost").and_then(|c| c.as_f64());
                                 match serde_json::from_value::<StreamingChunk>(json_value.clone()) {
-                                    Ok(chunk) => Ok(chunk),
+                                    Ok(mut chunk) => {
+                                        if let Some(cost) = reported_cost {
+                                            chunk.extra_fields.insert(crate::serving::REPORTED_COST_FIELD.to_string(), cost.into());
+                                        }
+                                        Ok(chunk)
+                                    }
                                     Err(de_error) => {
                                         // Log the raw JSON that failed to deserialize for debugging
                                         tracing::error!(

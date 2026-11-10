@@ -24,6 +24,8 @@ pub struct ApiErrorDetail {
     pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_available_at: Option<i64>,
 }
 
 impl ApiError {
@@ -34,6 +36,7 @@ impl ApiError {
                 error_type: "invalid_request_error".into(),
                 code: Some("request_too_large".into()),
                 limit_bytes: Some(limit_bytes),
+                next_available_at: None,
             },
         }
     }
@@ -45,6 +48,7 @@ impl ApiError {
                 error_type: error_type.into(),
                 code: None,
                 limit_bytes: None,
+                next_available_at: None,
             },
         }
     }
@@ -56,6 +60,7 @@ impl ApiError {
                 error_type: "payment_required".into(),
                 code: None,
                 limit_bytes: None,
+                next_available_at: None,
             },
         }
     }
@@ -137,7 +142,25 @@ fn upstream_message(body: &str) -> String {
         .unwrap_or_else(|_| body.to_string())
 }
 
+pub fn rate_limited(e: &RouterError) -> Option<HandlerError> {
+    let retry_ms = e.rate_limit_retry_ms()?;
+    let next_available_at = chrono::Utc::now().timestamp_millis() + retry_ms as i64;
+    let body = ApiError {
+        error: ApiErrorDetail {
+            message: format!("Rate limit exceeded. Retry after: {retry_ms}ms"),
+            error_type: "rate_limit_error".into(),
+            code: Some("rate_limit_exceeded".into()),
+            limit_bytes: None,
+            next_available_at: Some(next_available_at),
+        },
+    };
+    Some((StatusCode::TOO_MANY_REQUESTS, serde_json::to_string(&body).unwrap_or_default()))
+}
+
 pub fn router_error(e: RouterError, capability: &str) -> HandlerError {
+    if let Some(limited) = rate_limited(&e) {
+        return limited;
+    }
     match &e {
         RouterError::NoAvailableProvider => (
             StatusCode::NOT_FOUND,
