@@ -22,6 +22,7 @@ pub mod responses;
 pub mod routing;
 mod routing_modalities;
 pub mod shared;
+pub mod quota;
 pub mod usage;
 pub mod users;
 pub mod handlers;

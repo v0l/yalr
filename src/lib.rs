@@ -3,6 +3,8 @@ pub mod auth;
 pub mod config;
 pub mod db;
 pub mod discovery;
+pub mod list_price;
+pub mod quota_report;
 pub mod metrics;
 pub mod metrics_agg;
 pub mod oauth;

@@ -43,6 +43,12 @@ pub fn quota_exhausted(q: &QuotaSnapshot) -> bool {
         || matches!((q.remaining, q.limit), (Some(r), Some(l)) if l > 0 && r <= 0)
 }
 
+pub fn quota_used_pct(q: &QuotaSnapshot) -> Option<f32> {
+    q.used_pct
+        .or_else(|| used_pct(q.remaining, q.limit))
+        .or_else(|| quota_exhausted(q).then_some(100.0))
+}
+
 /// Severity score used to rank quota windows by how close they are to blocking.
 /// Exhausted windows always rank highest.
 fn quota_severity(q: &QuotaSnapshot) -> f32 {

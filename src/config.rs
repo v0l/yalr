@@ -15,6 +15,8 @@ pub struct Config {
     pub anthropic: AnthropicConfig,
     #[serde(default)]
     pub request_log: RequestLogConfig,
+    #[serde(default)]
+    pub list_prices: std::collections::HashMap<String, crate::list_price::ListPrice>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -113,6 +115,7 @@ impl Default for Config {
             discovery: None,
             anthropic: AnthropicConfig::default(),
             request_log: RequestLogConfig::default(),
+            list_prices: Default::default(),
         }
     }
 }
@@ -236,6 +239,7 @@ impl AppConfig {
         // Apply provider-level feature toggles sourced from the config file.
         crate::providers::anthropic::set_prompt_cache_enabled(config.anthropic.prompt_cache);
         crate::request_log::settings::set(config.request_log.clone());
+        crate::list_price::set_overrides(config.list_prices.clone());
 
         let payments_config = config.payments;
         let discovery_config = config.discovery;

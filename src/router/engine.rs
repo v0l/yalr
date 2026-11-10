@@ -550,6 +550,10 @@ impl Router {
         self.providers.read().await.values().cloned().collect()
     }
 
+    pub async fn routed_models(&self) -> Vec<String> {
+        self.routing_tables.read().await.keys().cloned().collect()
+    }
+
     pub async fn add_provider(&self, provider: Arc<dyn Provider>) {
         let provider_name = provider.name().to_string();
         self.metrics_store.register_provider(&provider_name).await;
