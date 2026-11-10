@@ -8,17 +8,23 @@ use axum::{
 use serde::Deserialize;
 
 use crate::auth::admin::AuthenticatedUser;
-use crate::quota_report::{build_model, build_report, summary_of, ProviderQuota, QuotaReport};
+use crate::quota_report::{build_model, build_report, summary_of, ProviderQuota, QuotaPick, QuotaReport};
 use crate::serving::{ModelServing, ServingReport};
 use crate::state::AppState;
 
-pub async fn model_quotas(state: &AppState, model: &str) -> Vec<ProviderQuota> {
+pub async fn ordered_quotas(state: &AppState, model: &str) -> (QuotaPick, Vec<ProviderQuota>) {
+    let (priority, backends) = state.config.router.pick_order(model).await;
     let mut out = Vec::new();
-    for (provider, _) in state.config.router.candidate_backends(model).await {
+    for (provider, _) in backends {
         let quotas = state.metrics_store.get_quota(provider.name()).await.unwrap_or_default();
         out.push(ProviderQuota { label: provider.name().to_string(), quotas });
     }
-    out
+    let pick = if priority { QuotaPick::FirstOpen } else { QuotaPick::Lowest };
+    (pick, out)
+}
+
+pub async fn model_quotas(state: &AppState, model: &str) -> Vec<ProviderQuota> {
+    ordered_quotas(state, model).await.1
 }
 
 async fn allowed_models(state: &AppState, authenticated: &AuthenticatedUser) -> Vec<String> {
@@ -76,8 +82,8 @@ pub async fn get_quota(
         if query.model.as_ref().is_some_and(|wanted| *wanted != model) {
             continue;
         }
-        let quotas = model_quotas(&state, &model).await;
-        report.models.insert(model, build_model(&quotas, reveal, now_ms));
+        let (pick, quotas) = ordered_quotas(&state, &model).await;
+        report.models.insert(model, build_model(&quotas, pick, reveal, now_ms));
     }
     Json(report)
 }

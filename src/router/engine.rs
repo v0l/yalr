@@ -635,6 +635,24 @@ impl Router {
             .collect()
     }
 
+    pub async fn pick_order(&self, model: &str) -> (bool, Vec<(Arc<dyn Provider>, String)>) {
+        let tables = self.routing_tables.read().await;
+        let Some(table) = tables.get(model).filter(|_| !model.contains('/')) else {
+            drop(tables);
+            return (false, self.candidate_backends(model).await);
+        };
+        let priority = table.strategy == StrategyKind::Priority;
+        let entries = if priority { table.priority_order() } else { table.entries.iter().collect() };
+        let backends = entries
+            .into_iter()
+            .map(|entry| {
+                let resolved_model = entry.model_override.clone().unwrap_or_else(|| model.to_string());
+                (entry.provider.clone(), resolved_model)
+            })
+            .collect();
+        (priority, backends)
+    }
+
     /// Collect all candidate (provider, resolved_model) pairs for a given model,
     /// ordered by preference (available providers first, then unavailable as fallback).
     ///

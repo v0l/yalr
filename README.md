@@ -268,6 +268,8 @@ model it is about to call is exhausted:
                "windows":[{"provider":null,"window":"5h","used_pct":2.0,"resets_at":1794321000000,"status":"allowed"}]}}}
 ```
 
+A model's `summary` follows its routing strategy: under `priority` it reports the first provider (highest weight) that is not blocked, under round-robin the open provider with the lowest `used_pct`.
+
 The top-level `windows` and `summary` still cover every model. `GET /v1/quota?model=code-high`
 returns only that model in `models`. Provider names stay admin-only here too.
 

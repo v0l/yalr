@@ -45,6 +45,12 @@ pub struct ServingQuota {
     pub resets_at: Option<i64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuotaPick {
+    Lowest,
+    FirstOpen,
+}
+
 #[derive(Clone)]
 pub struct ProviderQuota {
     pub label: String,
@@ -82,7 +88,7 @@ fn window_of(provider: Option<String>, q: &QuotaSnapshot) -> QuotaWindow {
     }
 }
 
-fn summarize(providers: &[ProviderQuota], now_ms: i64) -> Option<QuotaSummary> {
+fn summarize(providers: &[ProviderQuota], pick: QuotaPick, now_ms: i64) -> Option<QuotaSummary> {
     let tracked: Vec<&ProviderQuota> = providers.iter().filter(|p| !p.quotas.is_empty()).collect();
     if tracked.is_empty() {
         return None;
@@ -109,12 +115,16 @@ fn summarize(providers: &[ProviderQuota], now_ms: i64) -> Option<QuotaSummary> {
         }
     }
 
-    if let Some((_, tight)) = open.into_iter().min_by(|a, b| {
-        a.1.used_pct
-            .unwrap_or(0.0)
-            .partial_cmp(&b.1.used_pct.unwrap_or(0.0))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    }) {
+    let chosen = match pick {
+        QuotaPick::FirstOpen => open.into_iter().next(),
+        QuotaPick::Lowest => open.into_iter().min_by(|a, b| {
+            a.1.used_pct
+                .unwrap_or(0.0)
+                .partial_cmp(&b.1.used_pct.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+    };
+    if let Some((_, tight)) = chosen {
         return Some(QuotaSummary {
             used_pct: tight.used_pct,
             window: tight.window,
@@ -135,16 +145,17 @@ fn summarize(providers: &[ProviderQuota], now_ms: i64) -> Option<QuotaSummary> {
 }
 
 pub fn summary_of(providers: &[ProviderQuota], now_ms: i64) -> Option<QuotaSummary> {
-    summarize(providers, now_ms)
+    summarize(providers, QuotaPick::Lowest, now_ms)
 }
 
-pub fn build_model(providers: &[ProviderQuota], reveal_providers: bool, now_ms: i64) -> ModelQuota {
+pub fn build_model(providers: &[ProviderQuota], pick: QuotaPick, reveal_providers: bool, now_ms: i64) -> ModelQuota {
     let report = build_report(providers.to_vec(), reveal_providers, now_ms);
-    ModelQuota { summary: report.summary, windows: report.windows }
+    let summary = summarize(providers, pick, now_ms);
+    ModelQuota { summary, windows: report.windows }
 }
 
 pub fn build_report(providers: Vec<ProviderQuota>, reveal_providers: bool, now_ms: i64) -> QuotaReport {
-    let summary = summarize(&providers, now_ms);
+    let summary = summarize(&providers, QuotaPick::Lowest, now_ms);
     let windows = providers
         .iter()
         .flat_map(|p| {
@@ -195,6 +206,35 @@ mod tests {
         assert_eq!(summary.used_pct, Some(17.0));
         assert_eq!(summary.resets_at, Some(NOW + 200_000_000));
         assert_eq!(report.windows.len(), 4);
+    }
+
+    fn tiered(first_rejected: bool) -> Vec<ProviderQuota> {
+        let first = if first_rejected {
+            snap("5h", 100.0, "rejected", 1_800_000)
+        } else {
+            snap("5h", 95.0, "allowed", 1_800_000)
+        };
+        vec![
+            ProviderQuota { label: "p1".into(), quotas: vec![first] },
+            ProviderQuota { label: "p2".into(), quotas: vec![snap("5h", 10.0, "allowed", 3_600_000)] },
+        ]
+    }
+
+    #[test]
+    fn priority_model_reports_the_first_open_provider() {
+        let model = build_model(&tiered(false), QuotaPick::FirstOpen, true, NOW);
+        assert_eq!(model.summary.unwrap().used_pct, Some(95.0));
+        let model = build_model(&tiered(true), QuotaPick::FirstOpen, true, NOW);
+        let summary = model.summary.unwrap();
+        assert_eq!(summary.used_pct, Some(10.0));
+        assert_eq!(summary.resets_at, Some(NOW + 3_600_000));
+        assert!(!summary.exhausted);
+    }
+
+    #[test]
+    fn round_robin_model_reports_the_lowest_provider() {
+        let model = build_model(&tiered(false), QuotaPick::Lowest, true, NOW);
+        assert_eq!(model.summary.unwrap().used_pct, Some(10.0));
     }
 
     #[test]
