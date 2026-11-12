@@ -23,6 +23,8 @@ pub mod request_log;
 pub mod responses;
 pub mod routing;
 mod routing_modalities;
+#[cfg(test)]
+mod routing_nested_tests;
 pub mod shared;
 pub mod quota;
 pub mod usage;

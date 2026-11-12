@@ -333,9 +333,12 @@ export interface RouterConfig {
 export interface RoutingConfigProvider {
   id: number
   routing_config_id: number
-  provider_id: number
-  provider_name: string
-  provider_slug: string
+  kind: 'provider' | 'config'
+  provider_id?: number
+  provider_name?: string
+  provider_slug?: string
+  config_id?: number
+  config_name?: string
   model: string | null
   weight: number
   is_active: boolean
@@ -381,7 +384,8 @@ export interface RoutingConfigUpdateRequest {
 
 export interface RoutingConfigProviderCreateRequest {
   routing_config_id: number
-  provider_id: number
+  provider_id?: number
+  config_id?: number
   model: string | null
   weight: number
   is_active: boolean

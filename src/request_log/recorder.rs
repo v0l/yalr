@@ -95,6 +95,7 @@ pub fn build(inbound: Inbound, trace: &Trace, outcome: Outcome, started_at_ms: i
         client_ip: inbound.client_ip.clone(),
         client_headers: pairs_json(&inbound.client_headers),
         provider: trace.provider(),
+        route: trace.route(),
         upstream_url: upstream.url.clone(),
         upstream_request_headers: pairs_json(&upstream.request_headers),
         upstream_status: upstream.status.map(i64::from),
@@ -374,6 +375,17 @@ mod tests {
         assert!(record.client_headers.contains("user-agent"));
         assert_eq!(unpack(record.upstream_request_packed.as_deref().unwrap()).unwrap(), trace.upstream().request_body.unwrap());
         assert_eq!(unpack(record.response_packed.as_deref().unwrap()).unwrap(), b"{\"text\":\"hi\"}");
+    }
+
+    #[test]
+    fn build_records_the_route_path() {
+        let trace = Trace::new();
+        trace.begin_attempt("spark");
+        trace.set_route("code-high > code > spark");
+        trace.end_attempt(None);
+        let record = build(inbound("route-1"), &trace, Outcome { status: "ok".into(), ..Default::default() }, 1);
+        assert_eq!(record.provider.as_deref(), Some("spark"));
+        assert_eq!(record.route.as_deref(), Some("code-high > code > spark"));
     }
 
     #[test]

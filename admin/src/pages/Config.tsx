@@ -130,6 +130,7 @@ export default function Config() {
               key={selected.id}
               config={selected}
               providers={providers}
+              configs={configs}
               notify={setSuccess}
               onError={msg => setError(msg || null)}
               onChanged={loadData}
@@ -215,7 +216,7 @@ export default function Config() {
         <AlertDialogContent className="border-border bg-card">
           <AlertDialogHeader>
             <AlertDialogTitle className="font-display text-xl tracking-[0.04em] text-destructive">REMOVE PROVIDER</AlertDialogTitle>
-            <AlertDialogDescription className="font-mono text-[13px] text-muted-foreground">Remove <span className="text-foreground">{deleteAssignment?.provider_name}</span> from this routing config?</AlertDialogDescription>
+            <AlertDialogDescription className="font-mono text-[13px] text-muted-foreground">Remove <span className="text-foreground">{deleteAssignment?.provider_name ?? deleteAssignment?.config_name}</span> from this routing config?</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</AlertDialogCancel>

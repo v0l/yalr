@@ -240,7 +240,7 @@ async fn test_routing_config_provider_filtering_by_active() {
     
     let active_providers = db.list_active_routing_config_providers(rc.id).await.unwrap();
     assert_eq!(active_providers.len(), 1);
-    assert_eq!(active_providers[0].provider_id, provider1.id);
+    assert_eq!(active_providers[0].provider_id, Some(provider1.id));
 }
 
 #[tokio::test]
@@ -319,9 +319,102 @@ async fn test_multiple_routing_configs_with_different_providers() {
     assert_eq!(rc1_providers.len(), 2);
     assert_eq!(rc2_providers.len(), 2);
     
-    assert!(rc1_providers.iter().any(|p| p.provider_id == provider1.id));
-    assert!(rc1_providers.iter().any(|p| p.provider_id == provider2.id));
-    assert!(rc2_providers.iter().any(|p| p.provider_id == provider2.id));
-    assert!(rc2_providers.iter().any(|p| p.provider_id == provider3.id));
+    assert!(rc1_providers.iter().any(|p| p.provider_id == Some(provider1.id)));
+    assert!(rc1_providers.iter().any(|p| p.provider_id == Some(provider2.id)));
+    assert!(rc2_providers.iter().any(|p| p.provider_id == Some(provider2.id)));
+    assert!(rc2_providers.iter().any(|p| p.provider_id == Some(provider3.id)));
 }
 
+
+async fn config(db: &Database, name: &str) -> RoutingConfig {
+    db.create_routing_config(NewRoutingConfig {
+        name: name.to_string(),
+        strategy: "round_robin".to_string(),
+        health_check_enabled: true,
+        health_check_interval_seconds: 30,
+        health_check_timeout_seconds: 5,
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_config_member_can_be_a_child_config() {
+    let db = setup_test_db().await;
+    let parent = config(&db, "code-high").await;
+    let kid = config(&db, "code").await;
+    let member = db
+        .create_routing_config_child(NewRoutingConfigChild {
+            routing_config_id: parent.id,
+            child_config_id: kid.id,
+            model: Some("qwen".to_string()),
+            weight: 40,
+            is_active: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!((member.provider_id, member.child_config_id), (None, Some(kid.id)));
+    let listed = db.list_active_routing_config_providers(parent.id).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].model.as_deref(), Some("qwen"));
+    assert!(db.list_routing_config_providers_for_provider(1).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_member_with_both_or_neither_target_is_refused_by_the_database() {
+    let db = setup_test_db().await;
+    let parent = config(&db, "a").await;
+    let kid = config(&db, "b").await;
+    let provider = db
+        .create_provider(NewProvider { name: "p", slug: "p", base_url: "http://x", api_key: None, provider_type: None })
+        .await
+        .unwrap();
+    let both = db
+        .execute_raw(&format!(
+            "INSERT INTO routing_config_providers (routing_config_id, provider_id, child_config_id) VALUES ({}, {}, {})",
+            parent.id, provider.id, kid.id
+        ))
+        .await;
+    assert!(both.is_err());
+    let neither = db
+        .execute_raw(&format!("INSERT INTO routing_config_providers (routing_config_id) VALUES ({})", parent.id))
+        .await;
+    assert!(neither.is_err());
+}
+
+#[tokio::test]
+async fn deleting_a_child_config_removes_it_from_its_parents() {
+    let db = setup_test_db().await;
+    let parent = config(&db, "a").await;
+    let kid = config(&db, "b").await;
+    db.create_routing_config_child(NewRoutingConfigChild {
+        routing_config_id: parent.id,
+        child_config_id: kid.id,
+        model: None,
+        weight: 1,
+        is_active: true,
+    })
+    .await
+    .unwrap();
+    db.delete_routing_config(kid.id).await.unwrap();
+    assert!(db.list_routing_config_providers_for_config(parent.id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn nested_links_that_cycle_or_run_too_deep_are_refused() {
+    let db = setup_test_db().await;
+    let a = config(&db, "a").await;
+    let b = config(&db, "b").await;
+    assert_eq!(db.validate_nested_link(a.id, a.id).await.unwrap(), Err(NestedLinkError::SelfReference));
+    db.create_routing_config_child(NewRoutingConfigChild {
+        routing_config_id: a.id,
+        child_config_id: b.id,
+        model: None,
+        weight: 1,
+        is_active: true,
+    })
+    .await
+    .unwrap();
+    assert_eq!(db.validate_nested_link(b.id, a.id).await.unwrap(), Err(NestedLinkError::Cycle));
+    assert_eq!(db.validate_nested_link(a.id, b.id).await.unwrap(), Ok(()));
+}

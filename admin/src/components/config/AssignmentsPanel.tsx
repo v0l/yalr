@@ -14,6 +14,7 @@ import { useModelCache } from './modelCache'
 interface AssignmentsPanelProps {
   config: RoutingConfigFull
   providers: ProviderListItem[]
+  configs: RoutingConfigFull[]
   notify: (msg: string) => void
   onError: (msg: string) => void
   onChanged: () => Promise<void> | void
@@ -22,11 +23,11 @@ interface AssignmentsPanelProps {
   onRequestDeleteAssignment: (a: RoutingConfigProvider) => void
 }
 
-type NewAssignment = { provider_id: number; slug: string; model: string; weight: number; is_active: boolean }
-const emptyNew: NewAssignment = { provider_id: 0, slug: '', model: '', weight: 1, is_active: true }
+type NewAssignment = { kind: 'provider' | 'config'; provider_id: number; config_id: number; slug: string; model: string; weight: number; is_active: boolean }
+const emptyNew: NewAssignment = { kind: 'provider', provider_id: 0, config_id: 0, slug: '', model: '', weight: 1, is_active: true }
 
 export default function AssignmentsPanel(props: AssignmentsPanelProps) {
-  const { config, providers, notify, onError, onChanged, onEditConfig, onDeleteConfig, onRequestDeleteAssignment } = props
+  const { config, providers, configs, notify, onError, onChanged, onEditConfig, onDeleteConfig, onRequestDeleteAssignment } = props
   const isPriority = config.strategy === 'priority'
   const { ensure, get } = useModelCache()
 
@@ -74,14 +75,16 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
   }
 
   async function addProvider() {
-    if (draft.provider_id === 0) { onError('Select a provider first'); return }
+    const isConfig = draft.kind === 'config'
+    if (isConfig ? draft.config_id === 0 : draft.provider_id === 0) { onError(isConfig ? 'Select a config first' : 'Select a provider first'); return }
     setSavingNew(true); onError('')
     try {
       await api.addProviderToConfig({
-        routing_config_id: config.id, provider_id: draft.provider_id,
+        routing_config_id: config.id,
+        ...(isConfig ? { config_id: draft.config_id } : { provider_id: draft.provider_id }),
         model: draft.model || null, weight: draft.weight, is_active: draft.is_active,
       })
-      notify('PROVIDER ADDED'); setDraft({ ...emptyNew }); setAdding(false); await onChanged()
+      notify(isConfig ? 'CONFIG ADDED' : 'PROVIDER ADDED'); setDraft({ ...emptyNew }); setAdding(false); await onChanged()
     } catch (e) { onError(e instanceof Error ? e.message : 'Failed to add provider') }
     finally { setSavingNew(false) }
   }
@@ -97,7 +100,7 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
           <div className="mt-1 flex flex-wrap items-center gap-2 font-mono text-[11px] text-muted-foreground">
             <Badge variant="secondary" className="font-mono text-[10px] uppercase tracking-wider bg-secondary text-muted-foreground border-border">{config.strategy.replace(/_/g, ' ')}</Badge>
             <span className="text-border">·</span>
-            <span>{config.providers.length} provider{config.providers.length !== 1 ? 's' : ''}</span>
+            <span>{config.providers.length} member{config.providers.length !== 1 ? 's' : ''}</span>
             <span className="text-border">·</span>
             <span>health {config.health_check_enabled ? `every ${config.health_check_interval_seconds}s` : 'off'}</span>
             {(config.input_modalities || config.output_modalities) && (
@@ -129,19 +132,19 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
       {/* Assignments */}
       <div className="overflow-x-auto p-2">
         {config.providers.length === 0 && !adding ? (
-          <p className="py-10 text-center font-mono text-[13px] text-muted-foreground">No providers assigned.</p>
+          <p className="py-10 text-center font-mono text-[13px] text-muted-foreground">No providers or configs assigned.</p>
         ) : (
           <table className="w-full table-scan">
             <thead>
               <tr className="border-b border-border/50 text-left">
-                {['Provider', 'Model', colLabel, 'Status', ''].map((h, i) => (
+                {['Member', 'Model', colLabel, 'Status', ''].map((h, i) => (
                   <th key={i} className="px-2 py-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {config.providers.map((a, idx) => {
-                const entry = get(a.provider_slug)
+                const entry = get(a.provider_slug ?? '')
                 return (
                   <AssignmentRow
                     key={a.id}
@@ -151,7 +154,7 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
                     busy={busy.has(a.id)}
                     models={entry.models}
                     modelsLoading={entry.loading}
-                    ensureModels={() => ensure(a.provider_slug)}
+                    ensureModels={() => a.provider_slug && ensure(a.provider_slug)}
                     onPatch={p => patch(a, p)}
                     onDelete={() => onRequestDeleteAssignment(a)}
                     dragging={drag?.from === idx}
@@ -173,6 +176,29 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
         {adding ? (
           <div className="flex flex-wrap items-end gap-2 rounded-sm bg-surface/50 p-2">
             <div className="flex flex-col gap-1">
+              <label className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">Type</label>
+              <Select value={draft.kind} onValueChange={v => setDraft(d => ({ ...d, kind: v as 'provider' | 'config', model: '' }))}>
+                <SelectTrigger className="h-7 w-28 font-mono text-[12px] bg-surface border-border text-foreground"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-card border-border">
+                  <SelectGroup>
+                    <SelectItem value="provider" className="font-mono text-[12px] text-foreground">Provider</SelectItem>
+                    <SelectItem value="config" className="font-mono text-[12px] text-foreground">Config</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
+            {draft.kind === 'config' ? (
+              <div className="flex flex-col gap-1">
+                <label className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">Config</label>
+                <Select value={draft.config_id === 0 ? '' : String(draft.config_id)} onValueChange={v => setDraft(d => ({ ...d, config_id: Number(v) }))}>
+                  <SelectTrigger className="h-7 w-44 font-mono text-[12px] bg-surface border-border text-foreground"><SelectValue placeholder="select…" /></SelectTrigger>
+                  <SelectContent className="bg-card border-border">
+                    <SelectGroup>{configs.filter(c => c.id !== config.id).map(c => <SelectItem key={c.id} value={String(c.id)} className="font-mono text-[12px] text-foreground">{c.name}</SelectItem>)}</SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+            <div className="flex flex-col gap-1">
               <label className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">Provider</label>
               <Select
                 value={draft.provider_id === 0 ? '' : String(draft.provider_id)}
@@ -184,8 +210,12 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
                 </SelectContent>
               </Select>
             </div>
+            )}
             <div className="flex flex-col gap-1">
               <label className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">Model</label>
+              {draft.kind === 'config' ? (
+                <Input value={draft.model} placeholder="child's own model" onChange={e => setDraft(d => ({ ...d, model: e.target.value }))} className="h-7 w-44 font-mono text-[12px] bg-surface border-border text-foreground" />
+              ) : (
               <ModelPicker
                 className="w-44"
                 triggerSize="sm"
@@ -197,6 +227,7 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
                 onChange={m => setDraft(d => ({ ...d, model: m }))}
                 allowEmpty emptyLabel="no override" allowCustom
               />
+              )}
             </div>
             <div className="flex flex-col gap-1">
               <label className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">Weight</label>
@@ -212,7 +243,7 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
           </div>
         ) : (
           <Button variant="secondary" size="sm" onClick={() => setAdding(true)} className="h-8 w-full font-mono text-[11px] uppercase tracking-wider bg-secondary text-muted-foreground hover:text-foreground border border-border">
-            <PlusIcon className="size-3" /> Add Provider
+            <PlusIcon className="size-3" /> Add Provider or Config
           </Button>
         )}
       </div>

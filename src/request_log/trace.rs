@@ -37,6 +37,7 @@ struct Inner {
     usage: Option<Usage>,
     serving: Option<crate::serving::ServingReport>,
     provider: Option<String>,
+    route: Option<String>,
     upstream: Upstream,
     attempts: Vec<Attempt>,
 }
@@ -74,6 +75,14 @@ impl Trace {
             inner.provider = Some(provider.to_string());
             inner.upstream = Upstream::default();
         });
+    }
+
+    pub fn set_route(&self, route: &str) {
+        self.with(|inner| inner.route = (!route.is_empty()).then(|| route.to_string()));
+    }
+
+    pub fn route(&self) -> Option<String> {
+        self.with(|inner| inner.route.clone()).flatten()
     }
 
     pub fn upstream_request(&self, url: &str, headers: Vec<(String, String)>, body: Vec<u8>) {

@@ -56,7 +56,10 @@ fn validate_health_seconds(
 #[derive(Deserialize)]
 pub struct RoutingConfigProviderCreateRequest {
     pub routing_config_id: i64,
-    pub provider_id: i64,
+    #[serde(default)]
+    pub provider_id: Option<i64>,
+    #[serde(default, alias = "child_config_id")]
+    pub config_id: Option<i64>,
     pub model: Option<String>,
     pub weight: i32,
     pub is_active: bool,
@@ -90,9 +93,17 @@ pub struct RoutingConfigFullResponse {
 pub struct RoutingConfigProviderFullResponse {
     pub id: i64,
     pub routing_config_id: i64,
-    pub provider_id: i64,
-    pub provider_name: String,
-    pub provider_slug: String,
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_name: Option<String>,
     pub model: Option<String>,
     pub weight: i32,
     pub is_active: bool,
@@ -100,25 +111,41 @@ pub struct RoutingConfigProviderFullResponse {
     pub updated_at: crate::db::Timestamp,
 }
 
+fn internal_error(e: sqlx::Error) -> (axum::http::StatusCode, String) {
+    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
+
 fn provider_responses(
-    providers: &[crate::db::RoutingConfigProvider],
+    members: &[crate::db::RoutingConfigProvider],
     db_providers: &[crate::db::Provider],
+    configs: &[crate::db::RoutingConfig],
 ) -> Vec<RoutingConfigProviderFullResponse> {
-    providers
+    members
         .iter()
         .map(|rp| {
-            let provider = db_providers.iter().find(|p| p.id == rp.provider_id);
+            let provider = rp.provider_id.and_then(|id| db_providers.iter().find(|p| p.id == id));
+            let child = rp.child_config_id.and_then(|id| configs.iter().find(|c| c.id == id));
+            let is_child = rp.child_config_id.is_some();
             RoutingConfigProviderFullResponse {
                 id: rp.id,
                 routing_config_id: rp.routing_config_id,
+                kind: if is_child { "config" } else { "provider" },
                 provider_id: rp.provider_id,
-                provider_name: provider.map_or_else(|| "Unknown".to_string(), |p| p.name.clone()),
-                provider_slug: provider.map_or_else(|| "unknown".to_string(), |p| p.slug.clone()),
+                provider_name: rp
+                    .provider_id
+                    .map(|_| provider.map_or_else(|| "Unknown".to_string(), |p| p.name.clone())),
+                provider_slug: rp
+                    .provider_id
+                    .map(|_| provider.map_or_else(|| "unknown".to_string(), |p| p.slug.clone())),
+                config_id: rp.child_config_id,
+                config_name: rp
+                    .child_config_id
+                    .map(|_| child.map_or_else(|| "Unknown".to_string(), |c| c.name.clone())),
                 model: rp.model.clone(),
                 weight: rp.weight,
                 is_active: rp.is_active,
-                created_at: rp.created_at.clone(),
-                updated_at: rp.updated_at.clone(),
+                created_at: rp.created_at,
+                updated_at: rp.updated_at,
             }
         })
         .collect()
@@ -143,7 +170,7 @@ pub async fn list_routing_configs(State(state): State<std::sync::Arc<AppState>>)
     };
 
     let mut response = Vec::new();
-    for config in configs {
+    for config in configs.clone() {
         let providers = match state.config.db.list_routing_config_providers_for_config(config.id).await {
             Ok(providers) => providers,
             Err(e) => {
@@ -152,7 +179,7 @@ pub async fn list_routing_configs(State(state): State<std::sync::Arc<AppState>>)
             }
         };
 
-        let provider_responses = provider_responses(&providers, &db_providers);
+        let provider_responses = provider_responses(&providers, &db_providers, &configs);
 
         response.push(RoutingConfigFullResponse {
             id: config.id,
@@ -214,7 +241,8 @@ pub async fn create_routing_config(
                 }
             };
 
-            let provider_responses = provider_responses(&providers, &db_providers);
+            let configs = state.config.db.list_routing_configs().await.map_err(internal_error)?;
+            let provider_responses = provider_responses(&providers, &db_providers, &configs);
 
             RoutingConfigFullResponse {
                 id: created.id,
@@ -290,7 +318,8 @@ pub async fn update_routing_config(
         }
     };
 
-    let provider_responses = provider_responses(&providers, &db_providers);
+    let configs = state.config.db.list_routing_configs().await.map_err(internal_error)?;
+    let provider_responses = provider_responses(&providers, &db_providers, &configs);
 
     Ok(Json(RoutingConfigFullResponse {
         id: updated.id,
@@ -335,16 +364,42 @@ pub async fn create_routing_config_provider(
     State(state): State<std::sync::Arc<AppState>>,
     Json(request): Json<RoutingConfigProviderCreateRequest>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    let rcp = crate::db::NewRoutingConfigProvider {
-        routing_config_id: request.routing_config_id,
-        provider_id: request.provider_id,
-        model: request.model.clone(),
-        weight: request.weight,
-        is_active: request.is_active,
+    let bad_request = |message: &str| (axum::http::StatusCode::BAD_REQUEST, message.to_string());
+    let created = match (request.provider_id, request.config_id) {
+        (Some(provider_id), None) => {
+            let rcp = crate::db::NewRoutingConfigProvider {
+                routing_config_id: request.routing_config_id,
+                provider_id,
+                model: request.model.clone(),
+                weight: request.weight,
+                is_active: request.is_active,
+            };
+            state.config.db.create_routing_config_provider(rcp).await
+        }
+        (None, Some(child_id)) => {
+            if state.config.db.get_routing_config(child_id).await.map_err(internal_error)?.is_none() {
+                return Err((axum::http::StatusCode::NOT_FOUND, "Child routing config not found".to_string()));
+            }
+            state
+                .config
+                .db
+                .validate_nested_link(request.routing_config_id, child_id)
+                .await
+                .map_err(internal_error)?
+                .map_err(|e| bad_request(&e.to_string()))?;
+            let child = crate::db::NewRoutingConfigChild {
+                routing_config_id: request.routing_config_id,
+                child_config_id: child_id,
+                model: request.model.clone(),
+                weight: request.weight,
+                is_active: request.is_active,
+            };
+            state.config.db.create_routing_config_child(child).await
+        }
+        _ => return Err(bad_request("Provide exactly one of provider_id or config_id")),
     };
 
-    match state.config.db.create_routing_config_provider(rcp).await {
-        Ok(_) => {
+    match created.map(|_| ()) {        Ok(_) => {
             state.config.router.reload_config().await
                 .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             Ok(Json(serde_json::json!({

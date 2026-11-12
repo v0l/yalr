@@ -242,3 +242,19 @@ async fn the_size_backfill_picks_its_batch_from_an_index() {
     let extra = extra.unwrap_or_default();
     assert!(extra.contains("Using index") && !extra.contains("filesort"), "{extra}");
 }
+
+#[tokio::test]
+async fn the_route_path_is_stored_and_listed() {
+    let db = Database::test().await;
+    let id = db
+        .insert_request_log(Record {
+            provider: Some("spark".into()),
+            route: Some("code-high > code > spark".into()),
+            ..record("route-1", 1_000, false)
+        })
+        .await
+        .unwrap();
+    let rows = db.list_request_logs(10, Filter::default()).await.unwrap();
+    assert_eq!(rows[0].route.as_deref(), Some("code-high > code > spark"));
+    assert_eq!(db.request_log_detail(id).await.unwrap().unwrap().route.as_deref(), Some("code-high > code > spark"));
+}

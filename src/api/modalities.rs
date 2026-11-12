@@ -137,15 +137,57 @@ async fn listed_output_modalities(state: &AppState, model: &str) -> Option<Vec<S
     listed.then_some(output)
 }
 
+fn merge_names(into: &mut Option<Vec<String>>, more: Option<Vec<String>>) {
+    let Some(more) = more else { return };
+    let names = into.get_or_insert_with(Vec::new);
+    for name in more {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+}
+
+async fn child_declared(state: &AppState, rc: &RoutingConfig) -> DeclaredModalities {
+    let mut pending: Vec<(i64, usize)> = vec![(rc.id, 0)];
+    let mut input: Option<Vec<String>> = None;
+    let mut output: Option<Vec<String>> = None;
+    while let Some((id, depth)) = pending.pop() {
+        if depth >= crate::db::MAX_NESTING_DEPTH {
+            continue;
+        }
+        let members = state.db.list_active_routing_config_providers(id).await.unwrap_or_default();
+        for child_id in members.iter().filter_map(|m| m.child_config_id) {
+            let Ok(Some(child)) = state.db.get_routing_config(child_id).await else { continue };
+            let declared = child.declared_modalities();
+            merge_names(&mut input, DeclaredModalities::names(&declared.input));
+            merge_names(&mut output, DeclaredModalities::names(&declared.output));
+            pending.push((child_id, depth + 1));
+        }
+    }
+    DeclaredModalities {
+        input: input.map(|n| DeclaredModalities::parse_list(&n).ok().flatten()).unwrap_or(None),
+        output: output.map(|n| DeclaredModalities::parse_list(&n).ok().flatten()).unwrap_or(None),
+    }
+}
+
 pub async fn routing_architecture(state: &AppState, rc: &RoutingConfig) -> Option<ModelArchitecture> {
     let declared = rc.declared_modalities();
+    let nested = child_declared(state, rc).await;
     let input = match DeclaredModalities::names(&declared.input) {
         Some(names) => Some(names),
-        None => probed_input_modalities(state, &rc.name).await,
+        None => {
+            let mut names = probed_input_modalities(state, &rc.name).await;
+            merge_names(&mut names, DeclaredModalities::names(&nested.input));
+            names
+        }
     };
     let output = match DeclaredModalities::names(&declared.output) {
         Some(names) => Some(names),
-        None => listed_output_modalities(state, &rc.name).await,
+        None => {
+            let mut names = listed_output_modalities(state, &rc.name).await;
+            merge_names(&mut names, DeclaredModalities::names(&nested.output));
+            names
+        }
     };
     if input.is_none() && output.is_none() {
         return None;
@@ -369,6 +411,28 @@ mod tests {
         let rc = declare(&state, "painter", painter()).await;
 
         let architecture = routing_architecture(&state, &rc).await.unwrap();
+        assert_eq!(architecture.input_modalities, vec!["text"]);
+        assert_eq!(architecture.output_modalities, vec!["image"]);
+    }
+
+    #[tokio::test]
+    async fn a_parent_advertises_what_its_child_configs_declare() {
+        let state = state_with(openai("http://127.0.0.1:1/v1"), "unused").await;
+        let child = declare(&state, "painter", painter()).await;
+        let parent = declare(&state, "wrapper", DeclaredModalities::default()).await;
+        state
+            .db
+            .create_routing_config_child(crate::db::NewRoutingConfigChild {
+                routing_config_id: parent.id,
+                child_config_id: child.id,
+                model: None,
+                weight: 1,
+                is_active: true,
+            })
+            .await
+            .unwrap();
+
+        let architecture = routing_architecture(&state, &parent).await.unwrap();
         assert_eq!(architecture.input_modalities, vec!["text"]);
         assert_eq!(architecture.output_modalities, vec!["image"]);
     }

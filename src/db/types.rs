@@ -149,7 +149,8 @@ pub struct RoutingConfig {
 pub struct RoutingConfigProvider {
     pub id: i64,
     pub routing_config_id: i64,
-    pub provider_id: i64,
+    pub provider_id: Option<i64>,
+    pub child_config_id: Option<i64>,
     pub model: Option<String>,
     pub weight: i32,
     pub is_active: bool,
@@ -194,6 +195,15 @@ pub struct NewRoutingConfig {
 pub struct NewRoutingConfigProvider {
     pub routing_config_id: i64,
     pub provider_id: i64,
+    pub model: Option<String>,
+    pub weight: i32,
+    pub is_active: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewRoutingConfigChild {
+    pub routing_config_id: i64,
+    pub child_config_id: i64,
     pub model: Option<String>,
     pub weight: i32,
     pub is_active: bool,

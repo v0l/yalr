@@ -13,6 +13,8 @@ async fn legacy_sqlite() -> (std::path::PathBuf, sqlx::SqlitePool) {
         "INSERT INTO providers (name, slug, base_url, api_key, provider_type, oauth_expires_at) VALUES ('Local', 'local', 'http://x', 'k', 1, 1792504800000)",
         "INSERT INTO routing_config (name, strategy, input_modalities) VALUES ('code-high', 'round_robin', '[\"text\",\"image\"]')",
         "INSERT INTO routing_config_providers (routing_config_id, provider_id, model, weight) VALUES (1, 1, 'qwen', 50)",
+        "INSERT INTO routing_config (name, strategy) VALUES ('code', 'priority')",
+        "INSERT INTO routing_config_providers (routing_config_id, child_config_id, model, weight) VALUES (1, 2, 'inner', 30)",
         "INSERT INTO users (username, user_type, is_admin, created_at) VALUES ('Alice', 0, 1, '2026-10-20 14:00:00')",
         "INSERT INTO users (username, external_id, user_type, is_admin) VALUES ('nostr_ab', 'abcdef', 1, 0)",
         "INSERT INTO api_keys (key_hash, name, user_id, last_four, expires_at) VALUES ('hash', 'main', 1, 'abcd', '2030-01-01 00:00:00')",
@@ -60,7 +62,14 @@ async fn a_legacy_sqlite_database_imports_with_ids_types_and_timestamps_intact()
     assert_eq!((provider.provider_type, provider.oauth_expires_at), (ProviderType::LlamaCpp, Some(1792504800000)));
     let rc = db.get_routing_config_by_name("code-high").await.unwrap().unwrap();
     assert_eq!(rc.input_modalities.as_deref(), Some("[\"text\",\"image\"]"));
-    assert_eq!(db.list_active_routing_config_providers(rc.id).await.unwrap()[0].model.as_deref(), Some("qwen"));
+    let members = db.list_routing_config_providers_for_config(rc.id).await.unwrap();
+    let provider_member = members.iter().find(|m| m.provider_id.is_some()).unwrap();
+    let nested_member = members.iter().find(|m| m.child_config_id.is_some()).unwrap();
+    assert_eq!((provider_member.model.as_deref(), provider_member.provider_id), (Some("qwen"), Some(1)));
+    assert_eq!(
+        (nested_member.child_config_id, nested_member.provider_id, nested_member.model.as_deref(), nested_member.weight),
+        (Some(2), None, Some("inner"), 30)
+    );
     assert_eq!(db.get_model_pricing("code-high").await.unwrap().unwrap().context_window, Some(256000));
     assert_eq!(db.server_secret().await.unwrap(), "secret");
     assert_eq!(db.request_log_bodies(1).await.unwrap().unwrap().client_request_packed, Some(vec![1, 2, 3]));

@@ -53,7 +53,7 @@ pub(super) async fn store_modalities(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::state::AppState;
     use crate::api::server::create_test_app;
@@ -85,7 +85,7 @@ mod tests {
         assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
     }
 
-    async fn app() -> (axum::Router, String) {
+    pub(crate) async fn app() -> (axum::Router, String) {
         let db = Database::test().await;
         let metrics_store = MetricsStore::new(100);
         let router = Arc::new(crate::router::engine::Router::new(
@@ -129,7 +129,7 @@ mod tests {
         (create_test_app(state).await, token)
     }
 
-    async fn send(app: &axum::Router, method: &str, uri: &str, token: &str, body: &str) -> (u16, String) {
+    pub(crate) async fn send(app: &axum::Router, method: &str, uri: &str, token: &str, body: &str) -> (u16, String) {
         let response = app
             .clone()
             .oneshot(

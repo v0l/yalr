@@ -1,5 +1,5 @@
 use super::{
-    Database, NewRoutingConfig, NewRoutingConfigProvider, RoutingConfig, RoutingConfigProvider, UpdateRoutingConfig,
+    Database, NewRoutingConfig, NewRoutingConfigChild, NewRoutingConfigProvider, RoutingConfig, RoutingConfigProvider, UpdateRoutingConfig,
     UpdateRoutingConfigProvider,
 };
 use sqlx::QueryBuilder;
@@ -89,6 +89,25 @@ impl Database {
         .bind(rcp.model)
         .bind(rcp.weight)
         .bind(rcp.is_active)
+        .execute(&self.pool)
+        .await?
+        .last_insert_id() as i64;
+        self.get_routing_config_provider(id).await?.ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn create_routing_config_child(
+        &self,
+        child: NewRoutingConfigChild,
+    ) -> Result<RoutingConfigProvider, sqlx::Error> {
+        let id = sqlx::query(
+            "INSERT INTO routing_config_providers (routing_config_id, child_config_id, model, weight, is_active) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(child.routing_config_id)
+        .bind(child.child_config_id)
+        .bind(child.model)
+        .bind(child.weight)
+        .bind(child.is_active)
         .execute(&self.pool)
         .await?
         .last_insert_id() as i64;

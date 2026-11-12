@@ -76,13 +76,23 @@ impl StrategyKind {
     }
 }
 
+#[derive(Clone)]
+struct ChildEntry {
+    config: String,
+    model_override: Option<String>,
+    weight: i32,
+}
+
+#[derive(Clone, Copy)]
+enum Slot {
+    Provider(usize),
+    Child(usize),
+}
+
 struct RoutingTable {
     entries: Vec<ProviderEntry>,
-    /// Ordering strategy for this table.
+    children: Vec<ChildEntry>,
     strategy: StrategyKind,
-    /// Counter for weighted round-robin. Each call to `collect_candidates`
-    /// advances this so that over many requests the distribution matches the
-    /// configured weights.
     rr_counter: AtomicUsize,
 }
 
@@ -92,65 +102,94 @@ impl RoutingTable {
     }
 
     fn with_strategy(entries: Vec<ProviderEntry>, strategy: StrategyKind) -> Self {
+        Self::with_children(entries, Vec::new(), strategy)
+    }
+
+    fn with_children(entries: Vec<ProviderEntry>, children: Vec<ChildEntry>, strategy: StrategyKind) -> Self {
         Self {
             entries,
+            children,
             strategy,
             rr_counter: AtomicUsize::new(0),
         }
     }
 
-    /// Return entries in strict priority order (highest weight first).
-    ///
-    /// Entries are already loaded `ORDER BY weight DESC`, but we sort here too
-    /// so the ordering is robust regardless of insertion order.
-    fn priority_order(&self) -> Vec<&ProviderEntry> {
-        let mut ordered: Vec<&ProviderEntry> = self.entries.iter().collect();
-        ordered.sort_by(|a, b| b.weight.cmp(&a.weight));
-        ordered
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty() && self.children.is_empty()
     }
 
-    /// Return entries reordered for a single weighted round-robin step.
-    ///
-    /// Weighted round-robin works by expanding each entry into `weight` virtual
-    /// slots, then cycling through those slots.  A 3:1 split produces the
-    /// repeating sequence A A A B — so A gets 75 % of traffic, B gets 25 %.
-    fn weighted_rr_order(&self) -> Vec<&ProviderEntry> {
-        if self.entries.is_empty() {
+    fn slots(&self) -> Vec<(Slot, i32)> {
+        let providers = self.entries.iter().enumerate().map(|(i, e)| (Slot::Provider(i), e.weight));
+        let children = self.children.iter().enumerate().map(|(i, c)| (Slot::Child(i), c.weight));
+        providers.chain(children).collect()
+    }
+
+    fn priority_order(&self) -> Vec<Slot> {
+        let mut ordered = self.slots();
+        ordered.sort_by_key(|slot| std::cmp::Reverse(slot.1));
+        ordered.into_iter().map(|(slot, _)| slot).collect()
+    }
+
+    fn weighted_rr_order(&self) -> Vec<Slot> {
+        let mut ordered = self.slots();
+        if ordered.is_empty() {
             return vec![];
         }
 
-        // If all weights are equal (or zero/negative), fall back to plain RR
-        let first_weight = self.entries[0].weight.max(1);
-        let all_equal = self.entries.iter().all(|e| e.weight.max(1) == first_weight);
+        let first_weight = ordered[0].1.max(1);
+        let all_equal = ordered.iter().all(|(_, w)| (*w).max(1) == first_weight);
 
-        if all_equal {
-            let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % self.entries.len();
-            // Rotate so the chosen index is first
-            let mut ordered: Vec<&ProviderEntry> = self.entries.iter().collect();
-            ordered.rotate_left(idx);
-            return ordered;
-        }
-
-        // Weighted: expand into virtual slots, pick the next slot
-        let total_weight: i32 = self.entries.iter().map(|e| e.weight.max(1)).sum();
-        let slot = self.rr_counter.fetch_add(1, Ordering::Relaxed) % (total_weight as usize);
-
-        // Determine which entry the slot belongs to
-        let mut accumulated = 0i32;
-        let mut primary_idx = 0;
-        for (i, entry) in self.entries.iter().enumerate() {
-            accumulated += entry.weight.max(1);
-            if slot < accumulated as usize {
-                primary_idx = i;
-                break;
+        let primary_idx = if all_equal {
+            self.rr_counter.fetch_add(1, Ordering::Relaxed) % ordered.len()
+        } else {
+            let total_weight: i32 = ordered.iter().map(|(_, w)| (*w).max(1)).sum();
+            let slot = self.rr_counter.fetch_add(1, Ordering::Relaxed) % (total_weight as usize);
+            let mut accumulated = 0i32;
+            let mut primary_idx = 0;
+            for (i, (_, w)) in ordered.iter().enumerate() {
+                accumulated += (*w).max(1);
+                if slot < accumulated as usize {
+                    primary_idx = i;
+                    break;
+                }
             }
-        }
+            primary_idx
+        };
 
-        // Rotate so the selected entry is first (the rest follow as fallbacks)
-        let mut ordered: Vec<&ProviderEntry> = self.entries.iter().collect();
         ordered.rotate_left(primary_idx);
-        ordered
+        ordered.into_iter().map(|(slot, _)| slot).collect()
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tier {
+    Healthy,
+    Degraded,
+    Cooling,
+    Unavailable,
+}
+
+pub(crate) struct Candidate {
+    pub(crate) provider: Arc<dyn Provider>,
+    pub(crate) model: String,
+    pub(crate) route: String,
+}
+
+impl Candidate {
+    pub(crate) fn untracked(provider: Arc<dyn Provider>, model: String) -> Self {
+        Self { provider, model, route: String::new() }
+    }
+
+    #[cfg(test)]
+    fn pair(self) -> (Arc<dyn Provider>, String) {
+        (self.provider, self.model)
+    }
+}
+
+struct Ranked {
+    tier: Tier,
+    retry_ms: u64,
+    candidates: Vec<Candidate>,
 }
 
 fn session_key(user: Option<&MetricsUser>, model: &str, session: Option<&str>) -> Option<SessionKey> {
@@ -281,9 +320,20 @@ impl Router {
         for rc in &routing_configs {
             let rcp_records = self.db.list_active_routing_config_providers(rc.id).await?;
             let mut entries = Vec::new();
+            let mut children = Vec::new();
 
             for rcp in &rcp_records {
-                let slug = match id_to_slug.get(&rcp.provider_id) {
+                if let Some(child_id) = rcp.child_config_id {
+                    if let Some(child) = routing_configs.iter().find(|c| c.id == child_id) {
+                        children.push(ChildEntry {
+                            config: child.name.clone(),
+                            model_override: rcp.model.clone(),
+                            weight: rcp.weight,
+                        });
+                    }
+                    continue;
+                }
+                let slug = match rcp.provider_id.and_then(|id| id_to_slug.get(&id)) {
                     Some(s) => s,
                     None => continue,
                 };
@@ -304,13 +354,14 @@ impl Router {
                 routing_config = rc.name,
                 strategy = rc.strategy,
                 provider_count = entries.len(),
+                child_count = children.len(),
                 providers = ?entry_names,
                 "Loaded routing config"
             );
 
             tables.insert(
                 rc.name.clone(),
-                RoutingTable::with_strategy(entries, StrategyKind::from_str(&rc.strategy)),
+                RoutingTable::with_children(entries, children, StrategyKind::from_str(&rc.strategy)),
             );
         }
 
@@ -619,20 +670,9 @@ impl Router {
         }
 
         let tables = self.routing_tables.read().await;
-        let Some(table) = tables.get(model) else {
-            return Vec::new();
-        };
-        table
-            .entries
-            .iter()
-            .map(|entry| {
-                let resolved_model = entry
-                    .model_override
-                    .clone()
-                    .unwrap_or_else(|| model.to_string());
-                (entry.provider.clone(), resolved_model)
-            })
-            .collect()
+        let mut out = Vec::new();
+        Self::flatten_backends(&tables, model, model, 1, &mut out);
+        out
     }
 
     pub async fn pick_order(&self, model: &str) -> (bool, Vec<(Arc<dyn Provider>, String)>) {
@@ -642,24 +682,66 @@ impl Router {
             return (false, self.candidate_backends(model).await);
         };
         let priority = table.strategy == StrategyKind::Priority;
-        let entries = if priority { table.priority_order() } else { table.entries.iter().collect() };
-        let backends = entries
-            .into_iter()
-            .map(|entry| {
-                let resolved_model = entry.model_override.clone().unwrap_or_else(|| model.to_string());
-                (entry.provider.clone(), resolved_model)
-            })
-            .collect();
+        let mut backends = Vec::new();
+        Self::order_backends(&tables, model, model, 1, &mut backends);
         (priority, backends)
     }
 
-    /// Collect all candidate (provider, resolved_model) pairs for a given model,
-    /// ordered by preference (available providers first, then unavailable as fallback).
-    ///
-    /// Within available providers, candidates are sorted by load: providers with
-    /// fewer in-flight requests (relative to their weight) are preferred. This
-    /// prevents a slow provider from absorbing all traffic just because the
-    /// round-robin counter keeps cycling back to it while it's still processing.
+    fn order_backends(
+        tables: &HashMap<String, RoutingTable>,
+        config: &str,
+        model: &str,
+        depth: usize,
+        out: &mut Vec<(Arc<dyn Provider>, String)>,
+    ) {
+        let Some(table) = tables.get(config) else {
+            return;
+        };
+        let slots = match table.strategy {
+            StrategyKind::Priority => table.priority_order(),
+            StrategyKind::RoundRobin => table.slots().into_iter().map(|(slot, _)| slot).collect(),
+        };
+        for slot in slots {
+            match slot {
+                Slot::Provider(i) => {
+                    let entry = &table.entries[i];
+                    let resolved = entry.model_override.clone().unwrap_or_else(|| model.to_string());
+                    out.push((entry.provider.clone(), resolved));
+                }
+                Slot::Child(i) if depth < crate::db::MAX_NESTING_DEPTH => {
+                    let child = &table.children[i];
+                    let child_model = child.model_override.as_deref().unwrap_or(model);
+                    Self::order_backends(tables, &child.config, child_model, depth + 1, out);
+                }
+                Slot::Child(_) => {}
+            }
+        }
+    }
+
+    fn flatten_backends(
+        tables: &HashMap<String, RoutingTable>,
+        config: &str,
+        model: &str,
+        depth: usize,
+        out: &mut Vec<(Arc<dyn Provider>, String)>,
+    ) {
+        let Some(table) = tables.get(config) else {
+            return;
+        };
+        for entry in &table.entries {
+            let resolved = entry.model_override.clone().unwrap_or_else(|| model.to_string());
+            out.push((entry.provider.clone(), resolved));
+        }
+        if depth >= crate::db::MAX_NESTING_DEPTH {
+            return;
+        }
+        for child in &table.children {
+            let child_model = child.model_override.as_deref().unwrap_or(model);
+            Self::flatten_backends(tables, &child.config, child_model, depth + 1, out);
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) async fn collect_candidates(
         &self,
         model: &str,
@@ -667,12 +749,23 @@ impl Router {
         self.collect_session_candidates(model, None).await
     }
 
+    #[cfg(test)]
     pub(crate) async fn collect_session_candidates(
         &self,
         model: &str,
         session: Option<&SessionKey>,
     ) -> Vec<(Arc<dyn Provider>, String)> {
-        // Handle prefixed model (provider-slug/model)
+        self.collect_routed(model, session)
+            .await
+            .map(|routed| routed.into_iter().map(Candidate::pair).collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) async fn collect_routed(
+        &self,
+        model: &str,
+        session: Option<&SessionKey>,
+    ) -> Result<Vec<Candidate>, RouterError> {
         if let Some((slug_prefix, actual_model)) = model.split_once('/') {
             let providers = self.providers.read().await;
             let provider = providers
@@ -684,154 +777,155 @@ impl Router {
                         .find(|p| p.slug().starts_with(slug_prefix))
                         .cloned()
                 });
-            if let Some(provider) = provider {
-                return vec![(provider, actual_model.to_string())];
-            }
-            return vec![];
+            return Ok(match provider {
+                Some(provider) => vec![Candidate::untracked(provider, actual_model.to_string())],
+                None => vec![],
+            });
         }
 
         let tables = self.routing_tables.read().await;
-        let table = match tables.get(model) {
-            Some(t) => t,
-            None => return vec![],
+        let Some(table) = tables.get(model) else {
+            return Ok(vec![]);
         };
-
-        if table.entries.is_empty() {
-            return vec![];
-        }
-
-        // Get entries in the order dictated by the configured strategy.
-        // - RoundRobin: weighted round-robin spread across providers.
-        // - Priority: strict priority order (highest weight first), failover only.
-        let ordered = match table.strategy {
-            StrategyKind::RoundRobin => table.weighted_rr_order(),
-            StrategyKind::Priority => table.priority_order(),
-        };
-
-        // Build candidate list with health information.
-        // Three categories: healthy (available), degraded (fallback), unavailable (last resort)
-        let mut healthy = Vec::new();
-        let mut degraded = Vec::new();
-        // Providers in an active rate-limit / quota cooldown. Kept out of normal
-        // selection (so we stop hammering a 429'd provider) but usable as a
-        // last resort, shortest remaining cooldown first.
-        let mut cooling: Vec<(u64, (Arc<dyn Provider>, String))> = Vec::new();
-        let mut unavailable = Vec::new();
-
-        // Compute health/availability/cooldown for every candidate in ONE pass
-        // under a single lock (O(providers)), instead of three O(events) scans
-        // per provider.
-        let provider_names: Vec<&str> = ordered.iter().map(|e| e.provider.name()).collect();
-        let snapshot = self.metrics_store.routing_snapshot(&provider_names).await;
-
-        for (order_idx, entry) in ordered.iter().enumerate() {
-            let resolved_model = entry
-                .model_override
-                .clone()
-                .unwrap_or_else(|| model.to_string());
-            let pair = (entry.provider.clone(), resolved_model);
-            let provider_name = entry.provider.name();
-
-            let rh = snapshot
-                .get(provider_name)
-                .copied()
-                .unwrap_or_else(crate::metrics::RoutingHealth::unknown);
-            let health_state = rh.health;
-            let is_available = rh.available;
-            let retry_in = rh.retry_in;
-
-            tracing::debug!(
-                provider = provider_name,
-                health_state = ?health_state,
-                is_available = is_available,
-                retry_in_ms = retry_in.as_millis() as u64,
-                "Evaluating provider for routing"
-            );
-
-            // Respect an active rate-limit / quota cooldown: don't select this
-            // provider for the duration the upstream asked us to wait.
-            if !retry_in.is_zero() {
-                tracing::debug!(
-                    provider = provider_name,
-                    retry_in_ms = retry_in.as_millis() as u64,
-                    "Provider in backoff/rate-limit cooldown, deprioritizing"
-                );
-                cooling.push((retry_in.as_millis() as u64, pair));
-                continue;
-            }
-
-            if is_available {
-                if health_state == crate::metrics::HealthState::Healthy {
-                    // For Priority strategy, the sort key is simply the priority
-                    // order index so that providers are tried strictly highest
-                    // priority first. For RoundRobin, use a load score so the
-                    // least-loaded provider is preferred.
-                    let score = match table.strategy {
-                        StrategyKind::Priority => order_idx as f32,
-                        StrategyKind::RoundRobin => {
-                            let in_flight = self.metrics_store.get_in_flight(provider_name).await;
-                            let weight = entry.weight.max(1) as f32;
-                            in_flight as f32 / weight
-                        }
-                    };
-                    healthy.push((score, pair));
-                } else {
-                    // Degraded but still available - use as fallback
-                    tracing::info!(provider = provider_name, "Provider degraded, using as fallback");
-                    degraded.push(pair);
-                }
-            } else {
-                unavailable.push(pair);
-            }
-        }
-
-        // Sort healthy providers by score (ascending). For RoundRobin this is
-        // load (least loaded first); for Priority this is the priority index
-        // (highest priority first), so failover walks down the priority list.
-        healthy.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        let mut candidates: Vec<(Arc<dyn Provider>, String)> = healthy
-            .into_iter()
-            .map(|(_, pair)| pair)
-            .collect();
-
-        // Only fall back to degraded providers if there are no healthy ones at all.
-        if candidates.is_empty() && !degraded.is_empty() {
-            tracing::warn!(
-                model = %model,
-                degraded_count = degraded.len(),
-                "No healthy providers, falling back to degraded providers"
-            );
-            candidates.extend(degraded);
-        }
+        let ranked = self.rank_table(&tables, model, model, "", 1).await?;
+        let mut candidates = ranked.candidates;
         if table.strategy == StrategyKind::RoundRobin {
-            self.sticky.move_pinned_first(session, &mut candidates, |(p, _)| p.name());
+            self.sticky.move_pinned_first(session, &mut candidates, |c| c.provider.name());
         }
-        
-        // Next fall back to cooling (rate-limited / quota) providers, soonest to
-        // recover first — better than blindly retrying a hard-down provider.
-        if candidates.is_empty() && !cooling.is_empty() {
-            cooling.sort_by_key(|(remaining_ms, _)| *remaining_ms);
-            tracing::warn!(
-                model = %model,
-                cooling_count = cooling.len(),
-                soonest_retry_ms = cooling.first().map(|(r, _)| *r).unwrap_or(0),
-                "No available providers, falling back to rate-limited providers"
-            );
-            candidates.extend(cooling.into_iter().map(|(_, pair)| pair));
-        }
+        Ok(candidates)
+    }
 
-        // Only fall back to unavailable providers if there are no healthy,
-        // degraded, or cooling ones.
-        if candidates.is_empty() {
+    fn rank_table<'a>(
+        &'a self,
+        tables: &'a HashMap<String, RoutingTable>,
+        config: &'a str,
+        model: &'a str,
+        parent_route: &'a str,
+        depth: usize,
+    ) -> futures::future::BoxFuture<'a, Result<Ranked, RouterError>> {
+        Box::pin(async move {
+            if depth > crate::db::MAX_NESTING_DEPTH {
+                return Err(RouterError::NestingTooDeep(config.to_string()));
+            }
+            let empty = Ranked { tier: Tier::Unavailable, retry_ms: 0, candidates: vec![] };
+            let Some(table) = tables.get(config) else {
+                return Ok(empty);
+            };
+            if table.is_empty() {
+                return Ok(empty);
+            }
+            let route = if parent_route.is_empty() {
+                config.to_string()
+            } else {
+                format!("{parent_route} > {config}")
+            };
+
+            let ordered = match table.strategy {
+                StrategyKind::RoundRobin => table.weighted_rr_order(),
+                StrategyKind::Priority => table.priority_order(),
+            };
+
+            let provider_names: Vec<&str> = table.entries.iter().map(|e| e.provider.name()).collect();
+            let snapshot = self.metrics_store.routing_snapshot(&provider_names).await;
+
+            let mut healthy: Vec<(f32, Vec<Candidate>)> = Vec::new();
+            let mut degraded: Vec<Candidate> = Vec::new();
+            let mut cooling: Vec<(u64, Vec<Candidate>)> = Vec::new();
+            let mut unavailable: Vec<Candidate> = Vec::new();
+
+            for (order_idx, slot) in ordered.iter().enumerate() {
+                let (tier, retry_ms, weight, candidates) = match *slot {
+                    Slot::Provider(i) => {
+                        let entry = &table.entries[i];
+                        let provider_name = entry.provider.name();
+                        let rh = snapshot
+                            .get(provider_name)
+                            .copied()
+                            .unwrap_or_else(crate::metrics::RoutingHealth::unknown);
+                        tracing::debug!(
+                            provider = provider_name,
+                            health_state = ?rh.health,
+                            is_available = rh.available,
+                            retry_in_ms = rh.retry_in.as_millis() as u64,
+                            "Evaluating provider for routing"
+                        );
+                        let tier = if !rh.retry_in.is_zero() {
+                            Tier::Cooling
+                        } else if rh.available && rh.health == crate::metrics::HealthState::Healthy {
+                            Tier::Healthy
+                        } else if rh.available {
+                            tracing::info!(provider = provider_name, "Provider degraded, using as fallback");
+                            Tier::Degraded
+                        } else {
+                            Tier::Unavailable
+                        };
+                        let candidate = Candidate {
+                            provider: entry.provider.clone(),
+                            model: entry.model_override.clone().unwrap_or_else(|| model.to_string()),
+                            route: format!("{route} > {provider_name}"),
+                        };
+                        (tier, rh.retry_in.as_millis() as u64, entry.weight, vec![candidate])
+                    }
+                    Slot::Child(i) => {
+                        let child = &table.children[i];
+                        let child_model = child.model_override.as_deref().unwrap_or(model);
+                        let ranked = self.rank_table(tables, &child.config, child_model, &route, depth + 1).await?;
+                        if ranked.candidates.is_empty() {
+                            continue;
+                        }
+                        (ranked.tier, ranked.retry_ms, child.weight, ranked.candidates)
+                    }
+                };
+
+                match tier {
+                    Tier::Healthy => {
+                        let score = match table.strategy {
+                            StrategyKind::Priority => order_idx as f32,
+                            StrategyKind::RoundRobin => {
+                                let in_flight = self.metrics_store.get_in_flight(candidates[0].provider.name()).await;
+                                in_flight as f32 / weight.max(1) as f32
+                            }
+                        };
+                        healthy.push((score, candidates));
+                    }
+                    Tier::Degraded => degraded.extend(candidates),
+                    Tier::Cooling => cooling.push((retry_ms, candidates)),
+                    Tier::Unavailable => unavailable.extend(candidates),
+                }
+            }
+
+            healthy.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            if !healthy.is_empty() {
+                let candidates = healthy.into_iter().flat_map(|(_, c)| c).collect();
+                return Ok(Ranked { tier: Tier::Healthy, retry_ms: 0, candidates });
+            }
+            if !degraded.is_empty() {
+                tracing::warn!(
+                    model = %model,
+                    degraded_count = degraded.len(),
+                    "No healthy providers, falling back to degraded providers"
+                );
+                return Ok(Ranked { tier: Tier::Degraded, retry_ms: 0, candidates: degraded });
+            }
+            if !cooling.is_empty() {
+                cooling.sort_by_key(|(remaining_ms, _)| *remaining_ms);
+                let soonest = cooling[0].0;
+                tracing::warn!(
+                    model = %model,
+                    cooling_count = cooling.len(),
+                    soonest_retry_ms = soonest,
+                    "No available providers, falling back to rate-limited providers"
+                );
+                let candidates = cooling.into_iter().flat_map(|(_, c)| c).collect();
+                return Ok(Ranked { tier: Tier::Cooling, retry_ms: soonest, candidates });
+            }
             tracing::warn!(
                 model = %model,
                 fallback_count = unavailable.len(),
                 "No available providers, falling back to unavailable providers"
             );
-            candidates.extend(unavailable);
-        }
-        candidates
+            Ok(Ranked { tier: Tier::Unavailable, retry_ms: 0, candidates: unavailable })
+        })
     }
 
     /// Normalize chat request messages for a given provider:
@@ -881,7 +975,7 @@ impl Router {
         let original_model = request.model.clone();
         let session = session_key(user.as_ref(), &original_model, request.session_id());
 
-        let candidates = self.collect_session_candidates(&request.model, session.as_ref()).await;
+        let candidates = self.collect_routed(&request.model, session.as_ref()).await?;
         if candidates.is_empty() {
             return Err(RouterError::NoAvailableProvider);
         }
@@ -890,7 +984,7 @@ impl Router {
         let mut attempt: u32 = 0;
         let needed = request.input_modalities();
 
-        for (provider, resolved_model) in candidates {
+        for Candidate { provider, model: resolved_model, route } in candidates {
             if attempt >= self.max_retries {
                 break;
             }
@@ -938,6 +1032,7 @@ impl Router {
 
             if let Some(trace) = actual_request.trace() {
                 trace.begin_attempt(&provider_name);
+                trace.set_route(&route);
             }
             let result = provider.chat_completions(&actual_request).await;
             let total_latency = start.elapsed();
@@ -1097,7 +1192,7 @@ impl Router {
         );
 
         let session = session_key(user.as_ref(), &original_model, request.session_id());
-        let candidates = self.collect_session_candidates(&request.model, session.as_ref()).await;
+        let candidates = self.collect_routed(&request.model, session.as_ref()).await?;
         if candidates.is_empty() {
             return Err(RouterError::NoAvailableProvider);
         }
@@ -1113,7 +1208,7 @@ impl Router {
             let mut chunks_yielded = false;
             let mut attempt: u32 = 0;
 
-            for (provider, resolved_model) in candidates {
+            for Candidate { provider, model: resolved_model, route } in candidates {
                 if attempt >= max_retries {
                     break;
                 }
@@ -1182,6 +1277,7 @@ impl Router {
 
                 if let Some(trace) = actual_request.trace() {
                     trace.begin_attempt(&provider_name);
+                trace.set_route(&route);
                 }
                 match provider.chat_completions_stream(&actual_request) {
                     Ok(provider_stream) => {
@@ -1594,7 +1690,7 @@ impl Router {
         let original_model = request.model.clone().unwrap_or_default();
         let session = session_key(user.as_ref(), &original_model, session.or(request.prompt_cache_key.as_deref()));
 
-        let candidates = self.collect_session_candidates(&original_model, session.as_ref()).await;
+        let candidates = self.collect_routed(&original_model, session.as_ref()).await?;
         if candidates.is_empty() {
             return Err(RouterError::NoAvailableProvider);
         }
@@ -1602,7 +1698,7 @@ impl Router {
         let mut last_error: Option<RouterError> = None;
         let mut attempt: u32 = 0;
 
-        for (provider, resolved_model) in candidates {
+        for Candidate { provider, model: resolved_model, route } in candidates {
             if attempt >= self.max_retries {
                 break;
             }
@@ -1640,6 +1736,7 @@ impl Router {
 
             if let Some(trace) = trace {
                 trace.begin_attempt(&provider_name);
+                trace.set_route(&route);
             }
             let result = provider.responses(&actual_request).await;
             let total_latency = start.elapsed();
@@ -1735,6 +1832,9 @@ pub enum RouterError {
 
     #[error("Provider error: {0}")]
     ProviderError(ProviderError),
+
+    #[error("Routing config '{0}' is nested deeper than the allowed depth")]
+    NestingTooDeep(String),
 }
 
 impl Clone for RouterError {
@@ -1742,9 +1842,13 @@ impl Clone for RouterError {
         match self {
             RouterError::NoAvailableProvider => RouterError::NoAvailableProvider,
             RouterError::ProviderError(e) => RouterError::ProviderError(e.clone()),
+            RouterError::NestingTooDeep(name) => RouterError::NestingTooDeep(name.clone()),
         }
     }
 }
+
+#[cfg(test)]
+mod nested_tests;
 
 #[cfg(test)]
 mod tests {

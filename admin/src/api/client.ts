@@ -634,6 +634,9 @@ export const api = {
         localStorage.removeItem('token')
         window.location.href = '/login'
       }
+      if (response.status === 400) {
+        throw new Error((await response.text()) || 'Failed to add member to routing config')
+      }
       throw new Error('Failed to add provider to routing config')
     }
     

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use crate::metrics::MetricsUser;
 use crate::request_log::Trace;
 use crate::providers::Provider;
-use crate::router::engine::{InFlightGuard, Router, RouterError};
+use crate::router::engine::{Candidate, InFlightGuard, Router, RouterError};
 use crate::router::errors::keep_useful;
 use crate::ProviderError;
 
@@ -39,12 +39,12 @@ impl Router {
         F: Fn(Arc<dyn Provider>, String) -> Fut,
         Fut: std::future::Future<Output = Attempt<T>>,
     {
-        let candidates = self.collect_candidates(model).await;
+        let candidates = self.collect_routed(model, None).await?;
         if candidates.is_empty() {
             return Err(RouterError::NoAvailableProvider);
         }
 
-        let tried: Vec<String> = candidates.iter().map(|(p, _)| p.name().to_string()).collect();
+        let tried: Vec<String> = candidates.iter().map(|c| c.provider.name().to_string()).collect();
         let outcome = self.try_candidates(candidates, model, op, &user, trace, &call).await;
         if let Some(result) = outcome.result {
             return result;
@@ -60,6 +60,7 @@ impl Router {
                 .await
                 .into_iter()
                 .filter(|(p, _)| !tried.iter().any(|name| name == p.name()))
+                .map(|(p, m)| Candidate::untracked(p, m))
                 .collect();
             if !fallback.is_empty() {
                 tracing::warn!(
@@ -83,7 +84,7 @@ impl Router {
 
     async fn try_candidates<T, F, Fut>(
         &self,
-        candidates: Vec<(Arc<dyn Provider>, String)>,
+        candidates: Vec<Candidate>,
         model: &str,
         op: &str,
         user: &Option<MetricsUser>,
@@ -98,7 +99,7 @@ impl Router {
         let mut last_error: Option<RouterError> = None;
         let mut attempt: u32 = 0;
 
-        for (provider, resolved_model) in candidates {
+        for Candidate { provider, model: resolved_model, route } in candidates {
             if attempt >= self.max_retries {
                 break;
             }
@@ -112,6 +113,7 @@ impl Router {
 
             if let Some(trace) = trace {
                 trace.begin_attempt(&provider_name);
+                trace.set_route(&route);
             }
             let result = call(provider.clone(), resolved_model).await;
             guard.decrement();

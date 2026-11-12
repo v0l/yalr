@@ -28,6 +28,21 @@ interface AssignmentRowProps {
   onDragEnd: () => void
 }
 
+function ConfigModelInput({ value, disabled, onCommit }: { value: string; disabled: boolean; onCommit: (m: string) => void }) {
+  const [text, setText] = useState(value)
+  return (
+    <Input
+      value={text}
+      disabled={disabled}
+      placeholder="child's own model"
+      onChange={e => setText(e.target.value)}
+      onBlur={() => { if (text !== value) onCommit(text) }}
+      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+      className="h-7 font-mono text-[12px] bg-surface border-border text-foreground"
+    />
+  )
+}
+
 export default function AssignmentRow(props: AssignmentRowProps) {
   const {
     assignment: a, index, isPriority, busy, models, modelsLoading, ensureModels,
@@ -44,6 +59,8 @@ export default function AssignmentRow(props: AssignmentRowProps) {
     if (!Number.isFinite(n) || n < 1) { setWeight(String(a.weight)); return }
     if (n !== a.weight) onPatch({ weight: n })
   }
+
+  const isConfig = a.kind === 'config'
 
   return (
     <tr
@@ -70,11 +87,17 @@ export default function AssignmentRow(props: AssignmentRowProps) {
             </span>
           )}
           {isPriority && <span className="font-mono text-[11px] tabular-nums text-muted-foreground">#{index + 1}</span>}
-          <span className="font-mono text-[13px] font-medium text-foreground">{a.provider_name}</span>
-          <span className="font-mono text-[11px] text-muted-foreground">{a.provider_slug}</span>
+          {isConfig && (
+            <span className="border border-brand/30 bg-brand/15 px-1.5 font-mono text-[10px] uppercase tracking-wider text-brand">config</span>
+          )}
+          <span className="font-mono text-[13px] font-medium text-foreground">{isConfig ? a.config_name : a.provider_name}</span>
+          {!isConfig && <span className="font-mono text-[11px] text-muted-foreground">{a.provider_slug}</span>}
         </div>
       </td>
       <td className="px-2 py-1.5 w-[34%]">
+        {isConfig ? (
+          <ConfigModelInput value={a.model ?? ''} disabled={busy} onCommit={m => onPatch({ model: m })} />
+        ) : (
         <ModelPicker
           triggerSize="sm"
           value={a.model || ''}
@@ -85,6 +108,7 @@ export default function AssignmentRow(props: AssignmentRowProps) {
           onChange={m => onPatch({ model: m || '' })}
           allowEmpty emptyLabel="no override" allowCustom
         />
+        )}
       </td>
       <td className="px-2 py-1.5 w-20">
         <Input
@@ -117,7 +141,7 @@ export default function AssignmentRow(props: AssignmentRowProps) {
           type="button"
           disabled={busy}
           onClick={onDelete}
-          title="Remove provider"
+          title={isConfig ? 'Remove config' : 'Remove provider'}
           className="text-muted-foreground transition-colors hover:text-destructive disabled:opacity-30"
         >
           <TrashIcon className="size-3.5" />
