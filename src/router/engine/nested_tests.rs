@@ -229,3 +229,22 @@ async fn candidate_backends_lists_leaves_of_nested_configs() {
     let names: Vec<String> = router.candidate_backends("parent").await.iter().map(|(p, _)| p.name().to_string()).collect();
     assert_eq!(names, vec!["direct", "leaf"]);
 }
+
+#[tokio::test]
+async fn pick_order_walks_nested_configs_in_priority_order() {
+    let direct = Backend::new("direct");
+    let low = Backend::new("low");
+    let high = Backend::new("high");
+    let router = router_with(vec![
+        (
+            "parent",
+            RoutingTable::with_children(vec![entry(&direct, 1)], vec![child("kid", 100, None)], StrategyKind::Priority),
+        ),
+        ("kid", RoutingTable::with_strategy(vec![entry(&low, 1), entry(&high, 50)], StrategyKind::Priority)),
+    ])
+    .await;
+    let (priority, backends) = router.pick_order("parent").await;
+    let names: Vec<&str> = backends.iter().map(|(p, _)| p.name()).collect();
+    assert!(priority);
+    assert_eq!(names, vec!["high", "low", "direct"]);
+}
