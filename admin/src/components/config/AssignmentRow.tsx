@@ -1,13 +1,16 @@
 import { useState } from 'react'
-import { GripVerticalIcon, TrashIcon } from 'lucide-react'
+import { GripVerticalIcon, TrashIcon, BracesIcon } from 'lucide-react'
 import type { RoutingConfigProvider } from '../../types'
 import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { ExtraBodyField, formatExtraBody, parseExtraBody } from '@/components/ExtraBodyField'
 import { Checkbox } from '@/components/ui/checkbox'
 import { cn } from '@/lib/utils'
 import ModelPicker from '@/components/ModelPicker'
 import type { ModelEntry } from '@/components/ModelPicker'
 
-export interface AssignmentPatch { model?: string | null; weight?: number; is_active?: boolean }
+export interface AssignmentPatch { model?: string | null; weight?: number; is_active?: boolean; extra_body?: Record<string, unknown> }
 
 interface AssignmentRowProps {
   assignment: RoutingConfigProvider
@@ -61,6 +64,17 @@ export default function AssignmentRow(props: AssignmentRowProps) {
   }
 
   const isConfig = a.kind === 'config'
+  const hasExtraBody = !!a.extra_body && Object.keys(a.extra_body).length > 0
+  const [bodyOpen, setBodyOpen] = useState(false)
+  const [bodyText, setBodyText] = useState('')
+  const parsedBody = parseExtraBody(bodyText)
+
+  function openBody() { setBodyText(formatExtraBody(a.extra_body)); setBodyOpen(true) }
+  function saveBody() {
+    if (parsedBody.error !== null) return
+    onPatch({ extra_body: parsedBody.value })
+    setBodyOpen(false)
+  }
 
   return (
     <tr
@@ -137,6 +151,16 @@ export default function AssignmentRow(props: AssignmentRowProps) {
         </button>
       </td>
       <td className="px-2 py-1.5 text-right">
+        <div className="flex items-center justify-end gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={openBody}
+          title="Extra request body fields"
+          className={cn('transition-colors disabled:opacity-30', hasExtraBody ? 'text-brand' : 'text-muted-foreground hover:text-foreground')}
+        >
+          <BracesIcon className="size-3.5" />
+        </button>
         <button
           type="button"
           disabled={busy}
@@ -146,6 +170,22 @@ export default function AssignmentRow(props: AssignmentRowProps) {
         >
           <TrashIcon className="size-3.5" />
         </button>
+        </div>
+        <Dialog open={bodyOpen} onOpenChange={setBodyOpen}>
+          <DialogContent className="sm:max-w-lg border-border bg-card text-left">
+            <DialogHeader>
+              <DialogTitle className="font-display text-xl tracking-[0.04em]">EXTRA BODY</DialogTitle>
+              <DialogDescription className="font-mono text-[12px] text-muted-foreground">
+                Fields merged into requests routed through {isConfig ? a.config_name : a.provider_name}. They override the provider's own and lose to the client's.
+              </DialogDescription>
+            </DialogHeader>
+            <ExtraBodyField id={`rcp-extra-body-${a.id}`} value={bodyText} onChange={setBodyText} rows={8} />
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setBodyOpen(false)} className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</Button>
+              <Button type="button" onClick={saveBody} disabled={parsedBody.error !== null} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">SAVE</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </td>
     </tr>
   )

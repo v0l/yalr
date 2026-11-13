@@ -16,6 +16,7 @@ import { ProviderDeleteDialog } from '@/components/ProviderDeleteDialog'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import StatCard from '@/components/StatCard'
+import { formatExtraBody, parseExtraBody } from '@/components/ExtraBodyField'
 import { cn } from '@/lib/utils'
 
 /* ── Form helpers ──────────────────────────────────────────────── */
@@ -157,26 +158,29 @@ export default function Dashboard() {
 
   function openEdit(provider: Provider) {
     setEditingProvider(provider)
-    setForm({ name: provider.name, slug: provider.slug, base_url: provider.base_url, api_key: '', provider_type: provider.provider_type, client_version: provider.client_version ?? '' })
+    setForm({ name: provider.name, slug: provider.slug, base_url: provider.base_url, api_key: '', provider_type: provider.provider_type, client_version: provider.client_version ?? '', extra_body: formatExtraBody(provider.extra_body) })
     setFormError(null)
     setFormDialogOpen(true)
   }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault(); setSaving(true); setFormError(null)
+    const parsedBody = parseExtraBody(form.extra_body ?? '')
+    if (parsedBody.error !== null) { setFormError(parsedBody.error); setSaving(false); return }
     try {
       if (editingProvider) {
-        const d: Record<string, string> = {}
+        const d: Record<string, string | Record<string, unknown>> = {}
         if (form.name !== editingProvider.name) d.name = form.name
         if (form.slug !== editingProvider.slug) d.slug = form.slug
         if (form.base_url !== editingProvider.base_url) d.base_url = form.base_url
         if (form.api_key) d.api_key = form.api_key
         if (form.provider_type !== editingProvider.provider_type) d.provider_type = form.provider_type
         if (editingProvider.default_client_version && form.client_version !== (editingProvider.client_version ?? '')) d.client_version = form.client_version ?? ''
-        await api.updateProvider(editingProvider.slug, d)
+        await api.updateProvider(editingProvider.slug, { ...d, extra_body: parsedBody.value })
         setSuccessMessage('PROVIDER UPDATED')
       } else {
-        await api.createProvider(form)
+        const { extra_body: _text, ...rest } = form
+        await api.createProvider({ ...rest, ...(Object.keys(parsedBody.value).length ? { extra_body: parsedBody.value } : {}) })
         setSuccessMessage('PROVIDER CREATED')
       }
       setFormDialogOpen(false)

@@ -12,6 +12,7 @@ export interface Provider {
   oauth?: OAuthStatus
   client_version?: string
   default_client_version?: string
+  extra_body?: Record<string, unknown>
 }
 
 export interface OAuthStatus {
@@ -43,6 +44,7 @@ export interface ProviderFormData {
   api_key: string
   provider_type: string
   client_version?: string
+  extra_body?: string
 }
 
 export interface PaymentOption {
@@ -234,6 +236,7 @@ export interface ProviderCreateRequest {
   base_url: string
   api_key: string
   provider_type: string
+  extra_body?: Record<string, unknown>
 }
 
 export interface ProviderUpdateRequest {
@@ -243,6 +246,7 @@ export interface ProviderUpdateRequest {
   api_key?: string
   provider_type?: string
   client_version?: string
+  extra_body?: Record<string, unknown>
 }
 
 export interface ModelSyncReport {
@@ -342,6 +346,7 @@ export interface RoutingConfigProvider {
   model: string | null
   weight: number
   is_active: boolean
+  extra_body?: Record<string, unknown>
   created_at: string
   updated_at: string
 }
@@ -389,12 +394,14 @@ export interface RoutingConfigProviderCreateRequest {
   model: string | null
   weight: number
   is_active: boolean
+  extra_body?: Record<string, unknown>
 }
 
 export interface RoutingConfigProviderUpdateRequest {
   model?: string | null
   weight?: number
   is_active?: boolean
+  extra_body?: Record<string, unknown>
 }
 
 export interface ProviderListItem {

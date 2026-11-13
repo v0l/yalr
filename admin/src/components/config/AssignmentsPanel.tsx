@@ -47,6 +47,7 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
         model: p.model !== undefined ? p.model : a.model,
         weight: p.weight !== undefined ? p.weight : a.weight,
         is_active: p.is_active !== undefined ? p.is_active : a.is_active,
+        ...(p.extra_body !== undefined ? { extra_body: p.extra_body } : {}),
       })
       await onChanged()
     } catch (e) { onError(e instanceof Error ? e.message : 'Failed to update assignment') }

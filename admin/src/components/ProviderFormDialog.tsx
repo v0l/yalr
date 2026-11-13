@@ -5,6 +5,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { Provider, ProviderFormData } from '../types'
+import { ExtraBodyField, parseExtraBody } from './ExtraBodyField'
 
 const DEFAULT_BASE_URLS: Record<string, string> = {
   openai: 'https://api.openai.com/v1',
@@ -125,9 +126,15 @@ export function ProviderFormDialog({
               </p>
             </div>
           )}
+          <ExtraBodyField
+            id="p-extra-body"
+            value={form.extra_body ?? ''}
+            onChange={text => setForm({ ...form, extra_body: text })}
+            hint="Fields always sent to this provider, such as an OpenRouter or Numes provider routing object. A routing entry overrides it, and the client's own fields win."
+          />
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving} className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</Button>
-            <Button type="submit" disabled={saving} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">
+            <Button type="submit" disabled={saving || parseExtraBody(form.extra_body ?? '').error !== null} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">
               {saving ? 'SAVING...' : editingProvider ? 'UPDATE' : 'CREATE'}
             </Button>
           </DialogFooter>

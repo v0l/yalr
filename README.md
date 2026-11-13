@@ -124,6 +124,28 @@ discovery:
 
 `http_url` must be publicly routable. The signing key is generated on first start and kept in the `nostr_identity` table; set `nsec` to use your own. `onion_url`, `provider_id` and `relays` are optional (relays default to damus, nostr.band and nos.lol). The announcement lists routing configs not hidden via `model_pricing.is_advertised`, and is republished when they change and every 24 hours.
 
+## Default request body fields
+
+A provider and each routing entry can carry an `extra_body` JSON object that is added to every outbound request on the OpenAI-compatible path (chat, streaming, responses, images). Set it in the admin UI (provider edit dialog, or the braces button on a routing entry) or through the admin API (`extra_body` on `/api/providers` and `/api/routing-configs/providers`). It must be a JSON object; an empty object clears it. Anthropic and other non-OpenAI wires ignore it.
+
+Merge order, later wins at the top level: provider, then each routing entry from the leaf up to the outermost config, then the client's own fields. Nothing is deep merged, so a client `provider` object replaces the configured one whole.
+
+OpenRouter and Numes pick the upstream endpoint from a `provider` object, so pinning one looks like this:
+
+```json
+{
+  "provider": {
+    "order": ["slug", "slug/endpoint"],
+    "only": [],
+    "ignore": [],
+    "allow_fallbacks": false,
+    "sort": "price",
+    "quantizations": ["fp8"],
+    "max_price": { "prompt": 0.000001, "completion": 0.000004 }
+  }
+}
+```
+
 ## API Endpoints
 
 ### Admin UI
