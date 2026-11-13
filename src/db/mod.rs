@@ -5,6 +5,7 @@ use std::time::Duration;
 mod anonymous;
 mod auth_cache;
 mod billing_exempt;
+mod extra_body;
 mod import;
 mod metrics_history;
 mod modalities;
@@ -21,6 +22,7 @@ mod usage;
 mod users;
 
 pub use anonymous::{random_hex, AccountInvoice, PublicInvoice};
+pub use extra_body::{merge_extra_body, validate_extra_body, ExtraBody};
 pub use import::ImportReport;
 pub use modalities::DeclaredModalities;
 pub use nesting::{NestedLinkError, MAX_NESTING_DEPTH};

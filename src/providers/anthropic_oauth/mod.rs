@@ -623,6 +623,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
             oauth_expires_at: Some(i64::MAX / 2),
             oauth_account_id: None,
             client_version: None,
+            extra_body: None,
             created_at: Default::default(),
             updated_at: Default::default(),
         };

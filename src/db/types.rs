@@ -96,6 +96,8 @@ pub struct Provider {
     pub oauth_account_id: Option<String>,
     #[sqlx(default)]
     pub client_version: Option<String>,
+    #[sqlx(default)]
+    pub extra_body: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -154,6 +156,8 @@ pub struct RoutingConfigProvider {
     pub model: Option<String>,
     pub weight: i32,
     pub is_active: bool,
+    #[sqlx(default)]
+    pub extra_body: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
