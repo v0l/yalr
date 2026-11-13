@@ -24,8 +24,18 @@ High-performance async LLM router with load balancing, provider management, inte
 
 ### Docker
 
+YALR needs a MariaDB database. The repo's `docker-compose.yml` starts one beside the server:
+
+```bash
+docker compose up -d
+```
+
+To run the image on its own, point it at an existing MariaDB (inside a container,
+`127.0.0.1` is the container itself, so do not use it):
+
 ```bash
 docker run -p 3000:3000 \
+  -e DATABASE_URL=mysql://yalr:yalr@db-host:3306/yalr \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/config.yaml:/app/config.yaml \
   voidic/yalr:latest
@@ -504,21 +514,41 @@ Multi-stage build with:
 ### Docker Compose
 
 ```yaml
-version: '3.8'
 services:
+  db:
+    image: mariadb:11
+    restart: unless-stopped
+    command: ["--max-allowed-packet=64M"]
+    environment:
+      - MARIADB_DATABASE=yalr
+      - MARIADB_USER=yalr
+      - MARIADB_PASSWORD=yalr
+      - MARIADB_RANDOM_ROOT_PASSWORD=1
+    volumes:
+      - ./data/mariadb:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   yalr:
     image: voidic/yalr:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "3000:3000"
     volumes:
       - ./data:/app/data
-      - ./config.yaml:/app/config.yaml
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - DATABASE_URL=mysql://yalr:yalr@db:3306/yalr
 ```
+
+The `DATABASE_URL` is required: without it the server uses `database.url` from
+`config.yaml`, which defaults to `127.0.0.1` and fails with `PoolTimedOut` after 30 s.
 
 ## License
 
