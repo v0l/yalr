@@ -378,6 +378,30 @@ impl ProviderError {
         ) && !matches!(self.status_code(), Some(401 | 402 | 403 | 408 | 429))
     }
 
+    pub fn is_retryable_transient(&self) -> bool {
+        match self {
+            ProviderError::Timeout | ProviderError::OpenAIError(_) => true,
+            ProviderError::ServerError { message, status_code } => {
+                let lowered = message.to_lowercase();
+                if lowered.contains("credential validation failed") {
+                    return true;
+                }
+                if lowered.contains("overloaded") {
+                    return false;
+                }
+                match status_code {
+                    None => true,
+                    Some(code) => (500..=599).contains(code) && !matches!(code, 501 | 529),
+                }
+            }
+            ProviderError::Other(e) => !e.to_string().contains("empty completion"),
+            ProviderError::RateLimit { .. }
+            | ProviderError::Authentication(_)
+            | ProviderError::NotFound(_)
+            | ProviderError::Unsupported(_) => false,
+        }
+    }
+
     pub fn is_outage(&self) -> bool {
         !matches!(self, ProviderError::RateLimit { .. }) && self.is_transient()
     }

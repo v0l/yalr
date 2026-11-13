@@ -10,6 +10,7 @@ pub mod image;
 pub mod model_info;
 pub mod sticky;
 pub mod strategies;
+pub mod transient;
 
 pub use detector::{DbModelInfo, ModelInfoDetector};
 pub use engine::RouterError;

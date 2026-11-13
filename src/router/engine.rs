@@ -2,6 +2,7 @@ use crate::db::Database;
 use crate::metrics::{MetricsStore, MetricsUser};
 use crate::providers::{create_provider_from_record, ChatRequest, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
 use crate::router::errors::{keep_useful, FailureLog};
+use crate::router::transient::{RetryRounds, TransientRetry};
 use crate::router::input_filter;
 use crate::router::sticky::{SessionKey, StickySessions};
 use crate::router::strategies::ProviderEntry;
@@ -170,6 +171,7 @@ enum Tier {
     Unavailable,
 }
 
+#[derive(Clone)]
 pub(crate) struct Candidate {
     pub(crate) provider: Arc<dyn Provider>,
     pub(crate) model: String,
@@ -260,6 +262,7 @@ pub struct Router {
     providers: RwLock<HashMap<String, Arc<dyn Provider>>>,
     routing_tables: RwLock<HashMap<String, RoutingTable>>,
     pub(crate) max_retries: u32,
+    pub(crate) transient_retry: TransientRetry,
     health_check_handles: RwLock<HashMap<String, tokio::task::JoinHandle<()>>>,
     shutdown_tx: RwLock<Option<tokio::sync::broadcast::Sender<()>>>,
     sticky: StickySessions,
@@ -277,11 +280,17 @@ impl Router {
             providers: RwLock::new(HashMap::new()),
             routing_tables: RwLock::new(HashMap::new()),
             max_retries: 3,
+            transient_retry: TransientRetry::default(),
             health_check_handles: RwLock::new(HashMap::new()),
             shutdown_tx: RwLock::new(None),
             sticky: StickySessions::default(),
             provider_bodies: std::sync::RwLock::new(HashMap::new()),
         }
+    }
+
+    pub fn with_transient_retry(mut self, policy: TransientRetry) -> Self {
+        self.transient_retry = policy;
+        self
     }
 
     pub(crate) fn provider_body(&self, provider: &dyn Provider) -> crate::db::ExtraBody {
@@ -1018,10 +1027,15 @@ impl Router {
 
         let mut last_error: Option<RouterError> = None;
         let mut failures = FailureLog::default();
-        let mut attempt: u32 = 0;
         let needed = request.input_modalities();
+        let mut rounds = RetryRounds::new(self.transient_retry, self.metrics_store.emitter().clone());
+        let mut candidates = candidates;
 
-        for Candidate { provider, model: resolved_model, route, extra_body } in candidates {
+        loop {
+        let mut attempt: u32 = 0;
+        for candidate in candidates {
+            let retained = candidate.clone();
+            let Candidate { provider, model: resolved_model, route, extra_body } = candidate;
             if attempt >= self.max_retries {
                 break;
             }
@@ -1077,6 +1091,7 @@ impl Router {
             match result {
                 Ok(response) => {
                     guard.decrement();
+                    rounds.served();
                     if let Some(key) = &session {
                         self.sticky.pin(key, &provider_name);
                     }
@@ -1182,10 +1197,13 @@ impl Router {
 
                     last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
-                    self.metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
+                    if rounds.first_round() || !e.is_retryable_transient() {
+                        self.metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
+                    }
                     failures.push(&provider_name, &e);
 
                     if e.is_transient() {
+                        rounds.keep(retained, &e);
                         tracing::warn!(
                             provider = &provider_name,
                             attempt = attempt,
@@ -1211,6 +1229,12 @@ impl Router {
                     tokio::time::sleep(backoff).await;
                 }
             }
+        }
+
+        match rounds.next_round(&original_model, "chat").await {
+            Some(pool) => candidates = pool,
+            None => break,
+        }
         }
 
         failures.warn(&original_model, "chat");
@@ -1239,6 +1263,8 @@ impl Router {
         let sticky = self.sticky.clone();
         let metrics_store = self.metrics_store.clone();
         let max_retries = self.max_retries;
+        let mut rounds = RetryRounds::new(self.transient_retry, self.metrics_store.emitter().clone());
+        let mut candidates = candidates;
         let request = request.clone();
         let needed = request.input_modalities();
 
@@ -1248,7 +1274,11 @@ impl Router {
             let mut chunks_yielded = false;
             let mut attempt: u32 = 0;
 
-            for Candidate { provider, model: resolved_model, route, extra_body } in candidates {
+            'rounds: loop {
+            attempt = 0;
+            for candidate in candidates {
+                let retained = candidate.clone();
+                let Candidate { provider, model: resolved_model, route, extra_body } = candidate;
                 if attempt >= max_retries {
                     break;
                 }
@@ -1428,7 +1458,9 @@ impl Router {
                                     yield Ok(chunk);
                                 }
                                 Err(e) => {
-                                    metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
+                                    if rounds.first_round() || !e.is_retryable_transient() {
+                                        metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
+                                    }
                                     stream_errored = true;
 
                                     // Log detailed error context for debugging
@@ -1456,6 +1488,7 @@ impl Router {
                                             trace.end_attempt(Some(e.to_string()));
                                         }
                                         failures.push(&provider_name, &e);
+                                        rounds.keep(retained.clone(), &e);
                                         last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e)));
                                         guard.decrement();
 
@@ -1606,7 +1639,8 @@ impl Router {
                                 trace.end_attempt(None);
                             }
                             guard.decrement();
-                            break; // Stream completed successfully, don't try more providers
+                            rounds.served();
+                            break 'rounds;
                         }
 
                         // Unreachable: !saw_content handled above implies
@@ -1629,10 +1663,13 @@ impl Router {
 
                         last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
-                        metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
+                        if rounds.first_round() || !e.is_retryable_transient() {
+                            metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
+                        }
                         failures.push(&provider_name, &e);
 
                         if e.is_transient() {
+                            rounds.keep(retained, &e);
                             tracing::warn!(
                                 provider = &provider_name,
                                 attempt = attempt,
@@ -1655,10 +1692,20 @@ impl Router {
                                 "Non-transient stream setup error, aborting"
                             );
                             yield Err(last_error.clone().unwrap());
+                            chunks_yielded = true;
                             break;
                         }
                     }
                 }
+            }
+
+            if chunks_yielded {
+                break;
+            }
+            match rounds.next_round(&original_model, "chat_stream").await {
+                Some(pool) => candidates = pool,
+                None => break,
+            }
             }
 
             // If we exhausted all providers without yielding anything, emit the last error
@@ -1740,9 +1787,14 @@ impl Router {
 
         let mut last_error: Option<RouterError> = None;
         let mut failures = FailureLog::default();
-        let mut attempt: u32 = 0;
+        let mut rounds = RetryRounds::new(self.transient_retry, self.metrics_store.emitter().clone());
+        let mut candidates = candidates;
 
-        for Candidate { provider, model: resolved_model, route, extra_body } in candidates {
+        loop {
+        let mut attempt: u32 = 0;
+        for candidate in candidates {
+            let retained = candidate.clone();
+            let Candidate { provider, model: resolved_model, route, extra_body } = candidate;
             if attempt >= self.max_retries {
                 break;
             }
@@ -1791,6 +1843,7 @@ impl Router {
             match result {
                 Ok(response) => {
                     guard.decrement();
+                    rounds.served();
                     if let Some(key) = &session {
                         self.sticky.pin(key, &provider_name);
                     }
@@ -1835,10 +1888,13 @@ impl Router {
 
                     last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
-                    self.metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
+                    if rounds.first_round() || !e.is_retryable_transient() {
+                        self.metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
+                    }
                     failures.push(&provider_name, &e);
 
                     if e.is_transient() {
+                        rounds.keep(retained, &e);
                         tracing::warn!(
                             provider = &provider_name,
                             attempt = attempt,
@@ -1864,6 +1920,12 @@ impl Router {
                     tokio::time::sleep(backoff).await;
                 }
             }
+        }
+
+        match rounds.next_round(&original_model, "responses").await {
+            Some(pool) => candidates = pool,
+            None => break,
+        }
         }
 
         failures.warn(&original_model, "responses");

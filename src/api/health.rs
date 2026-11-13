@@ -67,6 +67,8 @@ pub struct MetricsResponse {
     pub total_requests: u64,
     pub total_successes: u64,
     pub total_failures: u64,
+    pub transient_retries: u64,
+    pub transient_retry_successes: u64,
 }
 
 pub async fn health_check() -> Json<HealthResponse> {
@@ -174,12 +176,16 @@ pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<
 
     let (total_requests, total_successes, total_failures) = state.metrics_store.get_total_requests();
 
+    let (transient_retries, transient_retry_successes) = state.metrics_store.emitter().get_transient_retries();
+
     Json(MetricsResponse {
         providers: provider_metrics,
         recent_events,
         total_requests,
         total_successes,
         total_failures,
+        transient_retries,
+        transient_retry_successes,
     })
 }
 

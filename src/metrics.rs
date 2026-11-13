@@ -128,6 +128,8 @@ pub struct MetricsEmitter {
     total_requests: Arc<AtomicU64>,
     total_successes: Arc<AtomicU64>,
     total_failures: Arc<AtomicU64>,
+    transient_retries: Arc<AtomicU64>,
+    transient_retry_successes: Arc<AtomicU64>,
 }
 
 impl MetricsEmitter {
@@ -146,7 +148,24 @@ impl MetricsEmitter {
             total_requests: Arc::new(AtomicU64::new(0)),
             total_successes: Arc::new(AtomicU64::new(0)),
             total_failures: Arc::new(AtomicU64::new(0)),
+            transient_retries: Arc::new(AtomicU64::new(0)),
+            transient_retry_successes: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    pub fn record_transient_retry(&self) {
+        self.transient_retries.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_transient_retry_success(&self) {
+        self.transient_retry_successes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn get_transient_retries(&self) -> (u64, u64) {
+        (
+            self.transient_retries.load(Ordering::Relaxed),
+            self.transient_retry_successes.load(Ordering::Relaxed),
+        )
     }
 
     pub fn receiver(&self) -> MetricsReceiver {

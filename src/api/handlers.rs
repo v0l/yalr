@@ -44,6 +44,7 @@ mod tests {
             discovery: None,
             anthropic: Default::default(),
             request_log: Default::default(),
+            router: Default::default(),
             list_prices: Default::default(),
         };
 

@@ -7,6 +7,8 @@ mod chat_stream_tests;
 #[cfg(test)]
 mod failover_tests;
 #[cfg(test)]
+mod retry_tests;
+#[cfg(test)]
 mod serving_tests;
 pub mod compression;
 pub mod config;

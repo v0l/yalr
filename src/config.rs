@@ -16,7 +16,34 @@ pub struct Config {
     #[serde(default)]
     pub request_log: RequestLogConfig,
     #[serde(default)]
+    pub router: RouterSettings,
+    #[serde(default)]
     pub list_prices: std::collections::HashMap<String, crate::list_price::ListPrice>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct RouterSettings {
+    #[serde(default = "default_transient_retry_rounds")]
+    pub transient_retry_rounds: u32,
+    #[serde(default = "default_transient_retry_budget_ms")]
+    pub transient_retry_budget_ms: u64,
+}
+
+fn default_transient_retry_rounds() -> u32 {
+    3
+}
+
+fn default_transient_retry_budget_ms() -> u64 {
+    15_000
+}
+
+impl Default for RouterSettings {
+    fn default() -> Self {
+        Self {
+            transient_retry_rounds: default_transient_retry_rounds(),
+            transient_retry_budget_ms: default_transient_retry_budget_ms(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -115,6 +142,7 @@ impl Default for Config {
             discovery: None,
             anthropic: AnthropicConfig::default(),
             request_log: RequestLogConfig::default(),
+            router: RouterSettings::default(),
             list_prices: Default::default(),
         }
     }
@@ -218,10 +246,14 @@ impl AppConfig {
         let database_url = std::env::var("DATABASE_URL").unwrap_or(config.database.url.clone());
         let db = Arc::new(Database::new(&database_url).await?);
 
-        let router = Arc::new(Router::new(
-            (*metrics_store).clone(),
-            db.clone(),
-        ));
+        let router = Arc::new(
+            Router::new((*metrics_store).clone(), db.clone()).with_transient_retry(
+                crate::router::transient::TransientRetry::new(
+                    config.router.transient_retry_rounds,
+                    config.router.transient_retry_budget_ms,
+                ),
+            ),
+        );
 
         if let Err(e) = router.reload_config().await {
             tracing::warn!(error = %e, "Failed to reload router config from DB, starting with empty config");
