@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct Config {
+    #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
     pub database: DatabaseConfig,
@@ -101,10 +102,26 @@ impl Default for AnthropicConfig {
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ServerConfig {
+    #[serde(default = "default_host")]
     pub host: String,
+    #[serde(default = "default_port")]
     pub port: u16,
     #[serde(default = "default_admin_ui_path")]
     pub admin_ui_path: String,
+}
+
+fn default_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_port() -> u16 {
+    3000
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self { host: default_host(), port: default_port(), admin_ui_path: default_admin_ui_path() }
+    }
 }
 
 fn default_admin_ui_path() -> String {
@@ -131,11 +148,7 @@ pub struct AuthConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            server: ServerConfig {
-                host: "0.0.0.0".to_string(),
-                port: 3000,
-                admin_ui_path: default_admin_ui_path(),
-            },
+            server: ServerConfig::default(),
             database: DatabaseConfig::default(),
             auth: None,
             payments: None,
@@ -301,5 +314,18 @@ mod tests {
             .try_deserialize()
             .unwrap();
         assert_eq!(config.database.url, Config::default().database.url);
+    }
+
+    #[test]
+    fn an_empty_config_parses_to_the_defaults() {
+        let config: Config = config::Config::builder()
+            .add_source(config::File::from_str("", config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 3000);
+        assert_eq!(config.server.admin_ui_path, "/app/admin/dist");
     }
 }

@@ -20,6 +20,7 @@ services:
       retries: 20
 
   yalr:
+    image: voidic/yalr:latest
     build: .
     container_name: yalr
     restart: unless-stopped
@@ -28,7 +29,6 @@ services:
         condition: service_healthy
     volumes:
       - ./data:/app/data
-      - ./config.yaml:/app/config.yaml:ro
     environment:
       - RUST_LOG=info
       - DATABASE_URL=mysql://yalr:yalr@db:3306/yalr

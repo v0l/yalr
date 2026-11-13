@@ -37,7 +37,6 @@ To run the image on its own, point it at an existing MariaDB (inside a container
 docker run -p 3000:3000 \
   -e DATABASE_URL=mysql://yalr:yalr@db-host:3306/yalr \
   -v $(pwd)/data:/app/data \
-  -v $(pwd)/config.yaml:/app/config.yaml \
   voidic/yalr:latest
 ```
 
@@ -542,13 +541,13 @@ services:
       - "3000:3000"
     volumes:
       - ./data:/app/data
-      - ./config.yaml:/app/config.yaml:ro
     environment:
       - DATABASE_URL=mysql://yalr:yalr@db:3306/yalr
 ```
 
 The `DATABASE_URL` is required: without it the server uses `database.url` from
 `config.yaml`, which defaults to `127.0.0.1` and fails with `PoolTimedOut` after 30 s.
+No `config.yaml` is needed. Mount one at `/app/config.yaml` only to change defaults.
 
 ## License
 
