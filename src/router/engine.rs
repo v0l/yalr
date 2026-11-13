@@ -1091,7 +1091,7 @@ impl Router {
             match result {
                 Ok(response) => {
                     guard.decrement();
-                    rounds.served();
+                    rounds.served(&provider_name);
                     if let Some(key) = &session {
                         self.sticky.pin(key, &provider_name);
                     }
@@ -1197,13 +1197,10 @@ impl Router {
 
                     last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
-                    if rounds.first_round() || !e.is_retryable_transient() {
-                        self.metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
-                    }
                     failures.push(&provider_name, &e);
+                    rounds.fail(retained, &original_model, &e, &user);
 
                     if e.is_transient() {
-                        rounds.keep(retained, &e);
                         tracing::warn!(
                             provider = &provider_name,
                             attempt = attempt,
@@ -1272,7 +1269,7 @@ impl Router {
             let mut last_error: Option<RouterError> = None;
         let mut failures = FailureLog::default();
             let mut chunks_yielded = false;
-            let mut attempt: u32 = 0;
+            let mut attempt: u32;
 
             'rounds: loop {
             attempt = 0;
@@ -1458,9 +1455,6 @@ impl Router {
                                     yield Ok(chunk);
                                 }
                                 Err(e) => {
-                                    if rounds.first_round() || !e.is_retryable_transient() {
-                                        metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
-                                    }
                                     stream_errored = true;
 
                                     // Log detailed error context for debugging
@@ -1488,7 +1482,7 @@ impl Router {
                                             trace.end_attempt(Some(e.to_string()));
                                         }
                                         failures.push(&provider_name, &e);
-                                        rounds.keep(retained.clone(), &e);
+                                        rounds.fail(retained.clone(), &original_model, &e, &user);
                                         last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e)));
                                         guard.decrement();
 
@@ -1507,6 +1501,7 @@ impl Router {
                                         break; // Continue to next provider in the outer loop
                                     }
 
+                                    metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
                                     // Either we already sent data (can't retry) or error is non-transient
                                     if !e.is_transient() {
                                         tracing::warn!(
@@ -1639,7 +1634,7 @@ impl Router {
                                 trace.end_attempt(None);
                             }
                             guard.decrement();
-                            rounds.served();
+                            rounds.served(&provider_name);
                             break 'rounds;
                         }
 
@@ -1663,13 +1658,10 @@ impl Router {
 
                         last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
-                        if rounds.first_round() || !e.is_retryable_transient() {
-                            metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
-                        }
                         failures.push(&provider_name, &e);
+                        rounds.fail(retained, &original_model, &e, &user);
 
                         if e.is_transient() {
-                            rounds.keep(retained, &e);
                             tracing::warn!(
                                 provider = &provider_name,
                                 attempt = attempt,
@@ -1843,7 +1835,7 @@ impl Router {
             match result {
                 Ok(response) => {
                     guard.decrement();
-                    rounds.served();
+                    rounds.served(&provider_name);
                     if let Some(key) = &session {
                         self.sticky.pin(key, &provider_name);
                     }
@@ -1888,13 +1880,10 @@ impl Router {
 
                     last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
-                    if rounds.first_round() || !e.is_retryable_transient() {
-                        self.metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
-                    }
                     failures.push(&provider_name, &e);
+                    rounds.fail(retained, &original_model, &e, &user);
 
                     if e.is_transient() {
-                        rounds.keep(retained, &e);
                         tracing::warn!(
                             provider = &provider_name,
                             attempt = attempt,

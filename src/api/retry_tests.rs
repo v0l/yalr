@@ -85,6 +85,16 @@ impl Provider for Scripted {
             Ok(()) => Ok(Box::pin(futures::stream::iter(vec![Ok(chunk())]))),
         }
     }
+    async fn image_generations(
+        &self,
+        _request: &crate::providers::image::ImageGenerationRequest,
+    ) -> Result<crate::providers::image::ImageResponse, ProviderError> {
+        self.step()?;
+        Ok(crate::providers::image::ImageResponse {
+            content_type: "application/json".into(),
+            stream: Box::pin(futures::stream::iter(vec![Ok(bytes::Bytes::from_static(b"{}"))])),
+        })
+    }
     async fn health_check(&self) -> Result<bool, ProviderError> {
         Ok(true)
     }
@@ -270,4 +280,33 @@ async fn two_rate_limits_report_the_earliest_reset_without_retrying() {
     assert_eq!(code, 429);
     assert_eq!(retry_after.as_deref(), Some("120"));
     assert_eq!((a.calls(), b.calls()), (1, 1));
+}
+
+#[tokio::test]
+async fn an_image_request_is_retried_after_a_503() {
+    let only = Scripted::new("max", vec![Err(status(503)), Ok(())]);
+    let h = harness(vec![only.clone()]).await;
+    let request: crate::providers::image::ImageGenerationRequest =
+        serde_json::from_str(&format!(r#"{{"model":"{MODEL}","prompt":"a cat"}}"#)).unwrap();
+    let response = h.state.config.router.image_generations(&request, None).await.unwrap();
+    assert_eq!(response.content_type, "application/json");
+    assert_eq!(only.calls(), 2);
+    assert_eq!(h.metrics.emitter().get_transient_retries(), (1, 1));
+    assert_eq!(h.metrics.get_recent_failures("max").await, 0);
+}
+
+#[tokio::test]
+async fn a_failure_that_a_retry_cured_leaves_no_trace_in_health() {
+    let only = Scripted::new("max", vec![Err(status(503)), Ok(())]);
+    let h = harness(vec![only.clone()]).await;
+    assert_eq!(chat(&h.state).await.0, 200);
+    assert_eq!(h.metrics.get_recent_failures("max").await, 0);
+}
+
+#[tokio::test]
+async fn a_request_that_finally_fails_records_its_first_round_failure() {
+    let only = Scripted::new("max", vec![Err(status(503))]);
+    let h = harness(vec![only.clone()]).await;
+    assert_eq!(chat(&h.state).await.0, 503);
+    assert_eq!(h.metrics.get_recent_failures("max").await, 1);
 }

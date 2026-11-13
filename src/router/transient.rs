@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::metrics::MetricsEmitter;
+use crate::metrics::{MetricsEmitter, MetricsUser};
 use crate::providers::ProviderError;
 use crate::router::engine::Candidate;
 
@@ -36,11 +36,19 @@ impl TransientRetry {
     }
 }
 
+struct Deferred {
+    provider: String,
+    model: String,
+    error: ProviderError,
+    user: Option<MetricsUser>,
+}
+
 pub(crate) struct RetryRounds {
     policy: TransientRetry,
     started: Instant,
     round: u32,
     pool: Vec<Candidate>,
+    deferred: Vec<Deferred>,
     emitter: MetricsEmitter,
 }
 
@@ -51,33 +59,53 @@ impl RetryRounds {
             started: Instant::now(),
             round: 0,
             pool: Vec::new(),
+            deferred: Vec::new(),
             emitter,
         }
     }
 
-    pub(crate) fn first_round(&self) -> bool {
-        self.round == 0
+    pub(crate) fn fail(
+        &mut self,
+        candidate: Candidate,
+        model: &str,
+        error: &ProviderError,
+        user: &Option<MetricsUser>,
+    ) {
+        let provider = candidate.provider.name().to_string();
+        if self.policy.rounds == 0 || !error.is_retryable_transient() {
+            self.emitter.emit_provider_error(&provider, model, error, user.clone());
+            return;
+        }
+        if self.round == 0 {
+            self.deferred.push(Deferred {
+                provider,
+                model: model.to_string(),
+                error: error.clone(),
+                user: user.clone(),
+            });
+        }
+        self.pool.push(candidate);
     }
 
-    pub(crate) fn keep(&mut self, candidate: Candidate, error: &ProviderError) {
-        if error.is_retryable_transient() {
-            self.pool.push(candidate);
+    pub(crate) fn flush(&mut self) {
+        for d in self.deferred.drain(..) {
+            self.emitter.emit_provider_error(&d.provider, &d.model, &d.error, d.user);
         }
     }
 
-    pub(crate) fn served(&self) {
+    pub(crate) fn served(&mut self, provider: &str) {
         if self.round > 0 {
             self.emitter.record_transient_retry_success();
+            self.deferred.retain(|d| d.provider != provider);
         }
+        self.flush();
     }
 
     pub(crate) async fn next_round(&mut self, model: &str, op: &str) -> Option<Vec<Candidate>> {
         let pool = std::mem::take(&mut self.pool);
-        if pool.is_empty() || self.round >= self.policy.rounds {
-            return None;
-        }
         let wait = self.policy.wait(self.round + 1);
-        if self.started.elapsed() + wait > self.policy.budget {
+        if pool.is_empty() || self.round >= self.policy.rounds || self.started.elapsed() + wait > self.policy.budget {
+            self.flush();
             return None;
         }
         self.round += 1;
@@ -93,6 +121,12 @@ impl RetryRounds {
         self.emitter.record_transient_retry();
         tokio::time::sleep(wait).await;
         Some(pool)
+    }
+}
+
+impl Drop for RetryRounds {
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 

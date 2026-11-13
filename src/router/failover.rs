@@ -6,6 +6,7 @@ use crate::request_log::Trace;
 use crate::providers::Provider;
 use crate::router::engine::{Candidate, InFlightGuard, Router, RouterError};
 use crate::router::errors::{keep_useful, FailureLog};
+use crate::router::transient::RetryRounds;
 use crate::ProviderError;
 
 /// Outcome of one provider attempt, before metrics are recorded.
@@ -13,6 +14,11 @@ type Attempt<T> = Result<T, ProviderError>;
 
 /// What one pass over a candidate list produced. `attempts` counts real
 /// attempts, so zero means every candidate lacked support entirely.
+struct AttemptContext<'a> {
+    user: &'a Option<MetricsUser>,
+    rounds: &'a mut RetryRounds,
+}
+
 struct AttemptRun<T> {
     result: Option<Result<T, RouterError>>,
     attempts: u32,
@@ -45,7 +51,19 @@ impl Router {
         }
 
         let tried: Vec<String> = candidates.iter().map(|c| c.provider.name().to_string()).collect();
-        let outcome = self.try_candidates(candidates, model, op, &user, trace, &call).await;
+        let mut rounds = RetryRounds::new(self.transient_retry, self.metrics_store.emitter().clone());
+        let mut pool = candidates;
+        let mut ctx = AttemptContext { user: &user, rounds: &mut rounds };
+        let outcome = loop {
+            let outcome = self.try_candidates(pool, model, op, &mut ctx, trace, &call).await;
+            if outcome.result.is_some() {
+                break outcome;
+            }
+            match ctx.rounds.next_round(model, op).await {
+                Some(next) => pool = next,
+                None => break outcome,
+            }
+        };
         if let Some(result) = outcome.result {
             return result;
         }
@@ -70,7 +88,7 @@ impl Router {
                     "No healthy provider supports this request, falling back to filtered providers"
                 );
                 if let Some(result) = self
-                    .try_candidates(fallback, model, op, &user, trace, &call)
+                    .try_candidates(fallback, model, op, &mut ctx, trace, &call)
                     .await
                     .result
                 {
@@ -87,7 +105,7 @@ impl Router {
         candidates: Vec<Candidate>,
         model: &str,
         op: &str,
-        user: &Option<MetricsUser>,
+        ctx: &mut AttemptContext<'_>,
         trace: Option<&Trace>,
         call: &F,
     ) -> AttemptRun<T>
@@ -100,12 +118,15 @@ impl Router {
         let mut failures = FailureLog::default();
         let mut attempt: u32 = 0;
 
-        for Candidate { provider, model: resolved_model, route, extra_body } in candidates {
+        for candidate in candidates {
+            let retained = candidate.clone();
+            let Candidate { provider, model: resolved_model, route, extra_body } = candidate;
             if attempt >= self.max_retries {
                 break;
             }
 
             let provider_name = provider.name().to_string();
+            let user = ctx.user;
             let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
             let mut guard = InFlightGuard::new(self.metrics_store.clone(), provider_name.clone());
             self.metrics_store
@@ -128,6 +149,7 @@ impl Router {
 
             match result {
                 Ok(response) => {
+                    ctx.rounds.served(&provider_name);
                     let latency_ms = start.elapsed().as_millis() as u32;
                     self.metrics_store.emitter().emit_total_latency(
                         &provider_name,
@@ -166,7 +188,7 @@ impl Router {
                 }
                 Err(e) => {
                     attempt += 1;
-                    self.metrics_store.emitter().emit_provider_error(&provider_name, model, &e, user.clone());
+                    ctx.rounds.fail(retained, model, &e, user);
 
                     failures.push(&provider_name, &e);
                     last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
