@@ -1,6 +1,5 @@
 use super::*;
 use crate::db::{NewProvider, NewRoutingConfig, NewRoutingConfigChild, NewRoutingConfigProvider, ProviderType};
-use crate::providers::OpenAiProvider;
 use serde_json::{json, Value};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
