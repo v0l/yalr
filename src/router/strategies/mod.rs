@@ -10,6 +10,7 @@ pub struct ProviderEntry {
     pub provider: Arc<dyn Provider>,
     pub model_override: Option<String>,
     pub weight: i32,
+    pub extra_body: crate::db::ExtraBody,
 }
 
 #[async_trait]

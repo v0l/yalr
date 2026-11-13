@@ -31,6 +31,7 @@ pub struct ChatRequest {
     assistant_extras: Vec<Map<String, Value>>,
     /// Top-level request fields re-applied verbatim on the upstream wire.
     extra_fields: Map<String, Value>,
+    body_defaults: Map<String, Value>,
     trace: Option<crate::request_log::Trace>,
     session_header: Option<String>,
 }
@@ -86,6 +87,7 @@ impl ChatRequest {
             inner,
             assistant_extras,
             extra_fields,
+            body_defaults: Map::new(),
             trace: None,
             session_header: None,
         })
@@ -159,6 +161,7 @@ impl From<ChatCompletionRequest> for ChatRequest {
             inner,
             assistant_extras: Vec::new(),
             extra_fields: Map::new(),
+            body_defaults: Map::new(),
             trace: None,
             session_header: None,
         }
@@ -189,6 +192,15 @@ impl ChatRequest {
     pub fn with_trace(mut self, trace: crate::request_log::Trace) -> Self {
         self.trace = Some(trace);
         self
+    }
+
+    pub fn with_body_defaults(mut self, defaults: Map<String, Value>) -> Self {
+        self.body_defaults = defaults;
+        self
+    }
+
+    pub fn body_defaults(&self) -> &Map<String, Value> {
+        &self.body_defaults
     }
 
     pub fn trace(&self) -> Option<&crate::request_log::Trace> {

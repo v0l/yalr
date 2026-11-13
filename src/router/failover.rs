@@ -36,7 +36,7 @@ impl Router {
         call: F,
     ) -> Result<T, RouterError>
     where
-        F: Fn(Arc<dyn Provider>, String) -> Fut,
+        F: Fn(Arc<dyn Provider>, String, crate::db::ExtraBody) -> Fut,
         Fut: std::future::Future<Output = Attempt<T>>,
     {
         let candidates = self.collect_routed(model, None).await?;
@@ -60,7 +60,7 @@ impl Router {
                 .await
                 .into_iter()
                 .filter(|(p, _)| !tried.iter().any(|name| name == p.name()))
-                .map(|(p, m)| Candidate::untracked(p, m))
+                .map(|(p, m)| self.untracked_candidate(p, m))
                 .collect();
             if !fallback.is_empty() {
                 tracing::warn!(
@@ -92,7 +92,7 @@ impl Router {
         call: &F,
     ) -> AttemptRun<T>
     where
-        F: Fn(Arc<dyn Provider>, String) -> Fut,
+        F: Fn(Arc<dyn Provider>, String, crate::db::ExtraBody) -> Fut,
         Fut: std::future::Future<Output = Attempt<T>>,
     {
         let start = Instant::now();
@@ -100,7 +100,7 @@ impl Router {
         let mut failures = FailureLog::default();
         let mut attempt: u32 = 0;
 
-        for Candidate { provider, model: resolved_model, route } in candidates {
+        for Candidate { provider, model: resolved_model, route, extra_body } in candidates {
             if attempt >= self.max_retries {
                 break;
             }
@@ -116,7 +116,7 @@ impl Router {
                 trace.begin_attempt(&provider_name);
                 trace.set_route(&route);
             }
-            let result = call(provider.clone(), resolved_model).await;
+            let result = call(provider.clone(), resolved_model, extra_body).await;
             guard.decrement();
             if let Some(trace) = trace {
                 match &result {

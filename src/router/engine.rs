@@ -81,6 +81,7 @@ struct ChildEntry {
     config: String,
     model_override: Option<String>,
     weight: i32,
+    extra_body: crate::db::ExtraBody,
 }
 
 #[derive(Clone, Copy)]
@@ -173,11 +174,12 @@ pub(crate) struct Candidate {
     pub(crate) provider: Arc<dyn Provider>,
     pub(crate) model: String,
     pub(crate) route: String,
+    pub(crate) extra_body: crate::db::ExtraBody,
 }
 
 impl Candidate {
-    pub(crate) fn untracked(provider: Arc<dyn Provider>, model: String) -> Self {
-        Self { provider, model, route: String::new() }
+    pub(crate) fn untracked(provider: Arc<dyn Provider>, model: String, extra_body: crate::db::ExtraBody) -> Self {
+        Self { provider, model, route: String::new(), extra_body }
     }
 
     #[cfg(test)]
@@ -261,6 +263,7 @@ pub struct Router {
     health_check_handles: RwLock<HashMap<String, tokio::task::JoinHandle<()>>>,
     shutdown_tx: RwLock<Option<tokio::sync::broadcast::Sender<()>>>,
     sticky: StickySessions,
+    provider_bodies: std::sync::RwLock<HashMap<String, crate::db::ExtraBody>>,
 }
 
 impl Router {
@@ -277,7 +280,21 @@ impl Router {
             health_check_handles: RwLock::new(HashMap::new()),
             shutdown_tx: RwLock::new(None),
             sticky: StickySessions::default(),
+            provider_bodies: std::sync::RwLock::new(HashMap::new()),
         }
+    }
+
+    pub(crate) fn provider_body(&self, provider: &dyn Provider) -> crate::db::ExtraBody {
+        self.provider_bodies
+            .read()
+            .ok()
+            .and_then(|bodies| bodies.get(provider.slug()).cloned())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn untracked_candidate(&self, provider: Arc<dyn Provider>, model: String) -> Candidate {
+        let body = self.provider_body(provider.as_ref());
+        Candidate::untracked(provider, model, body)
     }
 
     pub async fn reload_config(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -292,6 +309,7 @@ impl Router {
         let provider_records = self.db.list_providers().await?;
 
         let mut providers = HashMap::new();
+        let mut provider_bodies: HashMap<String, crate::db::ExtraBody> = HashMap::new();
         let mut id_to_slug: HashMap<i64, String> = HashMap::new();
 
         for record in &provider_records {
@@ -308,6 +326,9 @@ impl Router {
             };
             self.metrics_store.register_provider(&record.name).await;
             id_to_slug.insert(record.id, record.slug.clone());
+            if let Some(body) = record.extra_body_map() {
+                provider_bodies.insert(record.slug.clone(), body);
+            }
             providers.insert(record.slug.clone(), provider);
         }
 
@@ -329,6 +350,7 @@ impl Router {
                             config: child.name.clone(),
                             model_override: rcp.model.clone(),
                             weight: rcp.weight,
+                            extra_body: rcp.extra_body_map().unwrap_or_default(),
                         });
                     }
                     continue;
@@ -342,10 +364,15 @@ impl Router {
                     None => continue,
                 };
                 configured_provider_slugs.insert(slug.clone());
+                let mut extra_body = provider_bodies.get(slug).cloned().unwrap_or_default();
+                if let Some(entry_body) = rcp.extra_body_map() {
+                    crate::db::merge_extra_body(&mut extra_body, &entry_body);
+                }
                 entries.push(ProviderEntry {
                     provider: provider.clone(),
                     model_override: rcp.model.clone(),
                     weight: rcp.weight,
+                    extra_body,
                 });
             }
 
@@ -408,12 +435,16 @@ impl Router {
                     provider: provider.clone(),
                     model_override: None,
                     weight: mp.weight,
+                    extra_body: provider_bodies.get(slug).cloned().unwrap_or_default(),
                 });
         }
 
         // No default routing table - all routing must be explicitly configured
 
         *self.providers.write().await = providers;
+        if let Ok(mut bodies) = self.provider_bodies.write() {
+            *bodies = provider_bodies;
+        }
         *self.routing_tables.write().await = tables;
 
         let provider_count = self.providers.read().await.len();
@@ -628,6 +659,7 @@ impl Router {
                 provider,
                 model_override: None,
                 weight: 1,
+                extra_body: Default::default(),
             })
             .collect();
         self.routing_tables
@@ -778,7 +810,7 @@ impl Router {
                         .cloned()
                 });
             return Ok(match provider {
-                Some(provider) => vec![Candidate::untracked(provider, actual_model.to_string())],
+                Some(provider) => vec![self.untracked_candidate(provider, actual_model.to_string())],
                 None => vec![],
             });
         }
@@ -863,15 +895,19 @@ impl Router {
                             provider: entry.provider.clone(),
                             model: entry.model_override.clone().unwrap_or_else(|| model.to_string()),
                             route: format!("{route} > {provider_name}"),
+                            extra_body: entry.extra_body.clone(),
                         };
                         (tier, rh.retry_in.as_millis() as u64, entry.weight, vec![candidate])
                     }
                     Slot::Child(i) => {
                         let child = &table.children[i];
                         let child_model = child.model_override.as_deref().unwrap_or(model);
-                        let ranked = self.rank_table(tables, &child.config, child_model, &route, depth + 1).await?;
+                        let mut ranked = self.rank_table(tables, &child.config, child_model, &route, depth + 1).await?;
                         if ranked.candidates.is_empty() {
                             continue;
+                        }
+                        for candidate in &mut ranked.candidates {
+                            crate::db::merge_extra_body(&mut candidate.extra_body, &child.extra_body);
                         }
                         (ranked.tier, ranked.retry_ms, child.weight, ranked.candidates)
                     }
@@ -985,7 +1021,7 @@ impl Router {
         let mut attempt: u32 = 0;
         let needed = request.input_modalities();
 
-        for Candidate { provider, model: resolved_model, route } in candidates {
+        for Candidate { provider, model: resolved_model, route, extra_body } in candidates {
             if attempt >= self.max_retries {
                 break;
             }
@@ -1002,7 +1038,7 @@ impl Router {
 
             let provider_name = provider.name().to_string();
 
-            let mut actual_request = request.clone();
+            let mut actual_request = request.clone().with_body_defaults(extra_body);
             actual_request.model = resolved_model.clone();
             Self::normalize_chat_request(&mut actual_request, &provider_name);
 
@@ -1212,7 +1248,7 @@ impl Router {
             let mut chunks_yielded = false;
             let mut attempt: u32 = 0;
 
-            for Candidate { provider, model: resolved_model, route } in candidates {
+            for Candidate { provider, model: resolved_model, route, extra_body } in candidates {
                 if attempt >= max_retries {
                     break;
                 }
@@ -1229,7 +1265,7 @@ impl Router {
 
                 let provider_name = provider.name().to_string();
 
-                let mut actual_request = request.clone();
+                let mut actual_request = request.clone().with_body_defaults(extra_body);
                 actual_request.model = resolved_model.clone();
                 Self::normalize_chat_request(&mut actual_request, &provider_name);
 
@@ -1706,7 +1742,7 @@ impl Router {
         let mut failures = FailureLog::default();
         let mut attempt: u32 = 0;
 
-        for Candidate { provider, model: resolved_model, route } in candidates {
+        for Candidate { provider, model: resolved_model, route, extra_body } in candidates {
             if attempt >= self.max_retries {
                 break;
             }
@@ -1746,7 +1782,7 @@ impl Router {
                 trace.begin_attempt(&provider_name);
                 trace.set_route(&route);
             }
-            let result = provider.responses(&actual_request).await;
+            let result = provider.responses_with_body(&actual_request, &extra_body).await;
             let total_latency = start.elapsed();
             if let Some(trace) = trace {
                 trace.end_attempt(result.as_ref().err().map(|e| e.to_string()));
@@ -2408,11 +2444,12 @@ mod tests {
             tables.insert(
                 "vision-model".to_string(),
                 RoutingTable::new(vec![
-                    ProviderEntry { provider: provider1.clone(), model_override: None, weight: 1 },
+                    ProviderEntry { provider: provider1.clone(), model_override: None, weight: 1, extra_body: Default::default() },
                     ProviderEntry {
                         provider: provider2.clone(),
                         model_override: Some("upstream-v2".to_string()),
                         weight: 1,
+                        extra_body: Default::default(),
                     },
                 ]),
             );
@@ -2484,11 +2521,13 @@ mod tests {
                         provider: provider1.clone(),
                         model_override: None,
                         weight: 3,
+                        extra_body: Default::default(),
                     },
                     ProviderEntry {
                         provider: provider2.clone(),
                         model_override: None,
                         weight: 1,
+                        extra_body: Default::default(),
                     },
                 ]),
             );
@@ -2536,11 +2575,13 @@ mod tests {
                         provider: provider1.clone(),
                         model_override: None,
                         weight: 3,
+                        extra_body: Default::default(),
                     },
                     ProviderEntry {
                         provider: provider2.clone(),
                         model_override: None,
                         weight: 3,
+                        extra_body: Default::default(),
                     },
                 ]),
             );
@@ -2580,11 +2621,13 @@ mod tests {
                         provider: heavy.clone(),
                         model_override: None,
                         weight: 3,
+                        extra_body: Default::default(),
                     },
                     ProviderEntry {
                         provider: light.clone(),
                         model_override: None,
                         weight: 1,
+                        extra_body: Default::default(),
                     },
                 ]),
             );
@@ -2629,11 +2672,13 @@ mod tests {
                         provider: provider1.clone(),
                         model_override: None,
                         weight: 100,
+                        extra_body: Default::default(),
                     },
                     ProviderEntry {
                         provider: provider2.clone(),
                         model_override: None,
                         weight: 100,
+                        extra_body: Default::default(),
                     },
                 ]),
             );

@@ -61,11 +61,28 @@ impl Provider for Backend {
 }
 
 fn entry(backend: &Arc<Backend>, weight: i32) -> ProviderEntry {
-    ProviderEntry { provider: backend.clone(), model_override: None, weight }
+    ProviderEntry { provider: backend.clone(), model_override: None, weight, extra_body: Default::default() }
+}
+
+fn body(value: serde_json::Value) -> crate::db::ExtraBody {
+    value.as_object().unwrap().clone()
+}
+
+fn entry_with_body(backend: &Arc<Backend>, extra_body: crate::db::ExtraBody) -> ProviderEntry {
+    ProviderEntry { provider: backend.clone(), model_override: None, weight: 1, extra_body }
 }
 
 fn child(config: &str, weight: i32, model_override: Option<&str>) -> ChildEntry {
-    ChildEntry { config: config.to_string(), model_override: model_override.map(str::to_string), weight }
+    ChildEntry {
+        config: config.to_string(),
+        model_override: model_override.map(str::to_string),
+        weight,
+        extra_body: Default::default(),
+    }
+}
+
+fn child_with_body(config: &str, extra_body: crate::db::ExtraBody) -> ChildEntry {
+    ChildEntry { config: config.to_string(), model_override: None, weight: 1, extra_body }
 }
 
 async fn router_with(tables: Vec<(&str, RoutingTable)>) -> Router {
@@ -172,9 +189,56 @@ async fn a_child_whose_providers_are_all_unhealthy_is_skipped_while_a_direct_pro
 }
 
 #[tokio::test]
+async fn extra_body_merges_from_the_leaf_entry_up_to_the_outermost_config() {
+    let leaf = Backend::new("leaf");
+    let router = router_with(vec![
+        (
+            "top",
+            RoutingTable::with_children(
+                vec![],
+                vec![child_with_body("mid", body(serde_json::json!({"a": "top", "only_top": 1})))],
+                StrategyKind::Priority,
+            ),
+        ),
+        (
+            "mid",
+            RoutingTable::with_children(
+                vec![],
+                vec![child_with_body("low", body(serde_json::json!({"a": "mid", "b": "mid", "only_mid": 1})))],
+                StrategyKind::Priority,
+            ),
+        ),
+        (
+            "low",
+            RoutingTable::with_strategy(
+                vec![entry_with_body(
+                    &leaf,
+                    body(serde_json::json!({"a": "leaf", "b": "leaf", "c": "leaf", "provider": {"order": ["x"]}})),
+                )],
+                StrategyKind::Priority,
+            ),
+        ),
+    ])
+    .await;
+    let routed = router.collect_routed("top", None).await.unwrap();
+    assert_eq!(routed.len(), 1);
+    assert_eq!(
+        serde_json::Value::Object(routed[0].extra_body.clone()),
+        serde_json::json!({
+            "a": "top",
+            "b": "mid",
+            "c": "leaf",
+            "only_top": 1,
+            "only_mid": 1,
+            "provider": {"order": ["x"]}
+        })
+    );
+}
+
+#[tokio::test]
 async fn a_child_member_model_overrides_the_childs_model_name() {
     let leaf = Backend::new("leaf");
-    let mapped = ProviderEntry { provider: leaf.clone(), model_override: Some("pinned".into()), weight: 1 };
+    let mapped = ProviderEntry { provider: leaf.clone(), model_override: Some("pinned".into()), weight: 1, extra_body: Default::default() };
     let plain = Backend::new("plain");
     let router = router_with(vec![
         (

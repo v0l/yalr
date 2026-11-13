@@ -158,6 +158,9 @@ fn to_wire_value(request: &ChatRequest) -> Result<serde_json::Value, crate::prov
         for (key, field) in request.extra_fields() {
             object.insert(key.clone(), field.clone());
         }
+        for (key, field) in request.body_defaults() {
+            object.entry(key.clone()).or_insert_with(|| field.clone());
+        }
     }
 
     let is_v4 = request
@@ -471,6 +474,23 @@ impl Provider for OpenAiProvider {
                 Ok(false)
             }
         }
+    }
+
+    async fn responses_with_body(
+        &self,
+        request: &CreateResponse,
+        body_defaults: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ApiResponse, ProviderError> {
+        if body_defaults.is_empty() {
+            return self.responses(request).await;
+        }
+        let mut wire = serde_json::to_value(request).map_err(|e| ProviderError::Other(e.into()))?;
+        if let Some(object) = wire.as_object_mut() {
+            for (key, field) in body_defaults {
+                object.entry(key.clone()).or_insert_with(|| field.clone());
+            }
+        }
+        self.client.responses().create_byot(wire).await.map_err(map_openai_error)
     }
 
     async fn responses(&self, request: &CreateResponse) -> Result<ApiResponse, ProviderError> {
@@ -884,6 +904,90 @@ mod tests {
             }
             assert!(sent.get(absent).is_none(), "{hint:?} must not set {absent}");
         }
+    }
+
+    fn defaults(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        value.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn configured_provider_object_reaches_the_wire() {
+        let request = ChatRequest::from_value(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap()
+        .with_body_defaults(defaults(serde_json::json!({"provider": {"order": ["x"], "allow_fallbacks": false}})));
+        let value = to_wire_value(&request).unwrap();
+        assert_eq!(value["provider"], serde_json::json!({"order": ["x"], "allow_fallbacks": false}));
+    }
+
+    #[test]
+    fn client_provider_object_replaces_the_configured_one_whole() {
+        let request = ChatRequest::from_value(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "provider": {"only": ["y"]}
+        }))
+        .unwrap()
+        .with_body_defaults(defaults(serde_json::json!({
+            "provider": {"order": ["x"], "allow_fallbacks": false},
+            "top_k": 5
+        })));
+        let value = to_wire_value(&request).unwrap();
+        assert_eq!(value["provider"], serde_json::json!({"only": ["y"]}));
+        assert_eq!(value["top_k"], 5);
+    }
+
+    #[tokio::test]
+    async fn responses_send_configured_fields_and_let_the_client_win() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::new("t", None, &format!("{}/v1", server.uri()), Some("k"));
+        let request: CreateResponse = serde_json::from_value(serde_json::json!({
+            "model": "m",
+            "input": "hi",
+            "temperature": 0.5
+        }))
+        .unwrap();
+        let configured = defaults(serde_json::json!({"provider": {"order": ["x"]}, "temperature": 0.9}));
+        let _ = provider.responses_with_body(&request, &configured).await;
+        let sent: serde_json::Value =
+            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(sent["provider"], serde_json::json!({"order": ["x"]}));
+        assert_eq!(sent["temperature"], 0.5);
+    }
+
+    #[tokio::test]
+    async fn chat_sends_configured_provider_object_upstream() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let body = r#"{"id":"c","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::new("t", None, &format!("{}/v1", server.uri()), Some("k"));
+        let request = ChatRequest::from_value(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap()
+        .with_body_defaults(defaults(serde_json::json!({"provider": {"order": ["x"], "allow_fallbacks": false}})));
+        provider.chat_completions(&request).await.unwrap();
+        let sent: serde_json::Value =
+            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(sent["provider"], serde_json::json!({"order": ["x"], "allow_fallbacks": false}));
     }
 
     #[tokio::test]

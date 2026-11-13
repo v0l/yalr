@@ -106,6 +106,7 @@ mod tests {
                 provider: Arc::new(TestProvider::new(n, n)) as Arc<dyn Provider>,
                 model_override: None,
                 weight: 100,
+                extra_body: Default::default(),
             })
             .collect()
     }
@@ -156,6 +157,7 @@ mod tests {
             provider: provider.clone(),
             model_override: Some("gpt-4-0613".to_string()),
             weight: 100,
+            extra_body: Default::default(),
         }];
 
         let strategy = RoundRobinStrategy::new();

@@ -18,9 +18,12 @@ impl Router {
         user: Option<MetricsUser>,
         trace: Option<&Trace>,
     ) -> Result<ImageResponse, RouterError> {
-        self.capability_failover(&request.model, "images.generations", user, trace, |provider, model| {
+        self.capability_failover(&request.model, "images.generations", user, trace, |provider, model, body| {
             let mut request = request.clone();
             request.model = model;
+            for (key, value) in body {
+                request.extra.entry(key).or_insert(value);
+            }
             async move { provider.image_generations(&request).await }
         })
         .await
@@ -40,9 +43,18 @@ impl Router {
         user: Option<MetricsUser>,
         trace: Option<&Trace>,
     ) -> Result<ImageResponse, RouterError> {
-        self.capability_failover(&request.model, request.operation(), user, trace, |provider, model| {
+        self.capability_failover(&request.model, request.operation(), user, trace, |provider, model, body| {
             let mut request = request.clone();
             request.model = model;
+            for (key, value) in body {
+                if request.field(&key).is_none() {
+                    let text = match value {
+                        serde_json::Value::String(text) => text,
+                        other => other.to_string(),
+                    };
+                    request.fields.push((key, text));
+                }
+            }
             async move { provider.image_uploads(&request).await }
         })
         .await

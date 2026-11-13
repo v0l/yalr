@@ -145,6 +145,15 @@ pub trait Provider: Send + Sync {
         ))
     }
 
+    async fn responses_with_body(
+        &self,
+        request: &CreateResponse,
+        body_defaults: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ApiResponse, ProviderError> {
+        let _ = body_defaults;
+        self.responses(request).await
+    }
+
     /// Speech-to-text. Returns an error for providers with no audio support.
     async fn transcriptions(
         &self,

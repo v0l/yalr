@@ -265,6 +265,14 @@ impl Provider for OpenRouterProvider {
         self.inner.responses(request).await
     }
 
+    async fn responses_with_body(
+        &self,
+        request: &CreateResponse,
+        body_defaults: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ApiResponse, ProviderError> {
+        self.inner.responses_with_body(request, body_defaults).await
+    }
+
     async fn list_voices(&self, model: &str) -> Result<Option<Vec<String>>, ProviderError> {
         if self.voices.read().await.is_empty() {
             self.fetch_models().await?;

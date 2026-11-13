@@ -25,7 +25,7 @@ impl Router {
         } else {
             "audio.transcriptions"
         };
-        self.capability_failover(&request.model, label, user, trace, |provider, model| {
+        self.capability_failover(&request.model, label, user, trace, |provider, model, _body| {
             let mut request = request.clone();
             request.model = model;
             async move { provider.transcriptions(&request).await }
@@ -47,7 +47,7 @@ impl Router {
         user: Option<MetricsUser>,
         trace: Option<&Trace>,
     ) -> Result<SpeechResponse, RouterError> {
-        self.capability_failover(&request.model, "audio.speech", user, trace, |provider, model| {
+        self.capability_failover(&request.model, "audio.speech", user, trace, |provider, model, _body| {
             let mut request = request.clone();
             request.model = model;
             async move { provider.speech(&request).await }

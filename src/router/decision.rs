@@ -20,7 +20,7 @@ impl Router {
     ) -> Result<DecisionResponse, RouterError> {
         let emitter = self.metrics_store.emitter().clone();
         let requested_model = request.model.as_str();
-        self.capability_failover(requested_model, "decisions", user.clone(), trace, |provider, model| {
+        self.capability_failover(requested_model, "decisions", user.clone(), trace, |provider, model, _body| {
             let mut request = request.clone();
             request.model = model;
             let emitter = emitter.clone();
