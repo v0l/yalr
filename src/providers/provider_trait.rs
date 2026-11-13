@@ -369,6 +369,10 @@ impl ProviderError {
         ) && !matches!(self.status_code(), Some(401 | 402 | 403 | 408 | 429))
     }
 
+    pub fn is_outage(&self) -> bool {
+        !matches!(self, ProviderError::RateLimit { .. }) && self.is_transient()
+    }
+
     pub fn is_recoverable(&self) -> bool {
         matches!(
             self,

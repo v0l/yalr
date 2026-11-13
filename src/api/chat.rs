@@ -266,7 +266,8 @@ pub async fn chat_completions_handler(
                 error = %e,
                 "Routing failed"
             );
-            if let Some(limited) = crate::api::shared::rate_limited(&e) {
+            let cap = crate::api::quota::retry_cap_ms(&state, &request.model).await;
+            if let Some(limited) = crate::api::shared::failure_response(&e, cap) {
                 return Err(limited);
             }
             let body = serde_json::json!({

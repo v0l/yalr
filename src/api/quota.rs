@@ -64,6 +64,15 @@ pub async fn with_model(state: &AppState, mut serving: ServingReport, model: &st
     serving
 }
 
+pub async fn retry_cap_ms(state: &AppState, model: &str) -> Option<u64> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let summary = summary_of(&model_quotas(state, model).await, now_ms)?;
+    match summary.next_available_at {
+        Some(at) => Some((at - now_ms).max(0) as u64),
+        None => Some(crate::api::shared::OUTAGE_RETRY_SECS * 1000),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct QuotaQuery {
     model: Option<String>,

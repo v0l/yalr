@@ -1,8 +1,11 @@
 pub mod audio;
 pub mod body_limit;
+pub mod retry_after;
 pub mod chat;
 #[cfg(test)]
 mod chat_stream_tests;
+#[cfg(test)]
+mod failover_tests;
 #[cfg(test)]
 mod serving_tests;
 pub mod compression;

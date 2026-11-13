@@ -78,7 +78,8 @@ pub async fn create_response(
         Err(e) => {
             tracing::error!(model = %model, error = %e, "Response creation failed");
             metered.fail(&e.to_string());
-            if let Some(limited) = crate::api::shared::rate_limited(&e) {
+            let cap = crate::api::quota::retry_cap_ms(&state, &model).await;
+            if let Some(limited) = crate::api::shared::failure_response(&e, cap) {
                 return Err(limited);
             }
             Err((StatusCode::BAD_REQUEST, error_body(&e.to_string(), "router_error")))

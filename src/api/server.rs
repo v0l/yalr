@@ -296,6 +296,7 @@ pub async fn run_with_shutdown<F>(
             move |req: axum::extract::Request| serve_admin_fallback(req, admin_ui_path.clone())
         }))
         .layer(cors)
+        .layer(axum::middleware::map_response(crate::api::retry_after::add_header))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
     let app = with_compression(app);
@@ -476,6 +477,7 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
             move || serve_admin_fallback(axum::extract::Request::new(Body::empty()), state.config.admin_ui_path.clone())
         }))
         .layer(CorsLayer::permissive())
+        .layer(axum::middleware::map_response(crate::api::retry_after::add_header))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
     with_compression(app)

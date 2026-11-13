@@ -1,7 +1,7 @@
 use crate::db::Database;
 use crate::metrics::{MetricsStore, MetricsUser};
 use crate::providers::{create_provider_from_record, ChatRequest, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
-use crate::router::errors::keep_useful;
+use crate::router::errors::{keep_useful, FailureLog};
 use crate::router::input_filter;
 use crate::router::sticky::{SessionKey, StickySessions};
 use crate::router::strategies::ProviderEntry;
@@ -981,6 +981,7 @@ impl Router {
         }
 
         let mut last_error: Option<RouterError> = None;
+        let mut failures = FailureLog::default();
         let mut attempt: u32 = 0;
         let needed = request.input_modalities();
 
@@ -1146,6 +1147,7 @@ impl Router {
                     last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
                     self.metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
+                    failures.push(&provider_name, &e);
 
                     if e.is_transient() {
                         tracing::warn!(
@@ -1175,6 +1177,7 @@ impl Router {
             }
         }
 
+        failures.warn(&original_model, "chat");
         Err(last_error.unwrap_or(RouterError::NoAvailableProvider))
     }
 
@@ -1205,6 +1208,7 @@ impl Router {
 
         let stream = stream! {
             let mut last_error: Option<RouterError> = None;
+        let mut failures = FailureLog::default();
             let mut chunks_yielded = false;
             let mut attempt: u32 = 0;
 
@@ -1415,6 +1419,7 @@ impl Router {
                                         if let Some(trace) = actual_request.trace() {
                                             trace.end_attempt(Some(e.to_string()));
                                         }
+                                        failures.push(&provider_name, &e);
                                         last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e)));
                                         guard.decrement();
 
@@ -1589,6 +1594,7 @@ impl Router {
                         last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
                         metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
+                        failures.push(&provider_name, &e);
 
                         if e.is_transient() {
                             tracing::warn!(
@@ -1621,6 +1627,7 @@ impl Router {
 
             // If we exhausted all providers without yielding anything, emit the last error
             if !chunks_yielded {
+                failures.warn(&original_model, "chat_stream");
                 if let Some(e) = last_error {
                     yield Err(e);
                 } else if attempt == 0 {
@@ -1696,6 +1703,7 @@ impl Router {
         }
 
         let mut last_error: Option<RouterError> = None;
+        let mut failures = FailureLog::default();
         let mut attempt: u32 = 0;
 
         for Candidate { provider, model: resolved_model, route } in candidates {
@@ -1792,6 +1800,7 @@ impl Router {
                     last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
                     self.metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
+                    failures.push(&provider_name, &e);
 
                     if e.is_transient() {
                         tracing::warn!(
@@ -1821,6 +1830,7 @@ impl Router {
             }
         }
 
+        failures.warn(&original_model, "responses");
         Err(last_error.unwrap_or(RouterError::NoAvailableProvider))
     }
 }

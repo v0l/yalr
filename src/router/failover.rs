@@ -5,7 +5,7 @@ use crate::metrics::MetricsUser;
 use crate::request_log::Trace;
 use crate::providers::Provider;
 use crate::router::engine::{Candidate, InFlightGuard, Router, RouterError};
-use crate::router::errors::keep_useful;
+use crate::router::errors::{keep_useful, FailureLog};
 use crate::ProviderError;
 
 /// Outcome of one provider attempt, before metrics are recorded.
@@ -97,6 +97,7 @@ impl Router {
     {
         let start = Instant::now();
         let mut last_error: Option<RouterError> = None;
+        let mut failures = FailureLog::default();
         let mut attempt: u32 = 0;
 
         for Candidate { provider, model: resolved_model, route } in candidates {
@@ -167,6 +168,7 @@ impl Router {
                     attempt += 1;
                     self.metrics_store.emitter().emit_provider_error(&provider_name, model, &e, user.clone());
 
+                    failures.push(&provider_name, &e);
                     last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
                     if !e.is_transient() {
@@ -189,6 +191,7 @@ impl Router {
             }
         }
 
+        failures.warn(model, op);
         AttemptRun {
             result: None,
             attempts: attempt,

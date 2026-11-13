@@ -26,6 +26,8 @@ pub struct ApiErrorDetail {
     pub limit_bytes: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_available_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_seconds: Option<u64>,
 }
 
 impl ApiError {
@@ -37,6 +39,7 @@ impl ApiError {
                 code: Some("request_too_large".into()),
                 limit_bytes: Some(limit_bytes),
                 next_available_at: None,
+                retry_after_seconds: None,
             },
         }
     }
@@ -49,6 +52,7 @@ impl ApiError {
                 code: None,
                 limit_bytes: None,
                 next_available_at: None,
+                retry_after_seconds: None,
             },
         }
     }
@@ -61,6 +65,7 @@ impl ApiError {
                 code: None,
                 limit_bytes: None,
                 next_available_at: None,
+                retry_after_seconds: None,
             },
         }
     }
@@ -142,8 +147,26 @@ fn upstream_message(body: &str) -> String {
         .unwrap_or_else(|_| body.to_string())
 }
 
-pub fn rate_limited(e: &RouterError) -> Option<HandlerError> {
-    let retry_ms = e.rate_limit_retry_ms()?;
+pub const OUTAGE_RETRY_SECS: u64 = 30;
+
+pub fn failure_response(e: &RouterError, cap_ms: Option<u64>) -> Option<HandlerError> {
+    if e.is_outage() {
+        let body = ApiError {
+            error: ApiErrorDetail {
+                message: format!("Upstream provider outage, retry shortly: {e}"),
+                error_type: "upstream_unavailable".into(),
+                code: Some("provider_outage".into()),
+                limit_bytes: None,
+                next_available_at: None,
+                retry_after_seconds: Some(OUTAGE_RETRY_SECS),
+            },
+        };
+        return Some((StatusCode::SERVICE_UNAVAILABLE, serde_json::to_string(&body).unwrap_or_default()));
+    }
+    let mut retry_ms = e.rate_limit_retry_ms()?;
+    if let Some(cap) = cap_ms {
+        retry_ms = retry_ms.min(cap);
+    }
     let next_available_at = chrono::Utc::now().timestamp_millis() + retry_ms as i64;
     let body = ApiError {
         error: ApiErrorDetail {
@@ -152,13 +175,14 @@ pub fn rate_limited(e: &RouterError) -> Option<HandlerError> {
             code: Some("rate_limit_exceeded".into()),
             limit_bytes: None,
             next_available_at: Some(next_available_at),
+            retry_after_seconds: Some(retry_ms.div_ceil(1000)),
         },
     };
     Some((StatusCode::TOO_MANY_REQUESTS, serde_json::to_string(&body).unwrap_or_default()))
 }
 
 pub fn router_error(e: RouterError, capability: &str) -> HandlerError {
-    if let Some(limited) = rate_limited(&e) {
+    if let Some(limited) = failure_response(&e, None) {
         return limited;
     }
     match &e {
