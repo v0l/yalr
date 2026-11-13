@@ -31,6 +31,8 @@ pub struct ProviderResponse {
     pub client_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_client_version: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<crate::db::ExtraBody>,
 }
 
 #[derive(Serialize)]
@@ -94,6 +96,8 @@ pub struct ProviderCreateRequest {
     pub base_url: String,
     pub api_key: String,
     pub provider_type: String,
+    #[serde(default)]
+    pub extra_body: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -104,6 +108,8 @@ pub struct ProviderUpdateRequest {
     pub api_key: Option<String>,
     pub provider_type: Option<String>,
     pub client_version: Option<String>,
+    #[serde(default)]
+    pub extra_body: Option<serde_json::Value>,
 }
 
 #[axum::debug_handler]
@@ -157,6 +163,7 @@ pub async fn list_providers(State(state): State<std::sync::Arc<AppState>>) -> Js
             };
 
             ProviderResponse {
+                extra_body: p.extra_body_map(),
                 id: p.id,
                 name: p.name.clone(),
                 slug: p.slug.clone(),
@@ -188,6 +195,7 @@ pub async fn create_provider(
 
     let provider_type = ProviderType::from_str(&request.provider_type)
         .unwrap_or(ProviderType::OpenAi);
+    let extra_body = crate::api::shared::parse_extra_body(request.extra_body.clone())?;
 
     let new_provider = crate::db::NewProvider {
         name: &request.name,
@@ -199,6 +207,11 @@ pub async fn create_provider(
 
     let created = state.config.db.create_provider(new_provider).await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if let Some(body) = &extra_body {
+        state.config.db.set_provider_extra_body(created.id, Some(body)).await
+            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
 
     state.config.router.reload_config().await
         .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -397,6 +410,7 @@ pub async fn update_provider(
 
     let provider_type = request.provider_type.as_deref()
         .and_then(ProviderType::from_str);
+    let extra_body = crate::api::shared::parse_extra_body(request.extra_body.clone())?;
 
     let api_key = request.api_key.as_deref().map(Some);
 
@@ -418,6 +432,13 @@ pub async fn update_provider(
         None => updated,
     };
 
+    let updated = if request.extra_body.is_some() {
+        state.config.db.set_provider_extra_body(updated.id, extra_body.as_ref()).await
+            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    } else {
+        updated
+    };
+
     state.config.router.reload_config().await
         .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -437,6 +458,7 @@ pub async fn update_provider(
     };
 
     Ok(Json(ProviderResponse {
+        extra_body: updated.extra_body_map(),
         id: updated.id,
         name: updated.name,
         slug: updated.slug,

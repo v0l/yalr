@@ -63,6 +63,8 @@ pub struct RoutingConfigProviderCreateRequest {
     pub model: Option<String>,
     pub weight: i32,
     pub is_active: bool,
+    #[serde(default)]
+    pub extra_body: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -70,6 +72,8 @@ pub struct RoutingConfigProviderUpdateRequest {
     pub model: Option<String>,
     pub weight: Option<i32>,
     pub is_active: Option<bool>,
+    #[serde(default)]
+    pub extra_body: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -107,6 +111,8 @@ pub struct RoutingConfigProviderFullResponse {
     pub model: Option<String>,
     pub weight: i32,
     pub is_active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<crate::db::ExtraBody>,
     pub created_at: crate::db::Timestamp,
     pub updated_at: crate::db::Timestamp,
 }
@@ -144,6 +150,7 @@ fn provider_responses(
                 model: rp.model.clone(),
                 weight: rp.weight,
                 is_active: rp.is_active,
+                extra_body: rp.extra_body_map(),
                 created_at: rp.created_at,
                 updated_at: rp.updated_at,
             }
@@ -365,6 +372,7 @@ pub async fn create_routing_config_provider(
     Json(request): Json<RoutingConfigProviderCreateRequest>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let bad_request = |message: &str| (axum::http::StatusCode::BAD_REQUEST, message.to_string());
+    let extra_body = crate::api::shared::parse_extra_body(request.extra_body.clone())?;
     let created = match (request.provider_id, request.config_id) {
         (Some(provider_id), None) => {
             let rcp = crate::db::NewRoutingConfigProvider {
@@ -399,7 +407,15 @@ pub async fn create_routing_config_provider(
         _ => return Err(bad_request("Provide exactly one of provider_id or config_id")),
     };
 
-    match created.map(|_| ()) {        Ok(_) => {
+    let created = match (created, extra_body) {
+        (Ok(entry), Some(body)) => {
+            state.config.db.set_routing_config_provider_extra_body(entry.id, Some(&body)).await
+        }
+        (created, _) => created,
+    };
+
+    match created.map(|_| ()) {
+        Ok(_) => {
             state.config.router.reload_config().await
                 .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             Ok(Json(serde_json::json!({
@@ -419,13 +435,22 @@ pub async fn update_routing_config_provider(
     State(state): State<std::sync::Arc<AppState>>,
     Json(request): Json<RoutingConfigProviderUpdateRequest>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let extra_body = crate::api::shared::parse_extra_body(request.extra_body.clone())?;
     let updates = crate::db::UpdateRoutingConfigProvider {
         model: request.model.clone(),
         weight: request.weight,
         is_active: request.is_active,
     };
 
-    match state.config.db.update_routing_config_provider(id, updates).await {
+    let updated = state.config.db.update_routing_config_provider(id, updates).await;
+    let updated = match (updated, request.extra_body.is_some()) {
+        (Ok(entry), true) => {
+            state.config.db.set_routing_config_provider_extra_body(entry.id, extra_body.as_ref()).await
+        }
+        (updated, _) => updated,
+    };
+
+    match updated {
         Ok(_) => {
             state.config.router.reload_config().await
                 .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

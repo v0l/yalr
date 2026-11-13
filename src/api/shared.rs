@@ -9,6 +9,15 @@ use crate::ProviderError;
 
 // ── Shared types used across API handlers ────────────────────────────
 
+pub fn parse_extra_body(
+    value: Option<serde_json::Value>,
+) -> Result<Option<crate::db::ExtraBody>, (StatusCode, String)> {
+    match value {
+        None => Ok(None),
+        Some(value) => crate::db::validate_extra_body(value).map_err(|e| (StatusCode::BAD_REQUEST, e)),
+    }
+}
+
 /// API error response body.
 #[derive(Serialize)]
 pub struct ApiError {

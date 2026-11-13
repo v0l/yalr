@@ -1897,6 +1897,9 @@ impl Clone for RouterError {
 mod nested_tests;
 
 #[cfg(test)]
+mod extra_body_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::providers::openai::OpenAiProvider;
