@@ -22,6 +22,7 @@ pub mod modalities;
 pub mod model_cache;
 pub mod model_pricing;
 pub mod models;
+pub mod my_providers;
 pub mod oauth;
 pub mod providers;
 pub mod request_log;

@@ -158,6 +158,10 @@ pub async fn run_with_shutdown<F>(
     let protected_routes = Router::new()
         .route("/auth/status", get(auth_status))
         .route("/auth/logout", post(logout))
+        .route("/my/providers", get(crate::api::my_providers::list).post(crate::api::my_providers::create))
+        .route("/my/providers/:slug", put(crate::api::my_providers::update).delete(crate::api::my_providers::delete))
+        .route("/my/providers/:slug/health", post(crate::api::my_providers::health))
+        .route("/my/providers/:slug/models", get(crate::api::my_providers::models))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let admin_routes = Router::new()
@@ -353,6 +357,10 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
     let protected_routes = Router::new()
         .route("/auth/status", get(auth_status))
         .route("/auth/logout", post(logout))
+        .route("/my/providers", get(crate::api::my_providers::list).post(crate::api::my_providers::create))
+        .route("/my/providers/:slug", put(crate::api::my_providers::update).delete(crate::api::my_providers::delete))
+        .route("/my/providers/:slug/health", post(crate::api::my_providers::health))
+        .route("/my/providers/:slug/models", get(crate::api::my_providers::models))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let admin_routes = Router::new()

@@ -11,6 +11,7 @@ mod metrics_history;
 mod modalities;
 mod nesting;
 mod nostr_identity;
+mod ownership;
 mod payments;
 mod pricing;
 mod providers;

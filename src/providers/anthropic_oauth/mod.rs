@@ -624,6 +624,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
             oauth_account_id: None,
             client_version: None,
             extra_body: None,
+            owner_user_id: None,
             created_at: Default::default(),
             updated_at: Default::default(),
         };

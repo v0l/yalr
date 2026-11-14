@@ -98,6 +98,8 @@ pub struct Provider {
     pub client_version: Option<String>,
     #[sqlx(default)]
     pub extra_body: Option<String>,
+    #[sqlx(default)]
+    pub owner_user_id: Option<i64>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }

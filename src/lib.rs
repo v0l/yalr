@@ -13,6 +13,7 @@ pub mod providers;
 pub mod request_log;
 pub mod router;
 pub mod serving;
+pub mod ssrf;
 pub mod state;
 pub mod usage;
 

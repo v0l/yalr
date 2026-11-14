@@ -28,6 +28,7 @@ pub mod audio;
 pub mod cache_key;
 pub mod compress;
 pub mod decision;
+pub mod guarded;
 pub mod image;
 pub mod llamacpp;
 pub mod ollama;
@@ -170,6 +171,9 @@ pub fn create_provider_from_record(
             other,
         ),
     }?;
+    if record.owner_user_id.is_some() {
+        return Some(guarded::GuardedProvider::wrap(provider, &record.base_url));
+    }
     Some(provider)
 }
 
