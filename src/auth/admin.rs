@@ -288,12 +288,12 @@ fn original_path(req: &Request) -> &str {
         .unwrap_or_else(|| req.uri().path())
 }
 
-async fn nostr_user(
+pub(crate) fn verified_pubkey(
     state: &Arc<AppState>,
     header: &str,
     method: &str,
     path: &str,
-) -> Result<User, StatusCode> {
+) -> Result<String, StatusCode> {
     use base64::prelude::BASE64_STANDARD;
     use base64::Engine;
     use nostr::{Event, JsonUtil};
@@ -311,7 +311,16 @@ async fn nostr_user(
     if !allowed.is_empty() && !allowed.contains(&pubkey) {
         return Err(StatusCode::FORBIDDEN);
     }
+    Ok(pubkey)
+}
 
+async fn nostr_user(
+    state: &Arc<AppState>,
+    header: &str,
+    method: &str,
+    path: &str,
+) -> Result<User, StatusCode> {
+    let pubkey = verified_pubkey(state, header, method, path)?;
     state
         .db
         .get_or_create_user_by_nostr_pubkey(&pubkey)

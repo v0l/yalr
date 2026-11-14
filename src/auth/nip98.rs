@@ -11,10 +11,16 @@ use std::collections::HashSet;
 const DEFAULT_EXPIRATION_SECS: u64 = 60 * 10; // 10 minutes
 
 #[derive(Clone)]
-#[derive(Default)]
 pub struct AuthConfig {
     pub enabled: bool,
     pub allowed_pubkeys: HashSet<String>,
+    pub open_registration: bool,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self { enabled: false, allowed_pubkeys: HashSet::new(), open_registration: true }
+    }
 }
 
 

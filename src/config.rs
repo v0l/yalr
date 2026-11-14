@@ -143,6 +143,8 @@ impl Default for DatabaseConfig {
 pub struct AuthConfig {
     pub enabled: bool,
     pub allowed_pubkeys: Option<Vec<String>>,
+    #[serde(default = "default_true")]
+    pub open_registration: bool,
 }
 
 impl Default for Config {
@@ -280,6 +282,7 @@ impl AppConfig {
                 allowed_pubkeys: a.allowed_pubkeys
                     .map(|keys| keys.into_iter().collect())
                     .unwrap_or_default(),
+                open_registration: a.open_registration,
             }
         }).unwrap_or_default();
 
