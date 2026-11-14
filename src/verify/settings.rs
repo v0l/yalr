@@ -14,6 +14,14 @@ pub struct VerificationConfig {
     pub min_prefix_tokens: u32,
     #[serde(default = "default_max_logprob_gap")]
     pub max_logprob_gap: f32,
+    #[serde(default = "default_min_probe_prefix")]
+    pub min_probe_prefix_tokens: u32,
+    #[serde(default = "default_hard_divergence")]
+    pub hard_divergence_nats: f32,
+    #[serde(default = "default_max_hard")]
+    pub max_hard_divergences: usize,
+    #[serde(default = "default_max_mean_divergence")]
+    pub max_mean_divergence: f32,
     #[serde(default = "default_random_probes")]
     pub random_probes: usize,
     #[serde(default = "default_timeout_secs")]
@@ -35,11 +43,27 @@ fn default_probe_max_tokens() -> u32 {
 }
 
 fn default_min_prefix_tokens() -> u32 {
-    16
+    8
 }
 
 fn default_max_logprob_gap() -> f32 {
-    0.5
+    0.15
+}
+
+fn default_min_probe_prefix() -> u32 {
+    1
+}
+
+fn default_hard_divergence() -> f32 {
+    4.0
+}
+
+fn default_max_hard() -> usize {
+    1
+}
+
+fn default_max_mean_divergence() -> f32 {
+    1.0
 }
 
 fn default_random_probes() -> usize {
@@ -65,6 +89,10 @@ impl Default for VerificationConfig {
             probe_max_tokens: default_probe_max_tokens(),
             min_prefix_tokens: default_min_prefix_tokens(),
             max_logprob_gap: default_max_logprob_gap(),
+            min_probe_prefix_tokens: default_min_probe_prefix(),
+            hard_divergence_nats: default_hard_divergence(),
+            max_hard_divergences: default_max_hard(),
+            max_mean_divergence: default_max_mean_divergence(),
             random_probes: default_random_probes(),
             request_timeout_secs: default_timeout_secs(),
             request_extras: default_extras(),

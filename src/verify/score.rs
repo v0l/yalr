@@ -6,7 +6,7 @@ use super::settings::VerificationConfig;
 pub struct TokenLogprob {
     pub token: String,
     pub logprob: f32,
-    pub top: Vec<String>,
+    pub top: Vec<(String, f32)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -15,6 +15,7 @@ pub struct Sample {
     pub tokens: Vec<TokenLogprob>,
     pub prompt_tokens: Option<u32>,
     pub completion_tokens: Option<u32>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +30,12 @@ pub struct ProbeResult {
     pub identical: bool,
     pub logprob_gap: Option<f32>,
     pub top5_overlap: Option<f32>,
+    #[serde(default)]
+    pub divergence: Option<f32>,
+    #[serde(default)]
+    pub divergence_at: Option<u32>,
+    #[serde(default)]
+    pub candidate_logprobs: bool,
     pub prompt_tokens: Option<u32>,
     pub reference_prompt_tokens: Option<u32>,
     pub task_passed: Option<bool>,
@@ -45,6 +52,16 @@ pub struct Scores {
     pub tasks_failed: usize,
     pub mean_logprob_gap: Option<f32>,
     pub mean_top5_overlap: Option<f32>,
+    #[serde(default)]
+    pub min_prefix: Option<u32>,
+    #[serde(default)]
+    pub divergence_probes: usize,
+    #[serde(default)]
+    pub divergence_hard: usize,
+    #[serde(default)]
+    pub mean_divergence: Option<f32>,
+    #[serde(default)]
+    pub candidate_logprobs: bool,
     pub errors: usize,
 }
 
@@ -52,6 +69,7 @@ pub struct Scores {
 pub struct Judgement {
     pub passed: bool,
     pub inconclusive: bool,
+    pub needs_review: bool,
     pub reason: String,
     pub scores: Scores,
 }
@@ -85,7 +103,7 @@ pub fn compare(candidate: &Sample, reference: &Sample, max_tokens: u32) -> Compa
         .iter()
         .filter(|(a, b)| !a.top.is_empty() && !b.top.is_empty())
         .map(|(a, b)| {
-            let shared = a.top.iter().filter(|t| b.top.contains(t)).count();
+            let shared = a.top.iter().filter(|(t, _)| b.top.iter().any(|(u, _)| u == t)).count();
             shared as f32 / a.top.len().max(b.top.len()) as f32
         })
         .collect();
@@ -128,42 +146,39 @@ fn mean(values: Vec<f32>) -> Option<f32> {
     (!values.is_empty()).then(|| values.iter().sum::<f32>() / values.len() as f32)
 }
 
-pub fn judge(results: &[ProbeResult], config: &VerificationConfig) -> Judgement {
-    let answered: Vec<&ProbeResult> = results.iter().filter(|r| r.error.is_none()).collect();
-    let errors = results.len() - answered.len();
-    let compared: Vec<&&ProbeResult> =
-        answered.iter().filter(|r| r.fixed && r.prompt_tokens.is_some() && r.reference_prompt_tokens.is_some()).collect();
-    let mismatched = compared.iter().filter(|r| r.prompt_tokens != r.reference_prompt_tokens).count();
-    let tasks: Vec<&&ProbeResult> = answered.iter().filter(|r| r.task_passed.is_some()).collect();
-    let tasks_failed = tasks.iter().filter(|r| r.task_passed == Some(false)).count();
-    let scores = Scores {
-        probes: results.len(),
-        median_prefix: median(answered.iter().map(|r| r.prefix_score as f32).collect()),
-        prompt_tokens_compared: compared.len(),
-        prompt_tokens_mismatched: mismatched,
-        tasks_total: tasks.len(),
-        tasks_failed,
-        mean_logprob_gap: mean(answered.iter().filter_map(|r| r.logprob_gap).collect()),
-        mean_top5_overlap: mean(answered.iter().filter_map(|r| r.top5_overlap).collect()),
-        errors,
-    };
-
-    if answered.len() * 2 < results.len() || answered.is_empty() {
-        return Judgement {
-            passed: false,
-            inconclusive: true,
-            reason: format!("{errors} of {} probes errored", results.len()),
-            scores,
-        };
-    }
-
+fn failures(results: &[&ProbeResult], scores: &Scores, config: &VerificationConfig) -> Vec<String> {
     let mut failures = Vec::new();
-    if mismatched > 0 {
-        failures.push(format!("prompt token counts differ from the reference on {mismatched} of {} prompts", compared.len()));
+    if scores.prompt_tokens_mismatched > 0 {
+        failures.push(format!(
+            "prompt token counts differ from the reference on {} of {} prompts",
+            scores.prompt_tokens_mismatched, scores.prompt_tokens_compared
+        ));
     }
-    if tasks_failed > 0 {
-        let names: Vec<&str> = tasks.iter().filter(|r| r.task_passed == Some(false)).map(|r| r.id.as_str()).collect();
-        failures.push(format!("{tasks_failed} task probes failed ({})", names.join(", ")));
+    if scores.tasks_failed > 0 {
+        let names: Vec<&str> = results.iter().filter(|r| r.task_passed == Some(false)).map(|r| r.id.as_str()).collect();
+        failures.push(format!("{} task probes failed ({})", scores.tasks_failed, names.join(", ")));
+    }
+    if scores.divergence_hard > config.max_hard_divergences {
+        let names: Vec<&str> = results
+            .iter()
+            .filter(|r| r.divergence.is_some_and(|d| d > config.hard_divergence_nats))
+            .map(|r| r.id.as_str())
+            .collect();
+        failures.push(format!(
+            "{} probes left the reference's likely tokens by more than {} nats ({})",
+            scores.divergence_hard, config.hard_divergence_nats, names.join(", ")
+        ));
+    }
+    if let Some(mean) = scores.mean_divergence.filter(|m| *m > config.max_mean_divergence) {
+        failures.push(format!("mean divergence {mean:.2} nats is over {}", config.max_mean_divergence));
+    }
+    if scores.candidate_logprobs {
+        if let Some(gap) = scores.mean_logprob_gap.filter(|g| *g > config.max_logprob_gap) {
+            failures.push(format!("logprob gap {gap:.2} is over {} nats", config.max_logprob_gap));
+        }
+        if let Some(min) = scores.min_prefix.filter(|m| *m < config.min_probe_prefix_tokens) {
+            failures.push(format!("a probe agreed on only {min} tokens, under {}", config.min_probe_prefix_tokens));
+        }
     }
     if scores.median_prefix < config.min_prefix_tokens as f32 {
         failures.push(format!(
@@ -171,8 +186,57 @@ pub fn judge(results: &[ProbeResult], config: &VerificationConfig) -> Judgement 
             scores.median_prefix, config.min_prefix_tokens
         ));
     }
-    if let Some(gap) = scores.mean_logprob_gap.filter(|g| *g >= config.max_logprob_gap) {
-        failures.push(format!("logprob gap {gap:.2} is not under {} nats", config.max_logprob_gap));
+    failures
+}
+
+pub fn judge(results: &[ProbeResult], config: &VerificationConfig) -> Judgement {
+    let answered: Vec<&ProbeResult> = results.iter().filter(|r| r.error.is_none()).collect();
+    let errors = results.len() - answered.len();
+    let compared: Vec<&&ProbeResult> =
+        answered.iter().filter(|r| r.fixed && r.prompt_tokens.is_some() && r.reference_prompt_tokens.is_some()).collect();
+    let tasks: Vec<&&ProbeResult> = answered.iter().filter(|r| r.task_passed.is_some()).collect();
+    let divergences: Vec<f32> = answered.iter().filter_map(|r| r.divergence).collect();
+    let candidate_logprobs = !answered.is_empty() && answered.iter().all(|r| r.candidate_logprobs);
+    let scores = Scores {
+        probes: results.len(),
+        median_prefix: median(answered.iter().map(|r| r.prefix_score as f32).collect()),
+        prompt_tokens_compared: compared.len(),
+        prompt_tokens_mismatched: compared.iter().filter(|r| r.prompt_tokens != r.reference_prompt_tokens).count(),
+        tasks_total: tasks.len(),
+        tasks_failed: tasks.iter().filter(|r| r.task_passed == Some(false)).count(),
+        mean_logprob_gap: mean(answered.iter().filter_map(|r| r.logprob_gap).collect()),
+        mean_top5_overlap: mean(answered.iter().filter_map(|r| r.top5_overlap).collect()),
+        min_prefix: answered.iter().filter(|r| r.task_passed.is_some()).map(|r| r.prefix_score).min(),
+        divergence_probes: divergences.len(),
+        divergence_hard: divergences.iter().filter(|d| **d > config.hard_divergence_nats).count(),
+        mean_divergence: mean(divergences),
+        candidate_logprobs,
+        errors,
+    };
+
+    if answered.len() * 2 < results.len() || answered.is_empty() {
+        return Judgement {
+            passed: false,
+            inconclusive: true,
+            needs_review: false,
+            reason: format!("{errors} of {} probes errored", results.len()),
+            scores,
+        };
     }
-    Judgement { passed: failures.is_empty(), inconclusive: false, reason: failures.join("; "), scores }
+
+    let failures = failures(&answered, &scores, config);
+    if !failures.is_empty() {
+        return Judgement { passed: false, inconclusive: false, needs_review: false, reason: failures.join("; "), scores };
+    }
+    let reference_logprobs = scores.divergence_probes * 2 >= answered.len();
+    if reference_logprobs && !candidate_logprobs {
+        return Judgement {
+            passed: false,
+            inconclusive: false,
+            needs_review: true,
+            reason: "the provider returns no logprobs, so a sibling model cannot be ruled out; an admin has to review it".to_string(),
+            scores,
+        };
+    }
+    Judgement { passed: true, inconclusive: false, needs_review: false, reason: String::new(), scores }
 }

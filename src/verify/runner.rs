@@ -3,10 +3,11 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use super::divergence::divergence;
 use super::probes::{draw_probes, Probe};
 use super::score::{compare, judge, ProbeResult, Sample, Scores, TokenLogprob};
 use super::settings::VerificationConfig;
-use super::{OUTCOME_ERROR, OUTCOME_FAILED, OUTCOME_PASSED, OUTCOME_REFERENCE_ERROR};
+use super::{OUTCOME_ERROR, OUTCOME_FAILED, OUTCOME_NEEDS_REVIEW, OUTCOME_PASSED, OUTCOME_REFERENCE_ERROR};
 use crate::providers::{ChatRequest, Provider};
 
 #[derive(Debug, Clone)]
@@ -34,7 +35,7 @@ impl ModelReport {
     }
 
     pub fn is_conclusive(&self) -> bool {
-        self.outcome == OUTCOME_PASSED || self.outcome == OUTCOME_FAILED
+        self.outcome == OUTCOME_PASSED || self.outcome == OUTCOME_FAILED || self.outcome == OUTCOME_NEEDS_REVIEW
     }
 }
 
@@ -47,7 +48,7 @@ struct Message<'a> {
 #[derive(Serialize)]
 struct ProbeBody<'a> {
     model: &'a str,
-    messages: [Message<'a>; 1],
+    messages: Vec<Message<'a>>,
     temperature: f32,
     seed: i64,
     max_tokens: u32,
@@ -59,10 +60,15 @@ struct ProbeBody<'a> {
     extras: &'a std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-fn request(model: &str, prompt: &str, config: &VerificationConfig, with_logprobs: bool) -> Result<ChatRequest, String> {
+fn request(model: &str, probe: &Probe, config: &VerificationConfig, with_logprobs: bool) -> Result<ChatRequest, String> {
+    let mut messages = Vec::new();
+    if let Some(system) = probe.system.as_deref() {
+        messages.push(Message { role: "system", content: system });
+    }
+    messages.push(Message { role: "user", content: &probe.prompt });
     let body = ProbeBody {
         model,
-        messages: [Message { role: "user", content: prompt }],
+        messages,
         temperature: 0.0,
         seed: 1,
         max_tokens: config.probe_max_tokens,
@@ -87,7 +93,7 @@ fn sample_of(response: &crate::providers::ChatResponse) -> Sample {
                 .map(|t| TokenLogprob {
                     token: t.token.clone(),
                     logprob: t.logprob,
-                    top: t.top_logprobs.iter().map(|top| top.token.clone()).collect(),
+                    top: t.top_logprobs.iter().map(|top| (top.token.clone(), top.logprob)).collect(),
                 })
                 .collect()
         })
@@ -97,19 +103,20 @@ fn sample_of(response: &crate::providers::ChatResponse) -> Sample {
         tokens,
         prompt_tokens: inner.usage.as_ref().map(|u| u.prompt_tokens),
         completion_tokens: inner.usage.as_ref().map(|u| u.completion_tokens),
+        truncated: choice.and_then(|c| c.finish_reason).is_some_and(|r| r == async_openai::types::chat::FinishReason::Length),
     }
 }
 
 async fn sample(
     provider: &Arc<dyn Provider>,
     model: &str,
-    prompt: &str,
+    probe: &Probe,
     config: &VerificationConfig,
 ) -> Result<Sample, String> {
     let timeout = Duration::from_secs(config.request_timeout_secs);
     let mut last = String::new();
     for with_logprobs in [true, false] {
-        let req = request(model, prompt, config, with_logprobs)?;
+        let req = request(model, probe, config, with_logprobs)?;
         match tokio::time::timeout(timeout, provider.chat_completions(&req)).await {
             Ok(Ok(response)) => return Ok(sample_of(&response)),
             Ok(Err(e)) => last = e.to_string(),
@@ -124,8 +131,8 @@ struct Side {
     error: Option<String>,
 }
 
-async fn side(provider: &Arc<dyn Provider>, model: &str, prompt: &str, config: &VerificationConfig) -> Side {
-    match sample(provider, model, prompt, config).await {
+async fn side(provider: &Arc<dyn Provider>, model: &str, probe: &Probe, config: &VerificationConfig) -> Side {
+    match sample(provider, model, probe, config).await {
         Ok(s) => Side { sample: Some(s), error: None },
         Err(e) => Side { sample: None, error: Some(e) },
     }
@@ -140,8 +147,8 @@ async fn run_probe(
     config: &VerificationConfig,
 ) -> (ProbeResult, bool) {
     let (cand, refr) = futures::join!(
-        side(candidate, candidate_model, &probe.prompt, config),
-        side(reference, reference_model, &probe.prompt, config)
+        side(candidate, candidate_model, &probe, config),
+        side(reference, reference_model, &probe, config)
     );
     let reference_failed = refr.error.is_some();
     let mut result = ProbeResult {
@@ -155,6 +162,9 @@ async fn run_probe(
         identical: false,
         logprob_gap: None,
         top5_overlap: None,
+        divergence: None,
+        divergence_at: None,
+        candidate_logprobs: false,
         prompt_tokens: None,
         reference_prompt_tokens: None,
         task_passed: None,
@@ -167,6 +177,11 @@ async fn run_probe(
         result.identical = cmp.identical;
         result.logprob_gap = cmp.logprob_gap;
         result.top5_overlap = cmp.top5_overlap;
+        if let Some(d) = divergence(c, r) {
+            result.divergence = Some(d.cost);
+            result.divergence_at = Some(d.position);
+        }
+        result.candidate_logprobs = !c.tokens.is_empty();
         result.prompt_tokens = c.prompt_tokens;
         result.reference_prompt_tokens = r.prompt_tokens;
         result.output = c.text.clone();
@@ -185,11 +200,25 @@ pub async fn verify_model(
     reference_model: &str,
     config: &VerificationConfig,
 ) -> ModelReport {
-    let probes = draw_probes(config.random_probes);
+    run_probes(draw_probes(config.random_probes), candidate, candidate_model, reference, reference_model, config).await
+}
+
+pub async fn run_probes(
+    probes: Vec<Probe>,
+    candidate: &Arc<dyn Provider>,
+    candidate_model: &str,
+    reference: &Arc<dyn Provider>,
+    reference_model: &str,
+    config: &VerificationConfig,
+) -> ModelReport {
     let outcomes = futures::future::join_all(probes.into_iter().map(|probe| {
         run_probe(probe, candidate, candidate_model, reference, reference_model, config)
     }))
     .await;
+    report_from(candidate_model, outcomes, config)
+}
+
+fn report_from(candidate_model: &str, outcomes: Vec<(ProbeResult, bool)>, config: &VerificationConfig) -> ModelReport {
     let reference_failures = outcomes.iter().filter(|(_, failed)| *failed).count();
     let results: Vec<ProbeResult> = outcomes.into_iter().map(|(r, _)| r).collect();
     if reference_failures * 2 > results.len() {
@@ -204,6 +233,8 @@ pub async fn verify_model(
     let judgement = judge(&results, config);
     let outcome = if judgement.inconclusive {
         OUTCOME_ERROR
+    } else if judgement.needs_review {
+        OUTCOME_NEEDS_REVIEW
     } else if judgement.passed {
         OUTCOME_PASSED
     } else {

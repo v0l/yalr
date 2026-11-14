@@ -18,7 +18,10 @@ enum Behaviour {
     OtherModel,
     CachedFixed,
     Down,
+    Sibling,
 }
+
+const SIBLING_PROMPTS: &[&str] = &["Which model are you", "What is your knowledge cutoff", "Introduce yourself"];
 
 struct Fake {
     slug: String,
@@ -34,7 +37,8 @@ fn filler(prompt: &str, salt: &str) -> Vec<String> {
 
 fn prompt_of(request: &ChatRequest) -> String {
     let value = serde_json::to_value(request.inner()).unwrap();
-    value["messages"][0]["content"].as_str().unwrap().to_string()
+    let messages = value["messages"].as_array().unwrap();
+    messages.last().unwrap()["content"].as_str().unwrap().to_string()
 }
 
 impl Fake {
@@ -44,6 +48,12 @@ impl Fake {
 
     fn pieces(&self, prompt: &str) -> Vec<String> {
         let fixed = fixed_probes().iter().any(|p| p.prompt == prompt);
+        if self.behaviour == Behaviour::Sibling && SIBLING_PROMPTS.iter().any(|p| prompt.starts_with(p)) {
+            let mut pieces = filler(prompt, "");
+            pieces.truncate(3);
+            pieces.push("Qwen3.6".to_string());
+            return pieces;
+        }
         match self.behaviour {
             Behaviour::OtherModel => match expected_output(prompt) {
                 Some(_) => vec!["banana".to_string()],
@@ -55,9 +65,7 @@ impl Fake {
                 None => {
                     let mut pieces = filler(prompt, "");
                     if self.behaviour == Behaviour::Drifting {
-                        for piece in pieces.iter_mut().skip(20) {
-                            piece.push('!');
-                        }
+                        pieces[20] = "a".to_string();
                     }
                     pieces
                 }
@@ -92,20 +100,30 @@ impl Provider for Fake {
         }
         let wants_logprobs = value["logprobs"] == true && value["top_logprobs"] == 5;
         let prompt = prompt_of(request);
-        let pieces = self.pieces(&prompt);
-        let tokens: Vec<serde_json::Value> = pieces
+        let pieces: Vec<String> = self
+            .pieces(&prompt)
+            .into_iter()
+            .enumerate()
+            .map(|(i, piece)| if i == 0 { piece } else { format!(" {piece}") })
+            .collect();
+        let mut tokens: Vec<serde_json::Value> = pieces
             .iter()
             .enumerate()
             .map(|(i, piece)| {
+                let lp = -0.1 * (i % 3) as f64;
                 serde_json::json!({
-                    "token": piece, "logprob": -0.1 * (i % 3) as f64, "bytes": null,
-                    "top_logprobs": [{"token": piece, "logprob": -0.1, "bytes": null}, {"token": "a", "logprob": -2.0, "bytes": null}]
+                    "token": piece, "logprob": lp, "bytes": null,
+                    "top_logprobs": [{"token": piece, "logprob": lp, "bytes": null}, {"token": " a", "logprob": -0.6, "bytes": null}]
                 })
             })
             .collect();
+        tokens.push(serde_json::json!({
+            "token": "<|im_end|>", "logprob": -0.01, "bytes": null,
+            "top_logprobs": [{"token": "<|im_end|>", "logprob": -0.01, "bytes": null}, {"token": " a", "logprob": -5.0, "bytes": null}]
+        }));
         let mut choice = serde_json::json!({
             "index": 0, "finish_reason": "stop",
-            "message": {"role": "assistant", "content": pieces.join(" ")}
+            "message": {"role": "assistant", "content": pieces.concat()}
         });
         if wants_logprobs && self.logprobs {
             choice["logprobs"] = serde_json::json!({"content": tokens, "refusal": null});
@@ -220,6 +238,7 @@ async fn late_divergence_inside_tolerance_still_passes() {
     let reports = verify(&w, id).await;
     assert!(reports[0].passed, "{}", reports[0].reason);
     assert!(reports[0].scores.median_prefix >= 16.0);
+    assert!(reports[0].results.iter().any(|r| r.divergence_at == Some(20) && r.divergence.unwrap() > 0.0));
     assert_eq!(w.status(id).await, APPROVED);
 }
 
@@ -248,9 +267,10 @@ async fn cached_fixed_answers_fail_the_random_probes() {
     let id = w.user_provider(alice.id, Fake::new("alice-p", Behaviour::CachedFixed), PENDING).await;
     let reports = verify(&w, id).await;
     assert!(!reports[0].passed);
-    let random_failures: Vec<_> = reports[0].results.iter().filter(|r| !r.fixed && r.task_passed == Some(false)).collect();
-    assert_eq!(random_failures.len(), crate::verify::settings::get().random_probes);
-    assert!(reports[0].results.iter().filter(|r| r.fixed).all(|r| r.task_passed != Some(false)));
+    let random: Vec<_> = reports[0].results.iter().filter(|r| !r.fixed).collect();
+    assert_eq!(random.len(), crate::verify::settings::get().random_probes);
+    assert!(random.iter().all(|r| r.task_passed == Some(false) || r.divergence.is_some_and(|d| d > 4.0)));
+    assert!(reports[0].results.iter().filter(|r| r.fixed).all(|r| r.task_passed != Some(false) && r.divergence == Some(0.0)));
     assert_eq!(w.status(id).await, PENDING);
 }
 
@@ -263,15 +283,31 @@ async fn random_probes_change_between_runs() {
 }
 
 #[tokio::test]
-async fn a_provider_without_logprobs_is_compared_on_text() {
+async fn a_provider_without_logprobs_waits_for_admin_review() {
     let w = world().await;
     let alice = w.db.add_test_user("alice", false).await;
     w.reference(Fake::new("ref", Behaviour::Faithful)).await;
     let plain = Arc::new(Fake { slug: "alice-p".into(), behaviour: Behaviour::Faithful, logprobs: false, listed: None });
     let id = w.user_provider(alice.id, plain, PENDING).await;
     let reports = verify(&w, id).await;
-    assert!(reports[0].passed, "{}", reports[0].reason);
+    assert!(!reports[0].passed);
+    assert_eq!(reports[0].outcome, OUTCOME_NEEDS_REVIEW);
     assert!(reports[0].scores.mean_logprob_gap.is_none());
+    assert_eq!(reports[0].scores.divergence_hard, 0);
+    assert_eq!(w.status(id).await, PENDING);
+    let reason = w.db.get_provider_by_id(id).await.unwrap().unwrap().status_reason.unwrap();
+    assert!(reason.starts_with("needs admin review"), "{reason}");
+}
+
+#[tokio::test]
+async fn an_approved_provider_that_drops_logprobs_is_not_suspended() {
+    let w = world().await;
+    let alice = w.db.add_test_user("alice", false).await;
+    w.reference(Fake::new("ref", Behaviour::Faithful)).await;
+    let plain = Arc::new(Fake { slug: "alice-p".into(), behaviour: Behaviour::Faithful, logprobs: false, listed: None });
+    let id = w.user_provider(alice.id, plain, APPROVED).await;
+    verify(&w, id).await;
+    assert_eq!(w.status(id).await, APPROVED);
 }
 
 #[tokio::test]
@@ -355,4 +391,19 @@ async fn a_provider_that_serves_the_bare_model_name_is_probed_under_that_name() 
     let id = w.user_provider(alice.id, bare, PENDING).await;
     let reports = verify(&w, id).await;
     assert!(reports[0].passed, "{}", reports[0].reason);
+}
+
+#[tokio::test]
+async fn a_sibling_that_matches_except_on_version_probes_fails() {
+    let w = world().await;
+    let alice = w.db.add_test_user("alice", false).await;
+    w.reference(Fake::new("ref", Behaviour::Faithful)).await;
+    let id = w.user_provider(alice.id, Fake::new("alice-p", Behaviour::Sibling), PENDING).await;
+    let reports = verify(&w, id).await;
+    assert_eq!(reports[0].outcome, OUTCOME_FAILED, "{}", reports[0].reason);
+    assert_eq!(reports[0].scores.prompt_tokens_mismatched, 0);
+    assert_eq!(reports[0].scores.tasks_failed, 0);
+    assert_eq!(reports[0].scores.divergence_hard, 3);
+    assert!(reports[0].reason.contains("identity"), "{}", reports[0].reason);
+    assert_eq!(w.status(id).await, PENDING);
 }

@@ -118,7 +118,12 @@ fn decide(current: &Provider, reports: &[ModelReport]) -> Option<(&'static str, 
             .filter(|r| r.outcome != OUTCOME_PASSED)
             .map(|r| format!("{}: {}", r.model, r.reason))
             .collect();
-        return Some((PENDING, Some(format!("not verified yet: {}", waiting.join(" | ")))));
+        let label = if reports.iter().any(|r| r.outcome == super::OUTCOME_NEEDS_REVIEW) {
+            "needs admin review"
+        } else {
+            "not verified yet"
+        };
+        return Some((PENDING, Some(format!("{label}: {}", waiting.join(" | ")))));
     }
     None
 }
