@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import CurrencyCreditDialog from '@/components/mine/CurrencyCreditDialog'
+import { userApi } from '@/api/userApi'
 import { formatMilli, formatPrice } from '@/lib/money'
 import { api } from '../api/client'
 import type { UserBalanceEntry, BalanceTransaction, LightningInvoice, ModelPricingEntry, ModelPricingCreateRequest, Model } from '../types'
@@ -86,9 +86,10 @@ export default function Payments() {
   const [debitDialog, setDebitDialog] = useState(false)
   const [adjustForm, setAdjustForm] = useState({ user_id: 0, amount_sats: 0, reason: '' })
   const [adjustSaving, setAdjustSaving] = useState(false)
+  const [creditCurrency, setCreditCurrency] = useState('sats')
+  const [creditAmount, setCreditAmount] = useState('')
 
   /* Model Pricing */
-  const [fiatDialog, setFiatDialog] = useState(false)
   const [pricingDialog, setPricingDialog] = useState(false)
   const [editingModel, setEditingModel] = useState<string | null>(null)
   const [pricingForm, setPricingForm] = useState<ModelPricingCreateRequest>({
@@ -130,7 +131,16 @@ export default function Payments() {
 
   async function handleCredit() {
     setAdjustSaving(true)
-    try { await api.adminCredit({ user_id: adjustForm.user_id, amount_sats: adjustForm.amount_sats, reason: adjustForm.reason || undefined }); setCreditDialog(false); setSuccessMessage('CREDITED'); loadAll() }
+    const currency = creditCurrency.trim().toLowerCase()
+    const amount = Number(creditAmount)
+    try {
+      if (currency === 'sats') {
+        await api.adminCredit({ user_id: adjustForm.user_id, amount_sats: Math.round(amount), reason: adjustForm.reason || undefined })
+      } else {
+        await userApi.creditCurrency({ user_id: adjustForm.user_id, currency, amount_milli: Math.round(amount * 100_000), reason: adjustForm.reason || 'admin_credit' })
+      }
+      setCreditDialog(false); setSuccessMessage(`CREDITED ${currency.toUpperCase()}`); loadAll()
+    }
     catch (e) { setError(e instanceof Error ? e.message : 'Failed to credit') }
     finally { setAdjustSaving(false) }
   }
@@ -224,11 +234,8 @@ export default function Payments() {
       {activeTab === 'balances' && (
         <div className="space-y-4">
           <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => { setAdjustForm({ user_id: 0, amount_sats: 0, reason: '' }); setCreditDialog(true) }} className="font-mono text-[11px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20 h-8">
+            <Button size="sm" onClick={() => { setAdjustForm({ user_id: 0, amount_sats: 0, reason: '' }); setCreditCurrency('sats'); setCreditAmount(''); setCreditDialog(true) }} className="font-mono text-[11px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20 h-8">
               <PlusIcon className="size-3" /> Credit
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setFiatDialog(true)} className="font-mono text-[11px] tracking-wider uppercase border-brand/40 text-brand h-8">
-              <PlusIcon className="size-3" /> Credit fiat
             </Button>
             <Button size="sm" variant="outline" onClick={() => { setAdjustForm({ user_id: 0, amount_sats: 0, reason: '' }); setDebitDialog(true) }} className="font-mono text-[11px] tracking-wider uppercase border-border text-muted-foreground h-8">
               <PlusIcon className="size-3" /> Debit
@@ -411,7 +418,8 @@ export default function Payments() {
           </DialogHeader>
           <form onSubmit={e => { e.preventDefault(); handleCredit() }} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5"><Label htmlFor="cr-user" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">User ID</Label><Input id="cr-user" type="number" min={1} value={adjustForm.user_id || ''} onChange={e => setAdjustForm({ ...adjustForm, user_id: Number(e.target.value) })} required className="font-mono bg-surface border-border text-foreground" /></div>
-            <div className="flex flex-col gap-1.5"><Label htmlFor="cr-amount" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Amount (sats)</Label><Input id="cr-amount" type="number" min={1} value={adjustForm.amount_sats || ''} onChange={e => setAdjustForm({ ...adjustForm, amount_sats: Number(e.target.value) })} required className="font-mono bg-surface border-border text-foreground" /></div>
+            <div className="flex flex-col gap-1.5"><Label htmlFor="cr-currency" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Currency</Label><Input id="cr-currency" list="cr-currencies" value={creditCurrency} onChange={e => setCreditCurrency(e.target.value)} required className="font-mono bg-surface border-border text-foreground" /><datalist id="cr-currencies"><option value="sats" /><option value="usd" /></datalist></div>
+            <div className="flex flex-col gap-1.5"><Label htmlFor="cr-amount" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Amount ({creditCurrency.trim().toLowerCase() === 'sats' ? 'sats' : `whole ${creditCurrency.trim().toUpperCase() || 'currency'} units`})</Label><Input id="cr-amount" type="number" min={0.00001} step="any" value={creditAmount} onChange={e => setCreditAmount(e.target.value)} required className="font-mono bg-surface border-border text-foreground" /></div>
             <div className="flex flex-col gap-1.5"><Label htmlFor="cr-reason" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Reason</Label><Input id="cr-reason" value={adjustForm.reason} onChange={e => setAdjustForm({ ...adjustForm, reason: e.target.value })} placeholder="Optional" className="font-mono bg-surface border-border text-foreground" /></div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setCreditDialog(false)} disabled={adjustSaving} className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</Button>
@@ -440,7 +448,6 @@ export default function Payments() {
         </DialogContent>
       </Dialog>
 
-      <CurrencyCreditDialog open={fiatDialog} onOpenChange={setFiatDialog} onDone={m => { setSuccessMessage(m); loadAll() }} onError={setError} />
       <PricingDialog
         open={pricingDialog}
         onOpenChange={setPricingDialog}
