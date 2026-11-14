@@ -84,6 +84,29 @@ impl BalanceService {
         }
     }
 
+    pub async fn get_currency_balance(&self, user_id: i64, currency: &str) -> Result<i64, BalanceError> {
+        Ok(self.db.get_currency_balance(user_id, currency).await?)
+    }
+
+    pub async fn settle(&self, settlement: crate::db::Settlement<'_>) -> Result<crate::db::Settled, BalanceError> {
+        Ok(self.db.settle_usage(settlement).await?)
+    }
+
+    pub async fn credit_currency(
+        &self,
+        user_id: i64,
+        currency: &str,
+        amount: i64,
+        tx_type: &str,
+        reference_id: &str,
+    ) -> Result<i64, BalanceError> {
+        if amount <= 0 {
+            return Err(BalanceError::InvalidAmount(amount));
+        }
+        let deposited = if is_deposit(tx_type) { amount } else { 0 };
+        Ok(self.db.credit_currency(user_id, currency, amount, tx_type, reference_id, deposited).await?)
+    }
+
     /// Get recent transactions for a user.
     pub async fn get_transactions(
         &self,

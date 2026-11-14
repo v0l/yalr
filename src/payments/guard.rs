@@ -46,10 +46,10 @@ impl BillingGuard {
             return Ok(Self::noop());
         }
 
-        let engine = Arc::new(BillingEngine::new(
-            payments.balance_service.clone(),
-            payments.pricing_resolver.clone(),
-        ));
+        let engine = Arc::new(
+            BillingEngine::new(payments.balance_service.clone(), payments.pricing_resolver.clone())
+                .with_fee_ppm(payments.config.provider_fee_ppm),
+        );
 
         match engine.admit(uid, model).await {
             Ok(admission) => Ok(Self {
@@ -57,10 +57,7 @@ impl BillingGuard {
                 admission: Some(admission),
                 settled: Default::default(),
             }),
-            Err(BillingError::InsufficientFunds { required, available }) => {
-                // Re-throw insufficient funds as a distinct error for HTTP 402
-                Err(BillingError::InsufficientFunds { required, available })
-            }
+            Err(e @ BillingError::InsufficientFunds { .. }) => Err(e),
             Err(e) => {
                 tracing::error!(error = %e, "Billing reservation error");
                 Err(e)
@@ -84,13 +81,17 @@ impl BillingGuard {
     }
 
     pub async fn finalize_usage(&self, usage: TokenUsage) -> i64 {
+        self.finalize_served(usage, None).await
+    }
+
+    pub async fn finalize_served(&self, usage: TokenUsage, provider_name: Option<&str>) -> i64 {
         let (Some(engine), Some(admission)) = (&self.engine, &self.admission) else {
             return 0;
         };
         if self.settled.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return 0;
         }
-        match engine.finalize_charge(admission, usage).await {
+        match engine.finalize_served(admission, usage, provider_name).await {
             Ok(billed_msat) => billed_msat,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to finalize billing charge");
@@ -118,10 +119,13 @@ struct PaymentRequiredErrorDetail {
     error_type: &'static str,
     required_msat: i64,
     available_msat: i64,
+    currency: String,
+    required: i64,
+    available: i64,
 }
 
 /// Convert a BillingError::InsufficientFunds into a 402 Payment Required response.
-pub fn insufficient_funds_response(required: i64, available: i64) -> (StatusCode, axum::Json<serde_json::Value>) {
+pub fn insufficient_funds_response(required: i64, available: i64, currency: &str) -> (StatusCode, axum::Json<serde_json::Value>) {
     // Return as Json<Value> for API compatibility — this is a public function
     // that callers may depend on the Value return type.
     tracing::info!(
@@ -135,6 +139,9 @@ pub fn insufficient_funds_response(required: i64, available: i64) -> (StatusCode
             error_type: "payment_required",
             required_msat: required,
             available_msat: available,
+            currency: currency.to_string(),
+            required,
+            available,
         },
     }).unwrap();
     (StatusCode::PAYMENT_REQUIRED, axum::Json(body))
@@ -192,7 +199,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_payment_required_response() {
-        let (status, json) = insufficient_funds_response(5000, 1000);
+        let (status, json) = insufficient_funds_response(5000, 1000, "sats");
         assert_eq!(status, StatusCode::PAYMENT_REQUIRED);
         let body = json.0;
         assert_eq!(body["error"]["type"], "payment_required");

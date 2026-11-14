@@ -181,9 +181,10 @@ pub async fn chat_completions_handler(
             Err(crate::payments::biller::BillingError::InsufficientFunds {
                 required,
                 available,
+                currency,
             }) => {
                 let (code, json) =
-                    crate::payments::guard::insufficient_funds_response(required, available);
+                    crate::payments::guard::insufficient_funds_response(required, available, &currency);
                 reject(log.take(), "rejected", "insufficient funds");
                 return Err((code, json.0.to_string()));
             }
@@ -214,7 +215,7 @@ pub async fn chat_completions_handler(
                 Some(usage) => {
                     let billed = billed_usage(&request, usage.prompt_tokens, usage.completion_tokens, usage.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens));
                     let billed_msat = match &billing_guard {
-                        Some(guard) => guard.finalize_usage(billed).await,
+                        Some(guard) => guard.finalize_served(billed, request.trace().and_then(|t| t.provider()).as_deref()).await,
                         None => 0,
                     };
                     crate::usage::record(&state, authenticated_user.api_key.as_ref().map(|k| k.id), &request.model, billed, billed_msat, request.trace().and_then(|t| t.serving()).and_then(|s| s.cost_usd).unwrap_or(0.0)).await;
@@ -321,6 +322,7 @@ pub async fn chat_completions_stream(
             Err(crate::payments::biller::BillingError::InsufficientFunds {
                 required,
                 available,
+                currency,
             }) => {
                 reject(log.take(), "rejected", "insufficient funds");
                 return Err((
@@ -331,6 +333,7 @@ pub async fn chat_completions_stream(
                             "type": "payment_required",
                             "required_msat": required,
                             "available_msat": available,
+                            "currency": currency,
                         }
                     })
                     .to_string(),
@@ -420,7 +423,7 @@ pub async fn chat_completions_stream(
                     }
                     let billed = billed_usage(&request, prompt_tokens, completion_tokens, None);
                     let billed_msat = match billing_guard.as_ref() {
-                        Some(guard) if guard.is_active() => guard.finalize_usage(billed).await,
+                        Some(guard) if guard.is_active() => guard.finalize_served(billed, request.trace().and_then(|t| t.provider()).as_deref()).await,
                         _ => 0,
                     };
                     if prompt_tokens + completion_tokens > 0 {

@@ -186,6 +186,8 @@ pub struct PaymentsConfig {
     #[serde(default)]
     pub default_pricing: DefaultPricingConfig,
     pub lnd: Option<LndConfig>,
+    #[serde(default)]
+    pub provider_fee_ppm: i64,
 }
 
 

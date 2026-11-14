@@ -334,6 +334,8 @@ pub struct BalanceTransactionRow {
     pub transaction_type: String,
     pub reference_id: Option<String>,
     pub metadata: Option<String>,
+    pub currency: String,
+    pub amount_milli: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -374,8 +376,25 @@ pub struct ModelPricingRow {
     pub price_per_request_sats: Option<i64>,
     pub context_window: Option<i32>,
     pub max_output_tokens: Option<i32>,
+    pub owner_user_id: Option<i64>,
+    pub provider_id: Option<i64>,
+    pub currency: String,
+    pub price_per_1m_input_milli: Option<i64>,
+    pub price_per_1m_output_milli: Option<i64>,
+    pub price_per_1m_cache_read_milli: Option<i64>,
+    pub price_per_1m_cache_write_milli: Option<i64>,
+    pub price_per_request_milli: Option<i64>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FiatPrices {
+    pub input: Option<i64>,
+    pub output: Option<i64>,
+    pub cache_read: Option<i64>,
+    pub cache_write: Option<i64>,
+    pub request: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -390,6 +409,10 @@ pub struct NewModelPricing<'a> {
     pub price_per_request_sats: Option<i64>,
     pub context_window: Option<i32>,
     pub max_output_tokens: Option<i32>,
+    pub owner_user_id: Option<i64>,
+    pub provider_id: Option<i64>,
+    pub currency: &'a str,
+    pub fiat: FiatPrices,
 }
 
 #[derive(Debug, Clone)]
@@ -403,6 +426,8 @@ pub struct UpdateModelPricing {
     pub price_per_request_sats: Option<Option<i64>>,
     pub context_window: Option<Option<i32>>,
     pub max_output_tokens: Option<Option<i32>>,
+    pub currency: Option<String>,
+    pub fiat: Option<FiatPrices>,
 }
 
 // ── Model Access Control ───────────────────────────────────────────────

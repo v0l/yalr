@@ -32,6 +32,13 @@ impl Database {
         self.get_provider_by_id(id).await?.ok_or(sqlx::Error::RowNotFound)
     }
 
+    pub async fn get_provider_by_name(&self, name: &str) -> Result<Option<Provider>, sqlx::Error> {
+        sqlx::query_as::<_, Provider>("SELECT * FROM providers WHERE name = ?")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
     pub async fn get_provider_by_slug(&self, slug: &str) -> Result<Option<Provider>, sqlx::Error> {
         sqlx::query_as::<_, Provider>("SELECT * FROM providers WHERE slug = ?")
             .bind(slug)

@@ -93,7 +93,7 @@ impl Database {
 
     pub async fn get_user_transactions(&self, user_id: i64, limit: i64) -> Result<Vec<BalanceTransactionRow>, sqlx::Error> {
         sqlx::query_as::<_, BalanceTransactionRow>(
-            "SELECT id, user_id, amount_msat, transaction_type, reference_id, metadata, created_at \
+            "SELECT id, user_id, amount_msat, transaction_type, reference_id, metadata, currency, amount_milli, created_at \
              FROM balance_transactions WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
         )
         .bind(user_id)
@@ -116,7 +116,7 @@ impl Database {
 
     pub async fn list_all_transactions(&self, limit: i64) -> Result<Vec<BalanceTransactionRow>, sqlx::Error> {
         sqlx::query_as::<_, BalanceTransactionRow>(
-            "SELECT id, user_id, amount_msat, transaction_type, reference_id, metadata, created_at \
+            "SELECT id, user_id, amount_msat, transaction_type, reference_id, metadata, currency, amount_milli, created_at \
              FROM balance_transactions ORDER BY created_at DESC, id DESC LIMIT ?",
         )
         .bind(limit)

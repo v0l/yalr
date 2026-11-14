@@ -4,6 +4,7 @@
 //! charged from the provider's usage afterwards and may take the balance below zero.
 
 use std::sync::Arc;
+use crate::db::Settlement;
 use crate::payments::balance::{BalanceService, BalanceError};
 use crate::payments::pricing::PricingResolver;
 
@@ -15,8 +16,8 @@ pub struct TokenUsage {
     pub cache_write_tokens: u32,
 }
 
-fn ceil_msat(micro_sats: i64) -> i64 {
-    (micro_sats + 999) / 1000
+fn ceil_div(value: i64, divisor: i64) -> i64 {
+    (value + divisor - 1) / divisor
 }
 
 impl TokenUsage {
@@ -33,15 +34,14 @@ impl TokenUsage {
             + cached * pricing.price_per_1m_cache_read_sats
             + written * pricing.price_per_1m_cache_write_sats
             + self.completion_tokens as i64 * pricing.price_per_1m_output_sats;
-        (ceil_msat(micro) + pricing.price_per_request_sats * 1000).max(0)
+        (ceil_div(micro, pricing.token_divisor()) + pricing.request_units()).max(0)
     }
 }
 
-/// Handles the billing lifecycle for a single request:
-/// admit when the balance is positive → finalize with real usage, which may leave it negative.
 pub struct BillingEngine {
     balance_service: Arc<BalanceService>,
     pricing_resolver: Arc<PricingResolver>,
+    fee_ppm: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -57,10 +57,12 @@ impl BillingEngine {
         balance_service: Arc<BalanceService>,
         pricing_resolver: Arc<PricingResolver>,
     ) -> Self {
-        Self {
-            balance_service,
-            pricing_resolver,
-        }
+        Self { balance_service, pricing_resolver, fee_ppm: 0 }
+    }
+
+    pub fn with_fee_ppm(mut self, fee_ppm: i64) -> Self {
+        self.fee_ppm = fee_ppm;
+        self
     }
 
     pub async fn admit(
@@ -68,28 +70,39 @@ impl BillingEngine {
         user_id: i64,
         model_name: &str,
     ) -> Result<Admission, BillingError> {
-        let pricing = self.pricing_resolver.resolve(model_name).await;
+        let options = self.pricing_resolver.options(model_name).await;
         let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
+        let all_free = options.iter().all(|p| p.is_free);
         let admission = Admission {
             request_id,
             user_id,
             model: model_name.to_string(),
-            is_free: pricing.is_free,
+            is_free: all_free,
         };
-        if pricing.is_free {
-            return Ok(admission);
+        let mut shortfall: Option<BillingError> = None;
+        for pricing in &options {
+            if pricing.is_free || pricing.owner_user_id == Some(user_id) {
+                return Ok(admission);
+            }
+            let required = pricing.request_units().max(1);
+            let available = self
+                .balance_service
+                .get_currency_balance(user_id, &pricing.currency)
+                .await
+                .map_err(BillingError::Balance)?;
+            if available >= required {
+                return Ok(admission);
+            }
+            shortfall.get_or_insert(BillingError::InsufficientFunds {
+                required,
+                available,
+                currency: pricing.currency.clone(),
+            });
         }
-
-        let required = (pricing.price_per_request_sats * 1000).max(1);
-        let available = self
-            .balance_service
-            .get_balance(user_id)
-            .await
-            .map_err(BillingError::Balance)?;
-        if available < required {
-            return Err(BillingError::InsufficientFunds { required, available });
+        match shortfall {
+            Some(error) => Err(error),
+            None => Ok(admission),
         }
-        Ok(admission)
     }
 
     pub async fn finalize_charge(
@@ -97,25 +110,45 @@ impl BillingEngine {
         admission: &Admission,
         usage: TokenUsage,
     ) -> Result<i64, BillingError> {
-        if admission.is_free {
+        self.finalize_served(admission, usage, None).await
+    }
+
+    pub async fn finalize_served(
+        &self,
+        admission: &Admission,
+        usage: TokenUsage,
+        provider_name: Option<&str>,
+    ) -> Result<i64, BillingError> {
+        let pricing = self.pricing_resolver.resolve_served(&admission.model, provider_name).await;
+        if pricing.is_free {
+            return Ok(0);
+        }
+        let amount = usage.cost_msat(&pricing);
+        if amount <= 0 {
             return Ok(0);
         }
 
-        let pricing = self.pricing_resolver.resolve(&admission.model).await;
-        let actual_msat = usage.cost_msat(&pricing);
-        if actual_msat <= 0 {
-            return Ok(0);
-        }
-
-        self.balance_service
-            .charge(admission.user_id, actual_msat, "usage", &admission.request_id, Some(&admission.model))
+        let settled = self
+            .balance_service
+            .settle(Settlement {
+                consumer_id: admission.user_id,
+                owner_id: pricing.owner_user_id,
+                currency: &pricing.currency,
+                amount,
+                fee_ppm: self.fee_ppm,
+                reference_id: &admission.request_id,
+                model: Some(&admission.model),
+            })
             .await
             .map_err(BillingError::Balance)?;
 
         tracing::info!(
             user_id = admission.user_id,
             model = %admission.model,
-            actual_msat,
+            currency = %pricing.currency,
+            amount,
+            owner_credit = settled.owner_credit,
+            fee = settled.fee,
             prompt_tokens = usage.prompt_tokens,
             completion_tokens = usage.completion_tokens,
             cached_tokens = usage.cached_tokens,
@@ -123,14 +156,14 @@ impl BillingEngine {
             "Charge finalized"
         );
 
-        Ok(actual_msat)
+        Ok(settled.debited)
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum BillingError {
-    #[error("Insufficient funds: required {required} msats, available {available} msats")]
-    InsufficientFunds { required: i64, available: i64 },
+    #[error("Insufficient funds: required {required}, available {available} ({currency})")]
+    InsufficientFunds { required: i64, available: i64, currency: String },
 
     #[error("Balance error: {0}")]
     Balance(#[from] BalanceError),
@@ -165,7 +198,7 @@ mod tests {
     async fn admit_rejects_an_empty_balance() {
         let engine = setup().await;
         let result = engine.admit(1, "gpt-4").await;
-        assert!(matches!(result, Err(BillingError::InsufficientFunds { required: 1000, available: 0 })));
+        assert!(matches!(result, Err(BillingError::InsufficientFunds { required: 1000, available: 0, .. })));
     }
 
     #[tokio::test]
@@ -214,6 +247,8 @@ mod tests {
     fn priced(input: i64, output: i64, read: i64, write: i64, request: i64) -> crate::payments::pricing::ResolvedPricing {
         crate::payments::pricing::ResolvedPricing {
             model_name: "m".into(),
+            currency: "sats".into(),
+            owner_user_id: None,
             is_free: false,
             is_advertised: true,
             price_per_1m_input_sats: input,

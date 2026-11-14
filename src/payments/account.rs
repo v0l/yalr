@@ -163,6 +163,8 @@ mod tests {
             transaction_type: tx.into(),
             reference_id: Some(reference.into()),
             metadata: None,
+            currency: "sats".into(),
+            amount_milli: 0,
             created_at: chrono::DateTime::from_timestamp(1_792_504_800 + id, 0).unwrap(),
         }
     }

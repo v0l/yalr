@@ -96,6 +96,10 @@ pub async fn create_model_pricing(
         price_per_request_sats: req.price_per_request_sats,
         context_window: req.context_window,
         max_output_tokens: req.max_output_tokens,
+        owner_user_id: None,
+        provider_id: None,
+        currency: "sats",
+        fiat: Default::default(),
     };
 
     match state.config.db.create_model_pricing(mp).await {
@@ -134,6 +138,8 @@ pub async fn update_model_pricing(
         price_per_request_sats: req.price_per_request_sats,
         context_window: req.context_window,
         max_output_tokens: req.max_output_tokens,
+        currency: None,
+        fiat: None,
     };
 
     match state.config.db.update_model_pricing(&model_name, updates).await {

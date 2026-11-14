@@ -107,6 +107,10 @@ impl Database {
             price_per_request_sats: None,
             context_window: None,
             max_output_tokens: None,
+            owner_user_id: None,
+            provider_id: None,
+            currency: "sats",
+            fiat: Default::default(),
         })
         .await
         .unwrap()

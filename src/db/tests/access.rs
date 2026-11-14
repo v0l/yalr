@@ -99,6 +99,10 @@ async fn cache_prices_round_trip_and_update_independently() {
             price_per_request_sats: Some(1),
             context_window: None,
             max_output_tokens: None,
+            owner_user_id: None,
+            provider_id: None,
+            currency: "sats",
+            fiat: Default::default(),
         })
         .await
         .unwrap();
@@ -117,6 +121,8 @@ async fn cache_prices_round_trip_and_update_independently() {
                 price_per_request_sats: None,
                 context_window: None,
                 max_output_tokens: None,
+                currency: None,
+                fiat: None,
             },
         )
         .await
@@ -136,6 +142,8 @@ async fn cache_prices_round_trip_and_update_independently() {
                 price_per_request_sats: None,
                 context_window: None,
                 max_output_tokens: None,
+                currency: None,
+                fiat: None,
             },
         )
         .await

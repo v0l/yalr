@@ -7,6 +7,8 @@ pub mod instructions;
 pub mod lightning;
 pub mod pricing;
 pub mod routstr;
+#[cfg(test)]
+mod settlement_tests;
 
 use std::sync::Arc;
 use crate::db::Database;

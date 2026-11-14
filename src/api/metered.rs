@@ -145,8 +145,8 @@ pub struct Metered {
 
 fn billing_error(e: BillingError) -> HandlerError {
     match e {
-        BillingError::InsufficientFunds { required, available } => {
-            let (code, json) = insufficient_funds_response(required, available);
+        BillingError::InsufficientFunds { required, available, currency } => {
+            let (code, json) = insufficient_funds_response(required, available, &currency);
             (code, json.0.to_string())
         }
         e => (StatusCode::INTERNAL_SERVER_ERROR, error_body(&format!("Billing error: {e}"), "billing_error")),
@@ -218,7 +218,7 @@ impl Metered {
     async fn settle(&self, usage: Option<TokenUsage>) -> i64 {
         let usage = usage.unwrap_or_default();
         let billed_msat = match &self.billing {
-            Some(guard) => guard.finalize_usage(usage).await,
+            Some(guard) => guard.finalize_served(usage, self.trace.provider().as_deref()).await,
             None => 0,
         };
         let api_key_id = self.authenticated.api_key.as_ref().map(|k| k.id);
