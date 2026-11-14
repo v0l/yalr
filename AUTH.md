@@ -212,8 +212,12 @@ verification:
   enabled: true
   provider_verify_interval_hours: 24
   probe_max_tokens: 32
-  min_prefix_tokens: 16
-  max_logprob_gap: 0.5
+  min_prefix_tokens: 8          # median prefix agreement
+  min_probe_prefix_tokens: 1    # smallest prefix on a task probe, when the candidate has logprobs
+  max_logprob_gap: 0.15         # mean chosen-token gap in nats, when the candidate has logprobs
+  hard_divergence_nats: 4.0
+  max_hard_divergences: 1
+  max_mean_divergence: 1.0
   random_probes: 4
   request_extras:  # sent with every probe; the defaults switch thinking off
     chat_template_kwargs: {enable_thinking: false}
@@ -240,14 +244,17 @@ A new user lands on the Account page of the admin UI (`/me`) with API key creati
 
 `providers.status` is `pending`, `approved` or `suspended`. Admin-owned providers are `approved`. A provider a user adds starts `pending`: its owner can route to it straight away, but it is left out of the shared full-name pool (`vendor/model`) for everyone else until it is approved.
 
-Verification compares a provider with a **reference**: an approved provider an admin marked with `PUT /api/providers/:slug/reference` (`{"is_reference": true}`) that serves the same full model name. For each model the provider prices, the suite sends about 12 probes to both providers (fixed prompts plus a few drawn at random from a hidden pool) with `temperature 0`, `seed 1`, `max_tokens 32`, and `logprobs` with `top_logprobs 5` when supported. It scores:
+The thresholds and the data behind them are in [docs/verification.md](docs/verification.md).
+
+Verification compares a provider with a **reference**: an approved provider an admin marked with `PUT /api/providers/:slug/reference` (`{"is_reference": true}`) that serves the same full model name. For each model the provider prices, the suite sends 17 probes to both providers (13 fixed prompts, including version-sensitive ones such as the knowledge cutoff and self-identification under a neutral system prompt, plus 4 drawn at random from a hidden pool of 33) with `temperature 0`, `seed 1`, `max_tokens 32`, and `logprobs` with `top_logprobs 5` when supported. It scores:
 
 - prefix agreement: leading tokens identical to the reference (text agreement when logprobs are missing);
 - when logprobs exist, the mean absolute chosen-token logprob gap and top-5 overlap over the agreed prefix;
 - task probes with a known answer (arithmetic, facts, a JSON tool call that must parse);
-- `usage.prompt_tokens` on the fixed prompts, which must equal the reference exactly.
+- `usage.prompt_tokens` on the fixed prompts, which must equal the reference exactly;
+- divergence: where the candidate's text leaves the reference's token path, how unlikely the reference rated the candidate's choice (12 nats when it was outside the reference's top 5). This is the check that separates sibling releases of one model.
 
-A model passes when token counts match, every task probe passes, the median prefix agreement is at least `min_prefix_tokens` and the logprob gap is under `max_logprob_gap`. Every run is stored in `provider_verifications` with the raw outputs.
+A model passes when token counts match, every task probe passes, no more than `max_hard_divergences` probes diverge by over `hard_divergence_nats`, the mean divergence is at most `max_mean_divergence`, the median prefix is at least `min_prefix_tokens`, and, when the candidate returns logprobs, the logprob gap is at most `max_logprob_gap`. When the reference returns logprobs and the candidate does not, a run that clears these is recorded as `needs_review`: the provider stays pending for an admin, because without logprobs a sibling release cannot be ruled out. Every run is stored in `provider_verifications` with the raw outputs.
 
 - A pending provider is approved automatically when every model it prices passes.
 - A failing pending provider stays pending and shows the reason. A failing approved provider is suspended and the owner sees why.
