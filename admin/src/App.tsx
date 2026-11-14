@@ -64,6 +64,14 @@ function SetupCheckRoute({ children }: { children: React.ReactNode }) {
   return setupComplete ? children : <Navigate to="/setup" replace />
 }
 
+function isAdminUser(): boolean {
+  try { return !!JSON.parse(localStorage.getItem('user') || '{}').isAdmin } catch { return false }
+}
+
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  return isAdminUser() ? <>{children}</> : <Navigate to="/my-providers" replace />
+}
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -78,17 +86,17 @@ export default function App() {
             </PrivateRoute>
           </SetupCheckRoute>
         }>
-          <Route index element={<Dashboard />} />
-          <Route path="config" element={<Config />} />
-          <Route path="metrics" element={<Metrics />} />
-          <Route path="users" element={<Users />} />
-          <Route path="users/:id" element={<UserDetail />} />
-          <Route path="payments" element={<Payments />} />
+          <Route index element={<AdminRoute><Dashboard /></AdminRoute>} />
+          <Route path="config" element={<AdminRoute><Config /></AdminRoute>} />
+          <Route path="metrics" element={<AdminRoute><Metrics /></AdminRoute>} />
+          <Route path="users" element={<AdminRoute><Users /></AdminRoute>} />
+          <Route path="users/:id" element={<AdminRoute><UserDetail /></AdminRoute>} />
+          <Route path="payments" element={<AdminRoute><Payments /></AdminRoute>} />
           <Route path="chat" element={<Chat />} />
           <Route path="my-providers" element={<MyProviders />} />
           <Route path="my-providers/:slug" element={<MyProviderDetail />} />
-          <Route path="request-log" element={<RequestLog />} />
-          <Route path="request-log/:id" element={<RequestLogDetail />} />
+          <Route path="request-log" element={<AdminRoute><RequestLog /></AdminRoute>} />
+          <Route path="request-log/:id" element={<AdminRoute><RequestLogDetail /></AdminRoute>} />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -9,14 +9,14 @@ import {
 } from 'lucide-react'
 
 const navigation = [
-  { name: 'Dashboard', path: '/', icon: LayoutDashboardIcon },
-  { name: 'Config', path: '/config', icon: SlidersIcon },
-  { name: 'Metrics', path: '/metrics', icon: ActivityIcon },
-  { name: 'Requests', path: '/request-log', icon: ScrollTextIcon },
-  { name: 'Users', path: '/users', icon: UsersIcon },
-  { name: 'Payments', path: '/payments', icon: CreditCardIcon },
-  { name: 'My providers', path: '/my-providers', icon: ServerIcon },
-  { name: 'Chat', path: '/chat', icon: MessageSquareIcon },
+  { name: 'Dashboard', path: '/', icon: LayoutDashboardIcon, adminOnly: true },
+  { name: 'Config', path: '/config', icon: SlidersIcon, adminOnly: true },
+  { name: 'Metrics', path: '/metrics', icon: ActivityIcon, adminOnly: true },
+  { name: 'Requests', path: '/request-log', icon: ScrollTextIcon, adminOnly: true },
+  { name: 'Users', path: '/users', icon: UsersIcon, adminOnly: true },
+  { name: 'Payments', path: '/payments', icon: CreditCardIcon, adminOnly: true },
+  { name: 'My providers', path: '/my-providers', icon: ServerIcon, adminOnly: false },
+  { name: 'Chat', path: '/chat', icon: MessageSquareIcon, adminOnly: false },
 ]
 
 export default function Layout() {
@@ -51,7 +51,7 @@ export default function Layout() {
 
         {/* Navigation */}
         <nav className="flex-1 flex flex-col gap-1 px-3 py-4 overflow-y-auto">
-          {navigation.map((item) => {
+          {navigation.filter(item => user.isAdmin || !item.adminOnly).map((item) => {
             const isActive = location.pathname === item.path
               || (item.path !== '/' && location.pathname.startsWith(item.path))
             const Icon = item.icon
