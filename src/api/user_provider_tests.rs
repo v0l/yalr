@@ -180,3 +180,20 @@ async fn admin_provider_listing_never_returns_keys() {
     let body = crate::api::providers::list_providers(State(state)).await.0;
     assert!(!serde_json::to_string(&body).unwrap().contains("secret"));
 }
+
+#[tokio::test]
+async fn a_user_cannot_read_stats_of_another_users_provider() {
+    use crate::api::my_provider_stats::{self, StatsQuery};
+    let state = app().await;
+    let alice = state.db.add_test_user("alice", false).await;
+    let bob = state.db.add_test_user("bob", false).await;
+    let created = my_providers::create(State(state.clone()), who(alice.clone()), new_provider("mine", "http://8.8.8.8/v1"))
+        .await
+        .unwrap()
+        .0;
+    let query = || axum::extract::Query(StatsQuery { days: None });
+    let foreign = my_provider_stats::stats(State(state.clone()), who(bob), Path(created.slug.clone()), query()).await;
+    assert_eq!(foreign.err().unwrap().0, StatusCode::NOT_FOUND);
+    let own = my_provider_stats::stats(State(state.clone()), who(alice), Path(created.slug.clone()), query()).await;
+    assert_eq!(own.unwrap().0.provider.slug, created.slug);
+}

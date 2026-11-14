@@ -18,7 +18,7 @@ const MAX_DAYS: i64 = 365;
 
 #[derive(Deserialize)]
 pub struct StatsQuery {
-    days: Option<i64>,
+    pub days: Option<i64>,
 }
 
 #[derive(Serialize)]
