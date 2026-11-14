@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { api, API_BASE_URL } from '../api/client'
-import type { MetricsResponse, Provider, User, ProviderFormData, HealthOverviewResponse } from '../types'
+import type { MetricsResponse, Provider, ProviderFormData, HealthOverviewResponse } from '../types'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -32,7 +32,7 @@ export default function Dashboard() {
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null)
   const [providers, setProviders] = useState<Provider[]>([])
   const [health, setHealth] = useState<HealthOverviewResponse | null>(null)
-  const [users, setUsers] = useState<User[]>([])
+  const [ownerLabel, setOwnerLabel] = useState<string | null>(null)
   const [ownerFilter, setOwnerFilter] = useState('all')
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
@@ -81,7 +81,6 @@ export default function Dashboard() {
       }
     }
     fetchData()
-    api.getUsers({ limit: 500 }).then(setUsers).catch(() => {})
   }, [])
 
   /* WebSocket for live in-flight counts */
@@ -162,6 +161,7 @@ export default function Dashboard() {
 
   function openEdit(provider: Provider) {
     setEditingProvider(provider)
+    setOwnerLabel(provider.owner_username ?? null)
     setForm({ name: provider.name, slug: provider.slug, base_url: provider.base_url, api_key: '', provider_type: provider.provider_type, client_version: provider.client_version ?? '', extra_body: formatExtraBody(provider.extra_body), owner_user_id: provider.owner_user_id ?? null })
     setFormError(null)
     setFormDialogOpen(true)
@@ -391,7 +391,8 @@ export default function Dashboard() {
         error={formError}
         onClearError={() => setFormError(null)}
         apiKeysUrl={apiKeysUrl}
-        users={users}
+        ownerLabel={ownerLabel}
+        onOwnerLabel={setOwnerLabel}
       />
 
       <ProviderDeleteDialog

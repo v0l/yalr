@@ -4,7 +4,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import type { Provider, ProviderFormData, User } from '../types'
+import type { Provider, ProviderFormData } from '../types'
+import { UserPicker } from './UserPicker'
 import { ExtraBodyField, parseExtraBody } from './ExtraBodyField'
 
 const DEFAULT_BASE_URLS: Record<string, string> = {
@@ -27,11 +28,12 @@ export interface ProviderFormDialogProps {
   error: string | null
   onClearError: () => void
   apiKeysUrl?: string
-  users?: User[]
+  ownerLabel?: string | null
+  onOwnerLabel?: (label: string | null) => void
 }
 
 export function ProviderFormDialog({
-  open, onOpenChange, editingProvider, form, setForm, onSave, saving, error, onClearError, apiKeysUrl, users = [],
+  open, onOpenChange, editingProvider, form, setForm, onSave, saving, error, onClearError, apiKeysUrl, ownerLabel, onOwnerLabel,
 }: ProviderFormDialogProps) {
   const isOauth = !!editingProvider?.is_oauth || form.provider_type.endsWith('-oauth')
   return (
@@ -116,18 +118,15 @@ export function ProviderFormDialog({
               provider card to refresh access.
             </div>
           )}
-          {editingProvider && users.length > 0 && (
+          {editingProvider && (
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="p-owner" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Owner</Label>
-              <select
+              <UserPicker
                 id="p-owner"
-                value={form.owner_user_id ?? ''}
-                onChange={e => setForm({ ...form, owner_user_id: e.target.value ? Number(e.target.value) : null })}
-                className="h-9 px-3 font-mono text-[12px] bg-surface border border-border text-foreground"
-              >
-                <option value="">Platform (no owner)</option>
-                {users.map(u => <option key={u.id} value={u.id}>{u.username ?? u.external_id ?? `user ${u.id}`}</option>)}
-              </select>
+                value={form.owner_user_id ?? null}
+                valueLabel={ownerLabel}
+                onChange={(userId, label) => { setForm({ ...form, owner_user_id: userId }); onOwnerLabel?.(label) }}
+              />
               <p className="font-mono text-[10px] text-muted-foreground">
                 The owner sees this provider under My providers, can price it and earns from its traffic.
               </p>
