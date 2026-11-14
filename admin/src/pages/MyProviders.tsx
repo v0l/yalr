@@ -10,6 +10,7 @@ export default function MyProviders() {
   const [prices, setPrices] = useState<OwnedPrice[]>([])
   const [balances, setBalances] = useState<Balances | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   async function load() {
     try {
@@ -31,6 +32,7 @@ export default function MyProviders() {
         <p className="font-mono text-[13px] text-muted-foreground">Connect your own endpoints, set prices, earn from consumers</p>
       </div>
       {error && <div className="panel p-3 font-mono text-[12px] text-destructive">{error}</div>}
+      {notice && <div className="panel p-3 font-mono text-[12px] text-brand">{notice}</div>}
       <div className="panel p-4">
         <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground mb-2">Balances</div>
         <div className="flex flex-wrap gap-x-8 gap-y-2 font-mono text-[13px] tabular-nums">
@@ -41,7 +43,7 @@ export default function MyProviders() {
         </div>
       </div>
       <MyProvidersPanel providers={providers} onChange={load} onError={setError} />
-      <MyPricesPanel providers={providers} prices={prices} onChange={load} onError={setError} />
+      <MyPricesPanel providers={providers} prices={prices} onChange={load} onError={setError} onSaved={setNotice} />
     </div>
   )
 }

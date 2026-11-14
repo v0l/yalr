@@ -32,7 +32,7 @@ pub use nesting::{NestedLinkError, MAX_NESTING_DEPTH};
 pub use request_log::{Bodies, Detail, Filter, Record, Retention, Summary};
 pub use payments::{Debit, LedgerEntry};
 pub use provider_stats::{ProviderEarning, ProviderModelTraffic, ProviderTraffic};
-pub use currency::{fee_for, normalize_currency, Settled, Settlement, SATS};
+pub use currency::{fee_for, milli_per_unit, normalize_currency, Settled, Settlement, SATS};
 pub use types::*;
 pub use users::UserChanges;
 pub use usage::{ApiKeyUsage, HourUsage, ModelUsage, UsageReport, UsageScope};

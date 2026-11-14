@@ -1,6 +1,6 @@
+import type { CurrencyOption } from '../types'
 import type {
   Balances,
-  CreditCurrencyRequest,
   MyPriceCreate,
   MyProvider,
   MyProviderCreate,
@@ -41,6 +41,5 @@ export const userApi = {
   updatePrice: (id: number, data: PriceInput) => call<OwnedPrice>(`/my/pricing/${id}`, 'PUT', data),
   deletePrice: (id: number) => call<boolean>(`/my/pricing/${id}`, 'DELETE'),
   myBalances: () => call<Balances>('/my/balances'),
-  creditCurrency: (data: CreditCurrencyRequest) =>
-    call<{ user_id: number; currency: string; new_balance_milli: number }>('/payments/credit-currency', 'POST', data),
+  currencies: () => call<CurrencyOption[]>('/my/currencies'),
 }

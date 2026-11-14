@@ -789,25 +789,21 @@ export const api = {
     return response.json()
   },
 
-  async adminCredit(data: import('../types').AdminCreditRequest): Promise<import('../types').UserBalanceDetail & { success: boolean }> {
+  async adjustBalance(kind: import('../types').BalanceAdjustKind, data: import('../types').AdjustBalanceRequest): Promise<import('../types').AdjustBalanceResponse> {
     const headers = await getAuthHeaders()
-    const response = await fetch(`${API_BASE_URL}/api/payments/credit`, {
+    const response = await fetch(`${API_BASE_URL}/api/payments/${kind}`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
-    if (!response.ok) throw new Error('Failed to credit user')
+    if (!response.ok) throw new Error((await response.text().catch(() => '')) || `Failed to ${kind} user`)
     return response.json()
   },
 
-  async adminDebit(data: import('../types').AdminDebitRequest): Promise<import('../types').UserBalanceDetail & { success: boolean }> {
+  async listCurrencies(): Promise<import('../types').CurrencyOption[]> {
     const headers = await getAuthHeaders()
-    const response = await fetch(`${API_BASE_URL}/api/payments/debit`, {
-      method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    })
-    if (!response.ok) throw new Error('Failed to debit user')
+    const response = await fetch(`${API_BASE_URL}/api/payments/currencies`, { headers })
+    if (!response.ok) throw new Error('Failed to load currencies')
     return response.json()
   },
 

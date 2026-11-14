@@ -29,18 +29,32 @@ pub struct Balances {
 }
 
 #[derive(Deserialize)]
-pub struct CreditCurrencyRequest {
+pub struct AdjustBalanceRequest {
     pub user_id: i64,
+    #[serde(default = "default_currency")]
     pub currency: String,
     pub amount_milli: i64,
     pub reason: Option<String>,
 }
 
+fn default_currency() -> String {
+    crate::db::SATS.to_string()
+}
+
 #[derive(Serialize)]
-pub struct CreditCurrencyResponse {
+pub struct AdjustBalanceResponse {
+    pub success: bool,
     pub user_id: i64,
     pub currency: String,
+    pub amount_milli: i64,
     pub new_balance_milli: i64,
+    pub reason: String,
+}
+
+#[derive(Serialize)]
+pub struct CurrencyOption {
+    pub code: String,
+    pub milli_per_unit: i64,
 }
 
 fn internal(e: impl ToString) -> (StatusCode, String) {
@@ -77,28 +91,79 @@ pub async fn user_balances(State(state): State<Arc<AppState>>, Path(user_id): Pa
     Ok(Json(balances_of(&state, user_id).await?))
 }
 
-pub async fn admin_credit_currency(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<CreditCurrencyRequest>,
-) -> ApiResult<CreditCurrencyResponse> {
+struct Adjustment {
+    currency: String,
+    amount_milli: i64,
+    reason: String,
+}
+
+fn adjustment(req: &AdjustBalanceRequest, default_reason: &str) -> Result<Adjustment, (StatusCode, String)> {
     if req.amount_milli <= 0 {
         return Err((StatusCode::BAD_REQUEST, "Amount must be positive".to_string()));
     }
     let currency = normalize_currency(&req.currency)
         .ok_or((StatusCode::BAD_REQUEST, "Currency must be a 3 to 8 letter code".to_string()))?;
-    if currency == crate::db::SATS {
-        return Err((StatusCode::BAD_REQUEST, "Credit sats through /payments/credit".to_string()));
+    let reason = req.reason.clone().filter(|r| !r.is_empty()).unwrap_or_else(|| default_reason.to_string());
+    Ok(Adjustment { currency, amount_milli: req.amount_milli, reason })
+}
+
+fn adjusted(req: &AdjustBalanceRequest, adjustment: Adjustment, new_balance_milli: i64) -> AdjustBalanceResponse {
+    AdjustBalanceResponse {
+        success: true,
+        user_id: req.user_id,
+        currency: adjustment.currency,
+        amount_milli: adjustment.amount_milli,
+        new_balance_milli,
+        reason: adjustment.reason,
     }
-    let payments = state
+}
+
+fn payments(state: &AppState) -> Result<&Arc<crate::payments::PaymentsState>, (StatusCode, String)> {
+    state
         .payments_state
         .as_ref()
-        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Payments not enabled".to_string()))?;
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Payments not enabled".to_string()))
+}
+
+pub async fn admin_credit(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AdjustBalanceRequest>,
+) -> ApiResult<AdjustBalanceResponse> {
+    let adjustment = adjustment(&req, "admin_credit")?;
     let reference = format!("admin-credit-{}", chrono::Utc::now().timestamp_millis());
-    let reason = req.reason.as_deref().unwrap_or("admin_credit");
-    let new_balance_milli = payments
+    let balance = payments(&state)?
         .balance_service
-        .credit_currency(req.user_id, &currency, req.amount_milli, reason, &reference)
+        .credit_currency(req.user_id, &adjustment.currency, adjustment.amount_milli, &adjustment.reason, &reference)
         .await
         .map_err(internal)?;
-    Ok(Json(CreditCurrencyResponse { user_id: req.user_id, currency, new_balance_milli }))
+    tracing::info!(admin_action = "credit", user_id = req.user_id, currency = %adjustment.currency, amount_milli = adjustment.amount_milli, "Admin manual credit");
+    Ok(Json(adjusted(&req, adjustment, balance)))
+}
+
+pub async fn admin_debit(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AdjustBalanceRequest>,
+) -> ApiResult<AdjustBalanceResponse> {
+    let adjustment = adjustment(&req, "admin_debit")?;
+    let reference = format!("admin-debit-{}", chrono::Utc::now().timestamp_millis());
+    let balance = payments(&state)?
+        .balance_service
+        .debit_currency(req.user_id, &adjustment.currency, adjustment.amount_milli, &adjustment.reason, &reference)
+        .await
+        .map_err(|e| match e {
+            crate::payments::balance::BalanceError::InsufficientFunds { .. } => (StatusCode::BAD_REQUEST, e.to_string()),
+            other => internal(other),
+        })?;
+    tracing::info!(admin_action = "debit", user_id = req.user_id, currency = %adjustment.currency, amount_milli = adjustment.amount_milli, "Admin manual debit");
+    Ok(Json(adjusted(&req, adjustment, balance)))
+}
+
+pub async fn currencies(State(state): State<Arc<AppState>>) -> ApiResult<Vec<CurrencyOption>> {
+    let codes = state.db.known_currencies().await.map_err(internal)?;
+    Ok(Json(
+        codes
+            .into_iter()
+            .map(|code| CurrencyOption { milli_per_unit: crate::db::milli_per_unit(&code), code })
+            .collect(),
+    ))
 }

@@ -466,8 +466,8 @@ async fn test_ln_refund() {
     let cr: Value = a.post(&format!("{}/api/users", YALR_URL)).json(&json!({"username":username,"password":"p","is_admin":false,"user_type":"internal"})).send().await.unwrap().json().await.unwrap();
     let uid = cr["user"]["id"].as_i64().unwrap();
 
-    let credit: Value = a.post(&format!("{}/api/payments/credit", YALR_URL)).json(&json!({"user_id":uid,"amount_sats":500,"reason":"e2e"})).send().await.unwrap().json().await.unwrap();
-    assert!(credit["new_balance_msat"].as_i64().unwrap() >= 500_000);
+    let credit: Value = a.post(&format!("{}/api/payments/credit", YALR_URL)).json(&json!({"user_id":uid,"amount_milli":500000,"reason":"e2e"})).send().await.unwrap().json().await.unwrap();
+    assert!(credit["new_balance_milli"].as_i64().unwrap() >= 500_000);
 
     let login: Value = client().post(&format!("{}/api/auth/login", YALR_URL)).json(&json!({"username":username,"password":"p"})).send().await.unwrap().json().await.unwrap();
     let ut = login["token"].as_str().unwrap().to_string();
@@ -506,11 +506,11 @@ async fn test_admin_payments() {
     let cr: Value = a.post(&format!("{}/api/users", YALR_URL)).json(&json!({"username":username,"password":"p","is_admin":false,"user_type":"internal"})).send().await.unwrap().json().await.unwrap();
     let uid = cr["user"]["id"].as_i64().unwrap();
 
-    let cc: Value = a.post(&format!("{}/api/payments/credit", YALR_URL)).json(&json!({"user_id":uid,"amount_sats":200,"reason":"e2e"})).send().await.unwrap().json().await.unwrap();
-    assert!(cc["new_balance_msat"].as_i64().unwrap() >= 200000);
+    let cc: Value = a.post(&format!("{}/api/payments/credit", YALR_URL)).json(&json!({"user_id":uid,"amount_milli":200000,"reason":"e2e"})).send().await.unwrap().json().await.unwrap();
+    assert!(cc["new_balance_milli"].as_i64().unwrap() >= 200000);
 
-    let dd: Value = a.post(&format!("{}/api/payments/debit", YALR_URL)).json(&json!({"user_id":uid,"amount_sats":50,"reason":"e2e"})).send().await.unwrap().json().await.unwrap();
-    assert_eq!(dd["new_balance_msat"].as_i64().unwrap(), 150000);
+    let dd: Value = a.post(&format!("{}/api/payments/debit", YALR_URL)).json(&json!({"user_id":uid,"amount_milli":50000,"reason":"e2e"})).send().await.unwrap().json().await.unwrap();
+    assert_eq!(dd["new_balance_milli"].as_i64().unwrap(), 150000);
 
     let bl: Value = a.get(&format!("{}/api/payments/balances", YALR_URL)).send().await.unwrap().json().await.unwrap();
     assert!(bl.as_array().unwrap().iter().any(|b| b["user_id"].as_i64().unwrap() == uid));
@@ -525,7 +525,7 @@ async fn test_admin_payments() {
     let iv: Value = a.get(&format!("{}/api/payments/invoices", YALR_URL)).send().await.unwrap().json().await.unwrap();
     println!("Invoices: {} total", iv.as_array().unwrap().len());
 
-    let over = a.post(&format!("{}/api/payments/debit", YALR_URL)).json(&json!({"user_id":uid,"amount_sats":99999,"reason":"fail"})).send().await.unwrap();
+    let over = a.post(&format!("{}/api/payments/debit", YALR_URL)).json(&json!({"user_id":uid,"amount_milli":99999000,"reason":"fail"})).send().await.unwrap();
     // Over-debit may return 400, 402 or 500 depending on server handling
     let status = over.status();
     assert!(status.is_client_error() || status.is_server_error(), "Expected error status, got {}", status);
@@ -633,7 +633,7 @@ async fn test_chat_billing() {
     assert_eq!(r402.status(), StatusCode::PAYMENT_REQUIRED);
 
     // Credit and send
-    a.post(&format!("{}/api/payments/credit", YALR_URL)).json(&json!({"user_id":uid,"amount_sats":5,"reason":"e2e"})).send().await.unwrap();
+    a.post(&format!("{}/api/payments/credit", YALR_URL)).json(&json!({"user_id":uid,"amount_milli":5000,"reason":"e2e"})).send().await.unwrap();
 
     let resp = ua.post(&format!("{}/v1/chat/completions", YALR_URL)).json(&json!({"model":model,"messages":[{"role":"user","content":"Say hi in three words."}]})).send().await.unwrap();
     let status = resp.status();

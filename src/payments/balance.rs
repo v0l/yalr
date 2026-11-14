@@ -107,6 +107,26 @@ impl BalanceService {
         Ok(self.db.credit_currency(user_id, currency, amount, tx_type, reference_id, deposited).await?)
     }
 
+    pub async fn debit_currency(
+        &self,
+        user_id: i64,
+        currency: &str,
+        amount: i64,
+        tx_type: &str,
+        reference_id: &str,
+    ) -> Result<i64, BalanceError> {
+        if amount <= 0 {
+            return Err(BalanceError::InvalidAmount(amount));
+        }
+        match self.db.debit_currency(user_id, currency, amount, tx_type, reference_id).await? {
+            Some(balance) => Ok(balance),
+            None => {
+                let available = self.db.get_currency_balance(user_id, currency).await?;
+                Err(BalanceError::InsufficientFunds { required: amount, available })
+            }
+        }
+    }
+
     /// Get recent transactions for a user.
     pub async fn get_transactions(
         &self,

@@ -72,13 +72,6 @@ export interface Balances {
   currencies: CurrencyBalance[]
 }
 
-export interface CreditCurrencyRequest {
-  user_id: number
-  currency: string
-  amount_milli: number
-  reason?: string
-}
-
 export interface ProviderTraffic {
   requests: number
   failures: number

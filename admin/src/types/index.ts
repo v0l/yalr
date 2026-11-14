@@ -570,16 +570,27 @@ export interface PaymentLinkInstruction {
   label?: string
 }
 
-export interface AdminCreditRequest {
+export type BalanceAdjustKind = 'credit' | 'debit'
+
+export interface AdjustBalanceRequest {
   user_id: number
-  amount_sats: number
+  currency: string
+  amount_milli: number
   reason?: string
 }
 
-export interface AdminDebitRequest {
+export interface AdjustBalanceResponse {
+  success: boolean
   user_id: number
-  amount_sats: number
-  reason?: string
+  currency: string
+  amount_milli: number
+  new_balance_milli: number
+  reason: string
+}
+
+export interface CurrencyOption {
+  code: string
+  milli_per_unit: number
 }
 
 export interface ModelPricingEntry {

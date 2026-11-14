@@ -26,6 +26,10 @@ pub fn normalize_currency(raw: &str) -> Option<String> {
     valid.then_some(code)
 }
 
+pub fn milli_per_unit(currency: &str) -> i64 {
+    if currency == SATS { 1_000 } else { 100_000 }
+}
+
 pub fn fee_for(amount: i64, fee_ppm: i64) -> i64 {
     ((amount.max(0) as i128 * fee_ppm.clamp(0, 1_000_000) as i128) / 1_000_000) as i64
 }
@@ -140,6 +144,44 @@ impl Database {
         Ok(balance)
     }
 
+    pub async fn debit_currency(
+        &self,
+        user_id: i64,
+        currency: &str,
+        amount: i64,
+        tx_type: &str,
+        reference_id: &str,
+    ) -> Result<Option<i64>, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let updated = if currency == SATS {
+            sqlx::query("UPDATE user_balances SET balance_msat = balance_msat - ?, updated_at = CURRENT_TIMESTAMP(3) WHERE user_id = ? AND balance_msat >= ?")
+        } else {
+            sqlx::query("UPDATE user_currency_balances SET balance_milli = balance_milli - ?, updated_at = CURRENT_TIMESTAMP(3) WHERE user_id = ? AND balance_milli >= ? AND currency = ?")
+        };
+        let updated = updated.bind(amount).bind(user_id).bind(amount);
+        let updated = if currency == SATS { updated } else { updated.bind(currency) };
+        if updated.execute(&mut *tx).await?.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+        let balance = add(&mut tx, user_id, currency, 0, 0).await?;
+        record(&mut tx, user_id, currency, -amount, tx_type, reference_id, None).await?;
+        tx.commit().await?;
+        Ok(Some(balance))
+    }
+
+    pub async fn known_currencies(&self) -> Result<Vec<String>, sqlx::Error> {
+        let mut codes: Vec<String> = sqlx::query_scalar(
+            "SELECT currency FROM model_pricing UNION SELECT currency FROM user_currency_balances",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        codes.extend([SATS.to_string(), "usd".to_string()]);
+        codes.sort_by(|a, b| (a != SATS, a).cmp(&(b != SATS, b)));
+        codes.dedup();
+        Ok(codes)
+    }
+
     pub async fn settle_usage(&self, s: Settlement<'_>) -> Result<Settled, sqlx::Error> {
         if s.amount <= 0 || s.owner_id == Some(s.consumer_id) {
             return Ok(Settled::default());
@@ -182,6 +224,26 @@ mod tests {
         assert_eq!(normalize_currency("eur"), Some("eur".to_string()));
         assert_eq!(normalize_currency("us"), None);
         assert_eq!(normalize_currency("u$d"), None);
+    }
+
+    #[tokio::test]
+    async fn credit_and_debit_share_one_path_for_every_currency() {
+        let db = crate::db::Database::test().await;
+        let user = db.add_test_user("u", false).await;
+        for (currency, expected_balance) in [("sats", 700), ("usd", 700)] {
+            db.credit_currency(user.id, currency, 1_000, "admin_credit", "c", 1_000).await.unwrap();
+            assert_eq!(db.debit_currency(user.id, currency, 300, "admin_debit", "d").await.unwrap(), Some(expected_balance));
+            assert_eq!(db.debit_currency(user.id, currency, 701, "admin_debit", "d2").await.unwrap(), None);
+            assert_eq!(db.get_currency_balance(user.id, currency).await.unwrap(), expected_balance);
+        }
+    }
+
+    #[tokio::test]
+    async fn known_currencies_lists_sats_first_then_every_one_in_use() {
+        let db = crate::db::Database::test().await;
+        let user = db.add_test_user("u", false).await;
+        db.credit_currency(user.id, "eur", 5, "admin_credit", "c", 5).await.unwrap();
+        assert_eq!(db.known_currencies().await.unwrap(), vec!["sats", "eur", "usd"]);
     }
 
     #[test]

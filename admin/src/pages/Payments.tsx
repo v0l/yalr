@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { userApi } from '@/api/userApi'
+import { BalanceAdjustDialog } from '@/components/BalanceAdjustDialog'
+import type { BalanceAdjustKind } from '../types'
 import { formatMilli, formatPrice } from '@/lib/money'
 import { api } from '../api/client'
 import type { UserBalanceEntry, BalanceTransaction, LightningInvoice, ModelPricingEntry, ModelPricingCreateRequest, Model } from '../types'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -82,12 +80,7 @@ export default function Payments() {
   const [availableModels, setAvailableModels] = useState<Model[]>([])
 
   /* Credit/Debit */
-  const [creditDialog, setCreditDialog] = useState(false)
-  const [debitDialog, setDebitDialog] = useState(false)
-  const [adjustForm, setAdjustForm] = useState({ user_id: 0, amount_sats: 0, reason: '' })
-  const [adjustSaving, setAdjustSaving] = useState(false)
-  const [creditCurrency, setCreditCurrency] = useState('sats')
-  const [creditAmount, setCreditAmount] = useState('')
+  const [adjustKind, setAdjustKind] = useState<BalanceAdjustKind | null>(null)
 
   /* Model Pricing */
   const [pricingDialog, setPricingDialog] = useState(false)
@@ -127,29 +120,6 @@ export default function Payments() {
       if (m.status === 'fulfilled') setModelPricings(m.value)
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load payment data') }
     finally { setLoading(false) }
-  }
-
-  async function handleCredit() {
-    setAdjustSaving(true)
-    const currency = creditCurrency.trim().toLowerCase()
-    const amount = Number(creditAmount)
-    try {
-      if (currency === 'sats') {
-        await api.adminCredit({ user_id: adjustForm.user_id, amount_sats: Math.round(amount), reason: adjustForm.reason || undefined })
-      } else {
-        await userApi.creditCurrency({ user_id: adjustForm.user_id, currency, amount_milli: Math.round(amount * 100_000), reason: adjustForm.reason || 'admin_credit' })
-      }
-      setCreditDialog(false); setSuccessMessage(`CREDITED ${currency.toUpperCase()}`); loadAll()
-    }
-    catch (e) { setError(e instanceof Error ? e.message : 'Failed to credit') }
-    finally { setAdjustSaving(false) }
-  }
-
-  async function handleDebit() {
-    setAdjustSaving(true)
-    try { await api.adminDebit({ user_id: adjustForm.user_id, amount_sats: adjustForm.amount_sats, reason: adjustForm.reason || undefined }); setDebitDialog(false); setSuccessMessage('DEBITED'); loadAll() }
-    catch (e) { setError(e instanceof Error ? e.message : 'Failed to debit') }
-    finally { setAdjustSaving(false) }
   }
 
   function openCreatePricing() {
@@ -234,10 +204,10 @@ export default function Payments() {
       {activeTab === 'balances' && (
         <div className="space-y-4">
           <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => { setAdjustForm({ user_id: 0, amount_sats: 0, reason: '' }); setCreditCurrency('sats'); setCreditAmount(''); setCreditDialog(true) }} className="font-mono text-[11px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20 h-8">
+            <Button size="sm" onClick={() => setAdjustKind('credit')} className="font-mono text-[11px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20 h-8">
               <PlusIcon className="size-3" /> Credit
             </Button>
-            <Button size="sm" variant="outline" onClick={() => { setAdjustForm({ user_id: 0, amount_sats: 0, reason: '' }); setDebitDialog(true) }} className="font-mono text-[11px] tracking-wider uppercase border-border text-muted-foreground h-8">
+            <Button size="sm" variant="outline" onClick={() => setAdjustKind('debit')} className="font-mono text-[11px] tracking-wider uppercase border-border text-muted-foreground h-8">
               <PlusIcon className="size-3" /> Debit
             </Button>
           </div>
@@ -409,45 +379,7 @@ export default function Payments() {
         </div>
       )}
 
-      {/* ══ Credit Dialog ═══════════════════════════════════════════ */}
-      <Dialog open={creditDialog} onOpenChange={setCreditDialog}>
-        <DialogContent className="border-border bg-card">
-          <DialogHeader>
-            <DialogTitle className="font-display text-xl tracking-[0.04em] text-brand">CREDIT BALANCE</DialogTitle>
-            <DialogDescription className="font-mono text-[12px] text-muted-foreground">Manually add funds to a user&apos;s balance.</DialogDescription>
-          </DialogHeader>
-          <form onSubmit={e => { e.preventDefault(); handleCredit() }} className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1.5"><Label htmlFor="cr-user" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">User ID</Label><Input id="cr-user" type="number" min={1} value={adjustForm.user_id || ''} onChange={e => setAdjustForm({ ...adjustForm, user_id: Number(e.target.value) })} required className="font-mono bg-surface border-border text-foreground" /></div>
-            <div className="flex flex-col gap-1.5"><Label htmlFor="cr-currency" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Currency</Label><Input id="cr-currency" list="cr-currencies" value={creditCurrency} onChange={e => setCreditCurrency(e.target.value)} required className="font-mono bg-surface border-border text-foreground" /><datalist id="cr-currencies"><option value="sats" /><option value="usd" /></datalist></div>
-            <div className="flex flex-col gap-1.5"><Label htmlFor="cr-amount" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Amount ({creditCurrency.trim().toLowerCase() === 'sats' ? 'sats' : `whole ${creditCurrency.trim().toUpperCase() || 'currency'} units`})</Label><Input id="cr-amount" type="number" min={0.00001} step="any" value={creditAmount} onChange={e => setCreditAmount(e.target.value)} required className="font-mono bg-surface border-border text-foreground" /></div>
-            <div className="flex flex-col gap-1.5"><Label htmlFor="cr-reason" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Reason</Label><Input id="cr-reason" value={adjustForm.reason} onChange={e => setAdjustForm({ ...adjustForm, reason: e.target.value })} placeholder="Optional" className="font-mono bg-surface border-border text-foreground" /></div>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setCreditDialog(false)} disabled={adjustSaving} className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</Button>
-              <Button type="submit" disabled={adjustSaving} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand">{adjustSaving ? '...' : 'CREDIT'}</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* ══ Debit Dialog ════════════════════════════════════════════ */}
-      <Dialog open={debitDialog} onOpenChange={setDebitDialog}>
-        <DialogContent className="border-border bg-card">
-          <DialogHeader>
-            <DialogTitle className="font-display text-xl tracking-[0.04em] text-destructive">DEBIT BALANCE</DialogTitle>
-            <DialogDescription className="font-mono text-[12px] text-muted-foreground">Manually deduct funds from a user&apos;s balance.</DialogDescription>
-          </DialogHeader>
-          <form onSubmit={e => { e.preventDefault(); handleDebit() }} className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1.5"><Label htmlFor="db-user" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">User ID</Label><Input id="db-user" type="number" min={1} value={adjustForm.user_id || ''} onChange={e => setAdjustForm({ ...adjustForm, user_id: Number(e.target.value) })} required className="font-mono bg-surface border-border text-foreground" /></div>
-            <div className="flex flex-col gap-1.5"><Label htmlFor="db-amount" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Amount (sats)</Label><Input id="db-amount" type="number" min={1} value={adjustForm.amount_sats || ''} onChange={e => setAdjustForm({ ...adjustForm, amount_sats: Number(e.target.value) })} required className="font-mono bg-surface border-border text-foreground" /></div>
-            <div className="flex flex-col gap-1.5"><Label htmlFor="db-reason" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Reason</Label><Input id="db-reason" value={adjustForm.reason} onChange={e => setAdjustForm({ ...adjustForm, reason: e.target.value })} placeholder="Optional" className="font-mono bg-surface border-border text-foreground" /></div>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setDebitDialog(false)} disabled={adjustSaving} className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</Button>
-              <Button type="submit" disabled={adjustSaving} className="font-mono text-[12px] tracking-wider uppercase border border-destructive/40 bg-destructive/10 text-destructive">{adjustSaving ? '...' : 'DEBIT'}</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
+      <BalanceAdjustDialog kind={adjustKind} onClose={() => setAdjustKind(null)} onDone={m => { setSuccessMessage(m); loadAll() }} onError={setError} />
       <PricingDialog
         open={pricingDialog}
         onOpenChange={setPricingDialog}

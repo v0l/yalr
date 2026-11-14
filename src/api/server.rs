@@ -143,7 +143,7 @@ pub async fn run_with_shutdown<F>(
 
     use crate::auth::admin::{login, logout, auth_status, check_setup_complete, setup_first_user, auth_middleware, admin_middleware};
     use crate::auth::api_keys::{create_api_key, list_api_keys, delete_api_key, disable_api_key, enable_api_key, create_api_key_for_user};
-    use users::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, admin_credit_user, admin_debit_user, list_admin_transactions, list_admin_invoices, list_user_model_permissions, create_user_model_permission, delete_user_model_permission};
+    use users::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, list_admin_transactions, list_admin_invoices, list_user_model_permissions, create_user_model_permission, delete_user_model_permission};
     
     let public_auth_routes = Router::new()
         .route("/auth/setup", post(setup_first_user))
@@ -161,6 +161,7 @@ pub async fn run_with_shutdown<F>(
         .route("/my/pricing", get(crate::api::my_pricing::list).post(crate::api::my_pricing::create))
         .route("/my/pricing/:id", put(crate::api::my_pricing::update).delete(crate::api::my_pricing::delete))
         .route("/my/balances", get(crate::api::currency_balances::my_balances))
+        .route("/my/currencies", get(crate::api::currency_balances::currencies))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let admin_routes = Router::new()
@@ -211,10 +212,10 @@ pub async fn run_with_shutdown<F>(
         .route("/users/:id", delete(delete_user))
         .route("/payments/balances", get(list_all_balances))
         .route("/payments/balances/:user_id", get(get_user_balance_details))
-        .route("/payments/credit", post(admin_credit_user))
-        .route("/payments/credit-currency", post(crate::api::currency_balances::admin_credit_currency))
+        .route("/payments/credit", post(crate::api::currency_balances::admin_credit))
+        .route("/payments/currencies", get(crate::api::currency_balances::currencies))
         .route("/payments/balances/:user_id/currencies", get(crate::api::currency_balances::user_balances))
-        .route("/payments/debit", post(admin_debit_user))
+        .route("/payments/debit", post(crate::api::currency_balances::admin_debit))
         .route("/payments/transactions", get(list_admin_transactions))
         .route("/payments/invoices", get(list_admin_invoices))
         .route("/users/:user_id/models", get(list_user_model_permissions))
@@ -346,7 +347,7 @@ pub async fn run(
 pub async fn create_test_app(state: Arc<AppState>) -> Router {
     use crate::auth::admin::{login, logout, auth_status, check_setup_complete, setup_first_user, auth_middleware, admin_middleware, AdminExtractor};
     use crate::auth::api_keys::{create_api_key, list_api_keys, delete_api_key, disable_api_key, enable_api_key, create_api_key_for_user};
-    use users::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, admin_credit_user, admin_debit_user, list_admin_transactions, list_admin_invoices};
+    use users::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, list_admin_transactions, list_admin_invoices};
     use tower_http::cors::CorsLayer;
     use tower_http::trace::TraceLayer;
     
@@ -366,6 +367,7 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/my/pricing", get(crate::api::my_pricing::list).post(crate::api::my_pricing::create))
         .route("/my/pricing/:id", put(crate::api::my_pricing::update).delete(crate::api::my_pricing::delete))
         .route("/my/balances", get(crate::api::currency_balances::my_balances))
+        .route("/my/currencies", get(crate::api::currency_balances::currencies))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let admin_routes = Router::new()
@@ -406,10 +408,10 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/users/:id", delete(delete_user))
         .route("/payments/balances", get(list_all_balances))
         .route("/payments/balances/:user_id", get(get_user_balance_details))
-        .route("/payments/credit", post(admin_credit_user))
-        .route("/payments/credit-currency", post(crate::api::currency_balances::admin_credit_currency))
+        .route("/payments/credit", post(crate::api::currency_balances::admin_credit))
+        .route("/payments/currencies", get(crate::api::currency_balances::currencies))
         .route("/payments/balances/:user_id/currencies", get(crate::api::currency_balances::user_balances))
-        .route("/payments/debit", post(admin_debit_user))
+        .route("/payments/debit", post(crate::api::currency_balances::admin_debit))
         .route("/payments/transactions", get(list_admin_transactions))
         .route("/payments/invoices", get(list_admin_invoices))
         .layer(axum::middleware::from_fn_with_state(state.clone(), admin_middleware));
