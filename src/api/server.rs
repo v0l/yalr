@@ -107,23 +107,18 @@ pub async fn run_with_shutdown<F>(
     let db = config.db.clone();
 
     // Initialize payments state if configured
-    let payments_state = if let Some(ref pc) = config.payments_config {
-        if pc.enabled {
-            match PaymentsState::new(pc.clone(), db.clone()).await {
-                Ok(ps) => {
-                    tracing::info!("Payments system initialized");
-                    Some(Arc::new(ps))
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to initialize payments, starting without payments");
-                    None
-                }
+    let payments_state = match config.payments_config.as_ref().filter(|pc| pc.enabled) {
+        Some(pc) => match PaymentsState::new(pc.clone(), db.clone()).await {
+            Ok(ps) => {
+                tracing::info!("Payments system initialized");
+                Some(Arc::new(ps))
             }
-        } else {
-            None
-        }
-    } else {
-        None
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to initialize payments, starting without payments");
+                None
+            }
+        },
+        None => None,
     };
 
     let state = Arc::new(AppState {
