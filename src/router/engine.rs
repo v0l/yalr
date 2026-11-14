@@ -330,6 +330,10 @@ impl Router {
         let mut id_to_slug: HashMap<i64, String> = HashMap::new();
         let owned_ids: std::collections::HashSet<i64> =
             provider_records.iter().filter(|r| r.owner_user_id.is_some()).map(|r| r.id).collect();
+        let provider_owner: HashMap<i64, i64> = provider_records
+            .iter()
+            .filter_map(|r| r.owner_user_id.map(|owner| (r.id, owner)))
+            .collect();
 
         for record in &provider_records {
             let provider = match create_provider_from_record(record, self.db.clone()) {
@@ -374,8 +378,10 @@ impl Router {
                     }
                     continue;
                 }
-                if rcp.provider_id.is_some_and(|id| owned_ids.contains(&id)) {
-                    continue;
+                if let Some(owner) = rcp.provider_id.and_then(|id| provider_owner.get(&id)) {
+                    if rc.owner_user_id != Some(*owner) {
+                        continue;
+                    }
                 }
                 let slug = match rcp.provider_id.and_then(|id| id_to_slug.get(&id)) {
                     Some(s) => s,
@@ -1990,6 +1996,9 @@ mod nested_tests;
 
 #[cfg(test)]
 mod extra_body_tests;
+
+#[cfg(test)]
+mod ownership_tests;
 
 #[cfg(test)]
 mod tests {

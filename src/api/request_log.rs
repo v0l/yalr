@@ -1,3 +1,5 @@
+use crate::api::tenant::{Scope, TenantError};
+use crate::auth::admin::UserExtractor;
 use crate::db::{Detail, Filter, Summary};
 use crate::request_log::codec::unpack;
 use crate::state::AppState;
@@ -9,7 +11,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-type ApiError = (StatusCode, String);
+type ApiError = TenantError;
 
 fn internal(e: impl std::fmt::Display) -> ApiError {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
@@ -28,14 +30,16 @@ pub struct ListQuery {
 
 pub async fn list(
     State(state): State<Arc<AppState>>,
+    user: UserExtractor,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<Summary>>, ApiError> {
+    let scope = Scope::from(user);
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let filter = Filter {
         before: query.before,
         model: query.model.as_deref(),
         status: query.status.as_deref(),
-        user_id: query.user_id,
+        user_id: scope.owner().or(query.user_id),
         api_key_id: query.api_key_id,
         endpoint: query.endpoint.as_deref(),
         since_ms: None,
@@ -65,14 +69,45 @@ fn parse(text: &Option<String>) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
-pub async fn detail(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<i64>,
-) -> Result<Json<DetailResponse>, ApiError> {
-    let detail = state.db.request_log_detail(id)
+struct Access {
+    upstream: bool,
+}
+
+async fn visible(state: &AppState, scope: &Scope, id: i64) -> Result<(Detail, Access), ApiError> {
+    let detail = state
+        .db
+        .request_log_detail(id)
         .await
         .map_err(internal)?
+        .filter(|d| scope.is_admin() || d.user_id == Some(scope.user.id))
         .ok_or((StatusCode::NOT_FOUND, "no such request".to_string()))?;
+    let upstream = scope.is_admin() || serves_own_provider(state, scope, detail.provider.as_deref()).await?;
+    Ok((detail, Access { upstream }))
+}
+
+async fn serves_own_provider(state: &AppState, scope: &Scope, provider: Option<&str>) -> Result<bool, ApiError> {
+    let Some(name) = provider else { return Ok(false) };
+    Ok(scope.provider_names(state).await?.is_some_and(|names| names.iter().any(|n| n == name)))
+}
+
+fn hide_upstream(detail: &mut Detail) {
+    detail.upstream_url = None;
+    detail.upstream_request_headers = None;
+    detail.upstream_response_headers = None;
+    detail.attempt_log = None;
+    detail.route = None;
+}
+
+pub async fn detail(
+    State(state): State<Arc<AppState>>,
+    user: UserExtractor,
+    Path(id): Path<i64>,
+) -> Result<Json<DetailResponse>, ApiError> {
+    let scope = Scope::from(user);
+    let (mut detail, access) = visible(&state, &scope, id).await?;
+    if !access.upstream {
+        hide_upstream(&mut detail);
+    }
     let has_bodies = state.db.request_log_has_bodies(id).await.map_err(internal)?;
     let previous_log_id = match detail.previous_request_id.as_deref() {
         Some(previous) => state.db.request_log_id(previous).await.map_err(internal)?,
@@ -107,15 +142,18 @@ fn decode(bytes: Option<Vec<u8>>) -> serde_json::Value {
 
 pub async fn bodies(
     State(state): State<Arc<AppState>>,
+    user: UserExtractor,
     Path(id): Path<i64>,
 ) -> Result<Json<BodiesResponse>, ApiError> {
+    let scope = Scope::from(user);
+    let (_, access) = visible(&state, &scope, id).await?;
     let bodies = state.db.request_log_bodies(id)
         .await
         .map_err(internal)?
         .ok_or((StatusCode::NOT_FOUND, "no bodies stored for this request (expired or disabled)".to_string()))?;
     Ok(Json(BodiesResponse {
         client_request: decode(bodies.client_request_packed),
-        upstream_request: decode(bodies.upstream_request_packed),
+        upstream_request: if access.upstream { decode(bodies.upstream_request_packed) } else { serde_json::Value::Null },
         response: decode(bodies.response_packed),
     }))
 }

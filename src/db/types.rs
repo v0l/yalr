@@ -147,6 +147,8 @@ pub struct RoutingConfig {
     pub updated_at: chrono::DateTime<chrono::Utc>,
     pub input_modalities: Option<String>,
     pub output_modalities: Option<String>,
+    #[sqlx(default)]
+    pub owner_user_id: Option<i64>,
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]

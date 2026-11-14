@@ -347,58 +347,65 @@ pub async fn get_user(
 
 const BALANCE_PAGE: i64 = 200;
 
-/// GET /api/payments/balances — List all user balances (admin)
-#[axum::debug_handler]
 pub async fn list_all_balances(
     State(state): State<std::sync::Arc<AppState>>,
-) -> Json<Vec<crate::db::UserBalanceWithUsername>> {
-    let balances = state.db.list_all_user_balances(BALANCE_PAGE).await.unwrap_or_default();
-    Json(balances)
+    user: crate::auth::admin::UserExtractor,
+) -> Result<Json<Vec<crate::db::UserBalanceWithUsername>>, (StatusCode, String)> {
+    let scope = crate::api::tenant::Scope::from(user);
+    let balances = match scope.owner() {
+        None => state.db.list_all_user_balances(BALANCE_PAGE).await,
+        Some(owner) => state.db.list_user_balance_with_username(owner).await,
+    }
+    .map_err(crate::api::tenant::internal)?;
+    Ok(Json(balances))
 }
 
-/// GET /api/payments/balances/:user_id — Get a single user's balance + recent transactions
-#[axum::debug_handler]
+#[derive(serde::Serialize)]
+pub struct BalanceDetail {
+    pub user_id: i64,
+    pub balance_msat: i64,
+    pub lifetime_deposited_msat: i64,
+    pub transactions: Vec<crate::db::BalanceTransactionRow>,
+}
+
 pub async fn get_user_balance_details(
     Path(user_id): Path<i64>,
     State(state): State<std::sync::Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let balance = state.db.get_user_balance(user_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let transactions = state.db.get_user_transactions(user_id, 50)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let balance_msat = balance.as_ref().map(|b| b.balance_msat).unwrap_or(0);
-    let lifetime_deposited = balance.as_ref().map(|b| b.lifetime_deposited_msat).unwrap_or(0);
-
-    Ok(Json(serde_json::json!({
-        "user_id": user_id,
-        "balance_msat": balance_msat,
-        "lifetime_deposited_msat": lifetime_deposited,
-        "transactions": transactions,
-    })))
+) -> Result<Json<BalanceDetail>, (StatusCode, String)> {
+    let internal = crate::api::tenant::internal;
+    let balance = state.db.get_user_balance(user_id).await.map_err(internal)?;
+    let transactions = state.db.get_user_transactions(user_id, 50).await.map_err(internal)?;
+    Ok(Json(BalanceDetail {
+        user_id,
+        balance_msat: balance.as_ref().map_or(0, |b| b.balance_msat),
+        lifetime_deposited_msat: balance.as_ref().map_or(0, |b| b.lifetime_deposited_msat),
+        transactions,
+    }))
 }
 
-/// GET /api/payments/transactions — List recent transactions (admin audit)
-#[axum::debug_handler]
 pub async fn list_admin_transactions(
     State(state): State<std::sync::Arc<AppState>>,
-) -> Json<Vec<crate::db::BalanceTransactionRow>> {
-    let txs = state.db.list_all_transactions(200).await.unwrap_or_default();
-    Json(txs)
+    user: crate::auth::admin::UserExtractor,
+) -> Result<Json<Vec<crate::db::BalanceTransactionRow>>, (StatusCode, String)> {
+    let scope = crate::api::tenant::Scope::from(user);
+    let txs = match scope.owner() {
+        None => state.db.list_all_transactions(200).await,
+        Some(owner) => state.db.get_user_transactions(owner, 200).await,
+    }
+    .map_err(crate::api::tenant::internal)?;
+    Ok(Json(txs))
 }
 
-/// GET /api/payments/invoices — List all lightning invoices (admin)
-#[axum::debug_handler]
 pub async fn list_admin_invoices(
     State(state): State<std::sync::Arc<AppState>>,
+    user: crate::auth::admin::UserExtractor,
     Query(params): Query<HashMap<String, String>>,
-) -> Json<Vec<crate::db::LightningInvoiceRow>> {
-    let user_id = params.get("user_id").and_then(|v| v.parse::<i64>().ok());
-    let invoices = state.db.list_all_lightning_invoices(user_id, 200).await.unwrap_or_default();
-    Json(invoices)
+) -> Result<Json<Vec<crate::db::LightningInvoiceRow>>, (StatusCode, String)> {
+    let scope = crate::api::tenant::Scope::from(user);
+    let requested = params.get("user_id").and_then(|v| v.parse::<i64>().ok());
+    let user_id = scope.owner().or(requested);
+    let invoices = state.db.list_all_lightning_invoices(user_id, 200).await.map_err(crate::api::tenant::internal)?;
+    Ok(Json(invoices))
 }
 
 // ── Model Access Control Admin APIs ───────────────────────────────────

@@ -22,15 +22,15 @@ pub mod modalities;
 pub mod model_cache;
 pub mod currency_balances;
 pub mod model_pricing;
-pub mod my_pricing;
 pub mod models;
-pub mod my_provider_stats;
-pub mod my_providers;
 pub mod oauth;
 pub mod pool_models;
+pub mod provider_payments;
+pub mod provider_stats;
 pub mod providers;
 pub mod request_log;
 pub mod responses;
+pub mod routes;
 pub mod routing;
 mod routing_modalities;
 #[cfg(test)]
@@ -38,9 +38,10 @@ mod extra_body_tests;
 #[cfg(test)]
 mod routing_nested_tests;
 pub mod shared;
+pub mod tenant;
 pub mod quota;
 #[cfg(test)]
-mod user_provider_tests;
+mod tenant_tests;
 pub mod usage;
 pub mod users;
 pub mod handlers;

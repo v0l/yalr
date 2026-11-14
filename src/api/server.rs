@@ -1,5 +1,5 @@
 use crate::api::chat::chat_handler;
-use crate::api::{health, config, routing, providers, model_pricing, models as model_handlers, responses as responses_handlers, users};
+use crate::api::{health, models as model_handlers, responses as responses_handlers};
 use crate::api::ws;
 use crate::auth::admin::SessionStore;
 use crate::config::AppConfig;
@@ -11,7 +11,7 @@ use axum::{
     extract::DefaultBodyLimit,
     http::{Request, StatusCode},
     response::IntoResponse,
-    routing::{delete, get, post, put},
+    routing::{get, post},
     Router,
 };
 use std::net::SocketAddr;
@@ -138,174 +138,7 @@ pub async fn run_with_shutdown<F>(
         crate::discovery::spawn(discovery, state.db.clone());
     }
 
-    let admin_ui_path = config.admin_ui_path.clone();
-    let cors = CorsLayer::permissive();
-
-    use crate::auth::admin::{login, logout, auth_status, check_setup_complete, setup_first_user, auth_middleware, admin_middleware};
-    use crate::auth::api_keys::{create_api_key, list_api_keys, delete_api_key, disable_api_key, enable_api_key, create_api_key_for_user};
-    use users::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, list_admin_transactions, list_admin_invoices, list_user_model_permissions, create_user_model_permission, delete_user_model_permission};
-    
-    let public_auth_routes = Router::new()
-        .route("/auth/setup", post(setup_first_user))
-        .route("/auth/login", post(login))
-        .route("/setup/status", get(check_setup_complete));
-
-    let protected_routes = Router::new()
-        .route("/auth/status", get(auth_status))
-        .route("/auth/logout", post(logout))
-        .route("/my/providers", get(crate::api::my_providers::list).post(crate::api::my_providers::create))
-        .route("/my/providers/:slug", put(crate::api::my_providers::update).delete(crate::api::my_providers::delete))
-        .route("/my/providers/:slug/health", post(crate::api::my_providers::health))
-        .route("/my/providers/:slug/models", get(crate::api::my_providers::models))
-        .route("/my/providers/:slug/stats", get(crate::api::my_provider_stats::stats))
-        .route("/my/pricing", get(crate::api::my_pricing::list).post(crate::api::my_pricing::create))
-        .route("/my/pricing/:id", put(crate::api::my_pricing::update).delete(crate::api::my_pricing::delete))
-        .route("/my/balances", get(crate::api::currency_balances::my_balances))
-        .route("/my/currencies", get(crate::api::currency_balances::currencies))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
-
-    let admin_routes = Router::new()
-        .route("/providers", get(providers::list_providers))
-        .route("/providers", post(providers::create_provider))
-        .route("/providers/:slug/topup", post(providers::create_provider_topup))
-        .route("/providers/:slug", put(providers::update_provider))
-        .route("/providers/:slug/generate-api-key", post(providers::generate_provider_api_key))
-        .route("/providers/:slug", delete(providers::delete_provider))
-        .route("/oauth/start", post(crate::api::oauth::start))
-        .route("/oauth/complete", post(crate::api::oauth::complete))
-        .route("/oauth/:slug/reauth", post(crate::api::oauth::reauth))
-        .route("/metrics", get(health::get_metrics))
-        .route("/metrics/history", get(health::get_metrics_history))
-        .route("/metrics/health", get(health::get_health_overview))
-        .route("/request-log", get(crate::api::request_log::list))
-        .route("/request-log/:id", get(crate::api::request_log::detail))
-        .route("/request-log/:id/bodies", get(crate::api::request_log::bodies))
-        .route("/config", get(config::get_router_config))
-        .route("/routing-configs", get(routing::list_routing_configs))
-        .route("/routing-configs", post(routing::create_routing_config))
-        .route("/routing-configs/:id", put(routing::update_routing_config))
-        .route("/routing-configs/:id", delete(routing::delete_routing_config))
-        .route("/routing-configs/providers", post(routing::create_routing_config_provider))
-        .route("/routing-configs/providers/:id", put(routing::update_routing_config_provider))
-        .route("/routing-configs/providers/:id", delete(routing::delete_routing_config_provider))
-        .route("/providers/:slug/models", get(model_handlers::list_provider_models))
-        .route("/models/sync/:provider_slug", get(model_handlers::sync_provider_models))
-        .route("/models/discrepancies", post(model_handlers::detect_model_discrepancies))
-        .route("/model-pricing", get(model_pricing::list_model_pricing))
-        .route("/model-pricing", post(model_pricing::create_model_pricing))
-        .route("/model-pricing/market", get(crate::api::market::market))
-        .route("/model-pricing/listing", get(crate::api::market::listing))
-        .route("/model-pricing/:model_name", put(model_pricing::update_model_pricing))
-        .route("/model-pricing/:model_name", delete(model_pricing::delete_model_pricing))
-        .route("/api-keys", get(list_api_keys))
-        .route("/api-keys", post(create_api_key))
-        .route("/api-keys/:id", delete(delete_api_key))
-        .route("/api-keys/:id/disable", post(disable_api_key))
-        .route("/api-keys/:id/enable", post(enable_api_key))
-        .route("/api-keys/:id/usage", get(crate::api::usage::key_usage))
-        .route("/users/:id/usage", get(crate::api::usage::user_usage))
-        .route("/users", get(list_users))
-        .route("/users", post(create_user))
-        .route("/users/:id/api-keys", post(create_api_key_for_user))
-        .route("/users/:id", get(get_user))
-        .route("/users/:id", put(update_user))
-        .route("/users/:id", delete(delete_user))
-        .route("/payments/balances", get(list_all_balances))
-        .route("/payments/balances/:user_id", get(get_user_balance_details))
-        .route("/payments/credit", post(crate::api::currency_balances::admin_credit))
-        .route("/payments/currencies", get(crate::api::currency_balances::currencies))
-        .route("/payments/balances/:user_id/currencies", get(crate::api::currency_balances::user_balances))
-        .route("/payments/debit", post(crate::api::currency_balances::admin_debit))
-        .route("/payments/transactions", get(list_admin_transactions))
-        .route("/payments/invoices", get(list_admin_invoices))
-        .route("/users/:user_id/models", get(list_user_model_permissions))
-        .route("/users/:user_id/models", post(create_user_model_permission))
-        .route("/users/:user_id/models/:model", delete(delete_user_model_permission))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), admin_middleware));
-
-    let all_protected = protected_routes.merge(admin_routes);
-
-    let chat_completions_routes = Router::new()
-        .route("/v1/chat/completions", post(chat_handler))
-        .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
-        .layer(axum::middleware::from_fn_with_state(INFERENCE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
-
-    let responses_routes = Router::new()
-        .route("/v1/responses", post(responses_handlers::create_response))
-        .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
-        .layer(axum::middleware::from_fn_with_state(INFERENCE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
-
-    let audio_routes = Router::new()
-        .route("/v1/audio/transcriptions", post(crate::api::audio::transcriptions))
-        .route("/v1/audio/translations", post(crate::api::audio::translations))
-        .route("/v1/audio/speech", post(crate::api::audio::speech))
-        .route("/v1/audio/voices", get(crate::api::audio::voices))
-        .layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT_BYTES))
-        .layer(axum::middleware::from_fn_with_state(AUDIO_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
-
-    let image_routes = Router::new()
-        .route("/v1/images/generations", post(crate::api::images::generations))
-        .route("/v1/images/edits", post(crate::api::images::edits))
-        .route("/v1/images/variations", post(crate::api::images::variations))
-        .layer(DefaultBodyLimit::max(IMAGE_BODY_LIMIT_BYTES))
-        .layer(axum::middleware::from_fn_with_state(IMAGE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
-
-    let decision_routes = Router::new()
-        .route("/v1/systemone", post(crate::api::decisions::decide))
-        .route("/api/alpha/decisions", post(crate::api::decisions::decide))
-        .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
-        .layer(axum::middleware::from_fn_with_state(INFERENCE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
-
-    let routstr_protected_routes = Router::new()
-        .route("/v1/balance/info", get(crate::payments::routstr::balance_info))
-        .route("/v1/account", get(crate::payments::account::account))
-        .route("/v1/usage", get(crate::api::usage::my_usage))
-        .route("/v1/quota", get(crate::api::quota::get_quota))
-        .route("/v1/usage/requests", get(crate::api::usage::my_requests))
-        .route("/v1/balance/refund", post(crate::payments::routstr::balance_refund))
-        .route("/lightning/invoice", post(crate::payments::routstr::create_lightning_invoice))
-        .route("/lightning/invoice/:payment_hash/status", get(crate::payments::routstr::check_lightning_invoice))
-        .route("/providers/:slug/lightning/invoice", post(crate::payments::routstr::create_provider_invoice))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
-
-    let models_route = Router::new()
-        .route("/", get(model_handlers::models_entry))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), crate::auth::admin::optional_auth_middleware));
-
-    let anonymous_payment_routes = Router::new()
-        .route("/v2/lightning/invoice", post(crate::payments::anonymous::create_invoice))
-        .route("/v2/lightning/invoice/:invoice_id/status", get(crate::payments::anonymous::invoice_status))
-        .route("/v2/lightning/recover", post(crate::payments::anonymous::recover_invoice))
-        .route("/v1/balance/lightning/invoice", post(crate::payments::anonymous::create_invoice))
-        .route("/v1/balance/lightning/invoice/:invoice_id/status", get(crate::payments::anonymous::invoice_status));
-
-    let app = Router::new()
-        .nest("/api", public_auth_routes.merge(all_protected))
-        .route("/api/metrics/ws", get(ws::ws_metrics_handler))
-        .merge(chat_completions_routes)
-        .merge(responses_routes)
-        .merge(audio_routes)
-        .merge(image_routes)
-        .merge(decision_routes)
-        .merge(routstr_protected_routes)
-        .merge(anonymous_payment_routes)
-        .nest("/v1/models", models_route)
-        .route("/v1/info", get(crate::payments::routstr::routstr_info))
-        .route("/api/health", get(health::health_check))
-        .fallback(axum::routing::get({
-            let admin_ui_path = admin_ui_path.clone();
-            move |req: axum::extract::Request| serve_admin_fallback(req, admin_ui_path.clone())
-        }))
-        .layer(cors)
-        .layer(axum::middleware::map_response(crate::api::retry_after::add_header))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
-    let app = with_compression(app);
+    let app = build_app(state);
 
     let addr: SocketAddr = addr.parse()?;
     tracing::info!("Listening on {}", addr);
@@ -343,116 +176,45 @@ pub async fn run(
     run_with_shutdown(config, addr, metrics_emitter, metrics_store, shutdown).await
 }
 
-#[cfg(test)]
-pub async fn create_test_app(state: Arc<AppState>) -> Router {
-    use crate::auth::admin::{login, logout, auth_status, check_setup_complete, setup_first_user, auth_middleware, admin_middleware, AdminExtractor};
-    use crate::auth::api_keys::{create_api_key, list_api_keys, delete_api_key, disable_api_key, enable_api_key, create_api_key_for_user};
-    use users::{list_users, create_user, update_user, delete_user, get_user, list_all_balances, get_user_balance_details, list_admin_transactions, list_admin_invoices};
-    use tower_http::cors::CorsLayer;
-    use tower_http::trace::TraceLayer;
-    
-    let public_auth_routes = Router::new()
-        .route("/auth/setup", post(setup_first_user))
-        .route("/auth/login", post(login))
-        .route("/setup/status", get(check_setup_complete));
-
-    let protected_routes = Router::new()
-        .route("/auth/status", get(auth_status))
-        .route("/auth/logout", post(logout))
-        .route("/my/providers", get(crate::api::my_providers::list).post(crate::api::my_providers::create))
-        .route("/my/providers/:slug", put(crate::api::my_providers::update).delete(crate::api::my_providers::delete))
-        .route("/my/providers/:slug/health", post(crate::api::my_providers::health))
-        .route("/my/providers/:slug/models", get(crate::api::my_providers::models))
-        .route("/my/providers/:slug/stats", get(crate::api::my_provider_stats::stats))
-        .route("/my/pricing", get(crate::api::my_pricing::list).post(crate::api::my_pricing::create))
-        .route("/my/pricing/:id", put(crate::api::my_pricing::update).delete(crate::api::my_pricing::delete))
-        .route("/my/balances", get(crate::api::currency_balances::my_balances))
-        .route("/my/currencies", get(crate::api::currency_balances::currencies))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
-
-    let admin_routes = Router::new()
-        .route("/providers", get(providers::list_providers))
-        .route("/providers", post(providers::create_provider))
-        .route("/providers/:slug", put(providers::update_provider))
-        .route("/providers/:slug", delete(providers::delete_provider))
-        .route("/metrics", get(health::get_metrics))
-        .route("/metrics/history", get(health::get_metrics_history))
-        .route("/metrics/health", get(health::get_health_overview))
-        .route("/config", get(config::get_router_config))
-        .route("/routing-configs", get(routing::list_routing_configs))
-        .route("/routing-configs", post(routing::create_routing_config))
-        .route("/routing-configs/:id", put(routing::update_routing_config))
-        .route("/routing-configs/:id", delete(routing::delete_routing_config))
-        .route("/routing-configs/providers", post(routing::create_routing_config_provider))
-        .route("/routing-configs/providers/:id", put(routing::update_routing_config_provider))
-        .route("/routing-configs/providers/:id", delete(routing::delete_routing_config_provider))
-        .route("/providers/:slug/models", get(model_handlers::list_provider_models))
-        .route("/models/sync/:provider_slug", get(model_handlers::sync_provider_models))
-        .route("/models/discrepancies", post(model_handlers::detect_model_discrepancies))
-        .route("/model-pricing", get(model_pricing::list_model_pricing))
-        .route("/model-pricing", post(model_pricing::create_model_pricing))
-        .route("/model-pricing/:model_name", put(model_pricing::update_model_pricing))
-        .route("/model-pricing/:model_name", delete(model_pricing::delete_model_pricing))
-        .route("/api-keys", get(list_api_keys))
-        .route("/api-keys", post(create_api_key))
-        .route("/api-keys/:id", delete(delete_api_key))
-        .route("/api-keys/:id/disable", post(disable_api_key))
-        .route("/api-keys/:id/enable", post(enable_api_key))
-        .route("/api-keys/:id/usage", get(crate::api::usage::key_usage))
-        .route("/users/:id/usage", get(crate::api::usage::user_usage))
-        .route("/users", get(list_users))
-        .route("/users", post(create_user))
-        .route("/users/:id/api-keys", post(create_api_key_for_user))
-        .route("/users/:id", get(get_user))
-        .route("/users/:id", put(update_user))
-        .route("/users/:id", delete(delete_user))
-        .route("/payments/balances", get(list_all_balances))
-        .route("/payments/balances/:user_id", get(get_user_balance_details))
-        .route("/payments/credit", post(crate::api::currency_balances::admin_credit))
-        .route("/payments/currencies", get(crate::api::currency_balances::currencies))
-        .route("/payments/balances/:user_id/currencies", get(crate::api::currency_balances::user_balances))
-        .route("/payments/debit", post(crate::api::currency_balances::admin_debit))
-        .route("/payments/transactions", get(list_admin_transactions))
-        .route("/payments/invoices", get(list_admin_invoices))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), admin_middleware));
-
-    let all_protected = protected_routes.merge(admin_routes);
+pub fn build_app(state: Arc<AppState>) -> Router {
+    let auth = || axum::middleware::from_fn_with_state(state.clone(), crate::auth::admin::auth_middleware);
+    let limited = |limit: usize| {
+        (
+            DefaultBodyLimit::max(limit),
+            axum::middleware::from_fn_with_state(limit, crate::api::body_limit::request_too_large_json),
+        )
+    };
 
     let chat_completions_routes = Router::new()
         .route("/v1/chat/completions", post(chat_handler))
-        .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
-        .layer(axum::middleware::from_fn_with_state(INFERENCE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+        .layer(limited(INFERENCE_BODY_LIMIT_BYTES))
+        .layer(auth());
 
     let responses_routes = Router::new()
         .route("/v1/responses", post(responses_handlers::create_response))
-        .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
-        .layer(axum::middleware::from_fn_with_state(INFERENCE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+        .layer(limited(INFERENCE_BODY_LIMIT_BYTES))
+        .layer(auth());
 
     let audio_routes = Router::new()
         .route("/v1/audio/transcriptions", post(crate::api::audio::transcriptions))
         .route("/v1/audio/translations", post(crate::api::audio::translations))
         .route("/v1/audio/speech", post(crate::api::audio::speech))
         .route("/v1/audio/voices", get(crate::api::audio::voices))
-        .layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT_BYTES))
-        .layer(axum::middleware::from_fn_with_state(AUDIO_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+        .layer(limited(AUDIO_BODY_LIMIT_BYTES))
+        .layer(auth());
 
     let image_routes = Router::new()
         .route("/v1/images/generations", post(crate::api::images::generations))
         .route("/v1/images/edits", post(crate::api::images::edits))
         .route("/v1/images/variations", post(crate::api::images::variations))
-        .layer(DefaultBodyLimit::max(IMAGE_BODY_LIMIT_BYTES))
-        .layer(axum::middleware::from_fn_with_state(IMAGE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+        .layer(limited(IMAGE_BODY_LIMIT_BYTES))
+        .layer(auth());
 
     let decision_routes = Router::new()
         .route("/v1/systemone", post(crate::api::decisions::decide))
         .route("/api/alpha/decisions", post(crate::api::decisions::decide))
-        .layer(DefaultBodyLimit::max(INFERENCE_BODY_LIMIT_BYTES))
-        .layer(axum::middleware::from_fn_with_state(INFERENCE_BODY_LIMIT_BYTES, crate::api::body_limit::request_too_large_json))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+        .layer(limited(INFERENCE_BODY_LIMIT_BYTES))
+        .layer(auth());
 
     let routstr_protected_routes = Router::new()
         .route("/v1/balance/info", get(crate::payments::routstr::balance_info))
@@ -463,7 +225,8 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/v1/balance/refund", post(crate::payments::routstr::balance_refund))
         .route("/lightning/invoice", post(crate::payments::routstr::create_lightning_invoice))
         .route("/lightning/invoice/:payment_hash/status", get(crate::payments::routstr::check_lightning_invoice))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+        .route("/providers/:slug/lightning/invoice", post(crate::payments::routstr::create_provider_invoice))
+        .layer(auth());
 
     let models_route = Router::new()
         .route("/", get(model_handlers::models_entry))
@@ -476,7 +239,10 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .route("/v1/balance/lightning/invoice", post(crate::payments::anonymous::create_invoice))
         .route("/v1/balance/lightning/invoice/:invoice_id/status", get(crate::payments::anonymous::invoice_status));
 
+    let admin_ui_path = state.config.admin_ui_path.clone();
     let app = Router::new()
+        .nest("/api", crate::api::routes::api(state.clone()))
+        .route("/api/metrics/ws", get(ws::ws_metrics_handler))
         .merge(chat_completions_routes)
         .merge(responses_routes)
         .merge(audio_routes)
@@ -487,15 +253,15 @@ pub async fn create_test_app(state: Arc<AppState>) -> Router {
         .nest("/v1/models", models_route)
         .route("/v1/info", get(crate::payments::routstr::routstr_info))
         .route("/api/health", get(health::health_check))
-        .route("/api/metrics/ws", get(ws::ws_metrics_handler))
-        .nest("/api", public_auth_routes.merge(all_protected))
-        .fallback_service(axum::routing::get({
-            let state = state.clone();
-            move || serve_admin_fallback(axum::extract::Request::new(Body::empty()), state.config.admin_ui_path.clone())
-        }))
+        .fallback(axum::routing::get(move |req: axum::extract::Request| serve_admin_fallback(req, admin_ui_path.clone())))
         .layer(CorsLayer::permissive())
         .layer(axum::middleware::map_response(crate::api::retry_after::add_header))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
     with_compression(app)
+}
+
+#[cfg(test)]
+pub async fn create_test_app(state: Arc<AppState>) -> Router {
+    build_app(state)
 }

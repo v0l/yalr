@@ -114,6 +114,17 @@ impl Database {
         .await
     }
 
+    pub async fn list_user_balance_with_username(&self, user_id: i64) -> Result<Vec<UserBalanceWithUsername>, sqlx::Error> {
+        sqlx::query_as::<_, UserBalanceWithUsername>(
+            "SELECT ub.id, ub.user_id, ub.balance_msat, ub.lifetime_deposited_msat, ub.created_at, ub.updated_at, \
+             COALESCE(u.username, u.external_id, CONCAT('user-', ub.user_id)) AS username \
+             FROM user_balances ub LEFT JOIN users u ON ub.user_id = u.id WHERE ub.user_id = ?",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
     pub async fn list_all_transactions(&self, limit: i64) -> Result<Vec<BalanceTransactionRow>, sqlx::Error> {
         sqlx::query_as::<_, BalanceTransactionRow>(
             "SELECT id, user_id, amount_msat, transaction_type, reference_id, metadata, currency, amount_milli, created_at \

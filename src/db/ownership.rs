@@ -1,4 +1,4 @@
-use super::{Database, NewProvider, Provider};
+use super::{Database, NewProvider, NewRoutingConfig, Provider, RoutingConfig};
 
 impl Database {
     pub async fn create_owned_provider(&self, owner_user_id: i64, provider: NewProvider<'_>) -> Result<Provider, sqlx::Error> {
@@ -33,6 +33,30 @@ impl Database {
             .fetch_optional(&self.pool)
             .await
             .map(|name: Option<Option<String>>| name.flatten())
+    }
+
+    pub async fn create_owned_routing_config(
+        &self,
+        owner_user_id: Option<i64>,
+        config: NewRoutingConfig,
+    ) -> Result<RoutingConfig, sqlx::Error> {
+        let created = self.create_routing_config(config).await?;
+        if owner_user_id.is_none() {
+            return Ok(created);
+        }
+        sqlx::query("UPDATE routing_config SET owner_user_id = ? WHERE id = ?")
+            .bind(owner_user_id)
+            .bind(created.id)
+            .execute(&self.pool)
+            .await?;
+        self.get_routing_config(created.id).await?.ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn list_routing_configs_owned_by(&self, owner_user_id: i64) -> Result<Vec<RoutingConfig>, sqlx::Error> {
+        sqlx::query_as::<_, RoutingConfig>("SELECT * FROM routing_config WHERE owner_user_id = ? ORDER BY id")
+            .bind(owner_user_id)
+            .fetch_all(&self.pool)
+            .await
     }
 }
 

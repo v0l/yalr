@@ -1,11 +1,18 @@
-use crate::providers::CurrencyAmount;
-use crate::state::AppState;
 use crate::api::health::{build_provider_health_entry, ProviderHealthEntry};
+use crate::api::tenant::{bad_request, internal, Scope, TenantError};
+use crate::auth::admin::UserExtractor;
+use crate::db::{Provider, ProviderType};
+use crate::state::AppState;
 use axum::{
     extract::{Path, State},
+    http::StatusCode,
     Json,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+type ApiResult<T> = Result<Json<T>, TenantError>;
 
 #[derive(Serialize)]
 pub struct ProviderResponse {
@@ -16,17 +23,13 @@ pub struct ProviderResponse {
     pub provider_type: String,
     pub owner_user_id: Option<i64>,
     pub owner_username: Option<String>,
+    pub has_api_key: bool,
     pub created_at: crate::db::Timestamp,
     pub updated_at: crate::db::Timestamp,
-    /// Live health+metrics for this provider.
-    /// Only present when the router has the provider loaded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub health: Option<ProviderHealthEntry>,
-    /// Supported payment options for this provider.
     pub payment_options: Vec<PaymentOption>,
-    /// Whether this provider authenticates via OAuth (subscription) rather than an API key.
     pub is_oauth: bool,
-    /// OAuth connection status (present only for OAuth providers).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oauth: Option<OAuthStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -39,12 +42,9 @@ pub struct ProviderResponse {
 
 #[derive(Serialize)]
 pub struct OAuthStatus {
-    /// True when an access/refresh token pair is stored.
     pub connected: bool,
-    /// Unix epoch milliseconds at which the access token expires.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
-    /// True when the stored access token is already past its expiry.
     pub expired: bool,
 }
 
@@ -96,7 +96,9 @@ pub struct ProviderCreateRequest {
     pub name: String,
     pub slug: String,
     pub base_url: String,
+    #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
     pub provider_type: String,
     #[serde(default)]
     pub extra_body: Option<serde_json::Value>,
@@ -124,128 +126,124 @@ where
     Option::<T>::deserialize(deserializer).map(Some)
 }
 
+fn payment_options(kind: ProviderType) -> Vec<PaymentOption> {
+    match kind {
+        ProviderType::Routstr => vec![PaymentOption {
+            currency: SupportedCurrencyType::Sats,
+            payment_method: PaymentMethod::Lightning,
+        }],
+        ProviderType::Ppq => vec![PaymentOption {
+            currency: SupportedCurrencyType::UsdMicro,
+            payment_method: PaymentMethod::Lightning,
+        }],
+        _ => vec![],
+    }
+}
+
+fn oauth_status(p: &Provider) -> Option<OAuthStatus> {
+    if !p.provider_type.is_oauth() {
+        return None;
+    }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    Some(OAuthStatus {
+        connected: p.oauth_access_token.is_some() && p.oauth_refresh_token.is_some(),
+        expires_at: p.oauth_expires_at,
+        expired: p.oauth_expires_at.is_some_and(|e| e <= now_ms),
+    })
+}
+
+fn response(p: Provider, owner_username: Option<String>, health: Option<ProviderHealthEntry>) -> ProviderResponse {
+    ProviderResponse {
+        extra_body: p.extra_body_map(),
+        has_api_key: p.api_key.as_deref().is_some_and(|k| !k.is_empty()),
+        payment_options: payment_options(p.provider_type),
+        is_oauth: p.provider_type.is_oauth(),
+        oauth: oauth_status(&p),
+        default_client_version: crate::providers::default_client_version(p.provider_type),
+        id: p.id,
+        name: p.name,
+        slug: p.slug,
+        base_url: p.base_url,
+        provider_type: p.provider_type.as_str().to_string(),
+        owner_user_id: p.owner_user_id,
+        owner_username,
+        created_at: p.created_at,
+        updated_at: p.updated_at,
+        health,
+        client_version: p.client_version,
+    }
+}
+
 async fn owner_username(state: &AppState, owner: Option<i64>) -> Option<String> {
     state.db.provider_owner_username(owner?).await.ok().flatten()
 }
 
-#[axum::debug_handler]
-pub async fn list_providers(State(state): State<std::sync::Arc<AppState>>) -> Json<ListProvidersResponse> {
-    let providers = match state.config.db.list_providers().await {
-        Ok(providers) => providers,
-        Err(e) => {
-            tracing::error!("Failed to list providers from DB: {}", e);
-            return Json(ListProvidersResponse { providers: vec![] });
+pub(crate) async fn reload(state: &AppState) -> Result<(), TenantError> {
+    state.config.router.reload_config().await.map_err(|e| internal(e))
+}
+
+pub async fn list_providers(State(state): State<Arc<AppState>>, user: UserExtractor) -> ApiResult<ListProvidersResponse> {
+    let scope = Scope::from(user);
+    let providers = scope.providers(&state).await?;
+    let mut health_by_slug: HashMap<String, ProviderHealthEntry> = HashMap::new();
+    for provider in state.config.router.get_providers().await {
+        if providers.iter().any(|p| p.slug == provider.slug()) {
+            health_by_slug.insert(provider.slug().to_string(), build_provider_health_entry(&state, provider.as_ref()).await);
         }
-    };
-
-    // Build slug→health-entry map from live router providers
-    let live_providers = state.config.router.get_providers().await;
-    let mut health_by_slug: std::collections::HashMap<String, ProviderHealthEntry> =
-        std::collections::HashMap::new();
-    for provider in &live_providers {
-        let entry = build_provider_health_entry(&state, provider.as_ref()).await;
-        health_by_slug.insert(provider.slug().to_string(), entry);
     }
-
-    let mut owner_names: std::collections::HashMap<i64, Option<String>> = std::collections::HashMap::new();
+    let mut owner_names: HashMap<i64, Option<String>> = HashMap::new();
     for owner in providers.iter().filter_map(|p| p.owner_user_id) {
         if !owner_names.contains_key(&owner) {
             owner_names.insert(owner, owner_username(&state, Some(owner)).await);
         }
     }
-
-    let providers_list: Vec<ProviderResponse> = providers
+    let providers = providers
         .into_iter()
         .map(|p| {
-            // Determine supported currencies based on provider type
-            let supported_currencies = match p.provider_type {
-                crate::db::ProviderType::Routstr => vec![PaymentOption {
-                    currency: SupportedCurrencyType::Sats,
-                    payment_method: PaymentMethod::Lightning,
-                }],
-                crate::db::ProviderType::Ppq => vec![PaymentOption {
-                    currency: SupportedCurrencyType::UsdMicro,
-                    payment_method: PaymentMethod::Lightning,
-                }],
-                _ => vec![], // Other providers don't support direct top-ups
-            };
-
-            let is_oauth = p.provider_type.is_oauth();
-            let oauth = if is_oauth {
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                Some(OAuthStatus {
-                    connected: p.oauth_access_token.is_some() && p.oauth_refresh_token.is_some(),
-                    expires_at: p.oauth_expires_at,
-                    expired: p.oauth_expires_at.map(|e| e <= now_ms).unwrap_or(false),
-                })
-            } else {
-                None
-            };
-
-            ProviderResponse {
-                extra_body: p.extra_body_map(),
-                id: p.id,
-                name: p.name.clone(),
-                slug: p.slug.clone(),
-                base_url: p.base_url,
-                provider_type: p.provider_type.as_str().to_string(),
-                owner_username: p.owner_user_id.and_then(|id| owner_names.get(&id).cloned().flatten()),
-                owner_user_id: p.owner_user_id,
-                created_at: p.created_at,
-                updated_at: p.updated_at,
-                health: health_by_slug.remove(&p.slug),
-                payment_options: supported_currencies,
-                is_oauth,
-                oauth,
-                default_client_version: crate::providers::default_client_version(p.provider_type),
-                client_version: p.client_version,
-            }
+            let name = p.owner_user_id.and_then(|id| owner_names.get(&id).cloned().flatten());
+            let health = health_by_slug.remove(&p.slug);
+            response(p, name, health)
         })
         .collect();
-
-    Json(ListProvidersResponse {
-        providers: providers_list,
-    })
+    Ok(Json(ListProvidersResponse { providers }))
 }
 
-#[axum::debug_handler]
 pub async fn create_provider(
-    State(state): State<std::sync::Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
+    user: UserExtractor,
     Json(request): Json<ProviderCreateRequest>,
-) -> Result<Json<ProviderCreateResponse>, (axum::http::StatusCode, String)> {
-    use crate::db::ProviderType;
-
-    let provider_type = ProviderType::from_str(&request.provider_type)
-        .unwrap_or(ProviderType::OpenAi);
+) -> ApiResult<ProviderCreateResponse> {
+    let scope = Scope::from(user);
+    scope.check_url(&request.base_url).await?;
+    let provider_type = scope.provider_type(&request.provider_type)?;
+    let slug = scope.provider_slug(&request.slug)?;
     let extra_body = crate::api::shared::parse_extra_body(request.extra_body.clone())?;
-
+    let name = match scope.owner() {
+        None => request.name.trim().to_string(),
+        Some(_) => format!("{}/{}", scope.handle(), request.name.trim()),
+    };
     let new_provider = crate::db::NewProvider {
-        name: &request.name,
-        slug: &request.slug,
-        base_url: &request.base_url,
-        api_key: Some(&request.api_key),
+        name: &name,
+        slug: &slug,
+        base_url: request.base_url.trim(),
+        api_key: Some(request.api_key.as_str()).filter(|k| !k.is_empty()),
         provider_type: Some(provider_type),
     };
-
-    let created = state.config.db.create_provider(new_provider).await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    if let Some(body) = &extra_body {
-        state.config.db.set_provider_extra_body(created.id, Some(body)).await
-            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let created = match scope.owner() {
+        None => state.db.create_provider(new_provider).await,
+        Some(owner) => state.db.create_owned_provider(owner, new_provider).await,
     }
-
-    state.config.router.reload_config().await
-        .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    tracing::info!(
-        provider_name = request.name,
-        "Provider added and config reloaded successfully"
-    );
-
+    .map_err(|e| match e {
+        sqlx::Error::Database(ref db) if db.is_unique_violation() => {
+            (StatusCode::CONFLICT, "A provider with that name or slug exists".to_string())
+        }
+        other => internal(other),
+    })?;
+    if let Some(body) = &extra_body {
+        state.db.set_provider_extra_body(created.id, Some(body)).await.map_err(internal)?;
+    }
+    reload(&state).await?;
+    tracing::info!(provider = %created.name, owner = ?created.owner_user_id, "Provider added");
     Ok(Json(ProviderCreateResponse {
         id: created.id,
         name: created.name,
@@ -255,262 +253,79 @@ pub async fn create_provider(
     }))
 }
 
-/// POST /providers/:slug/generate-api-key — Generate API key for PPQ/Routstr providers
-///
-/// For PPQ providers, creates a new account and returns a fresh API key.
-/// For Routstr providers, this is not supported (Routstr requires external key setup).
-#[axum::debug_handler]
-pub async fn generate_provider_api_key(
-    Path(slug): Path<String>,
-    State(state): State<std::sync::Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    use crate::db::ProviderType;
-    use reqwest::Client;
-
-    // Get the provider
-    let provider = state.config.db.get_provider_by_slug(&slug).await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, format!("Provider '{}' not found", slug)))?;
-
-    // Check if it's a supported provider type
-    if provider.provider_type != ProviderType::Ppq {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "API key generation is only supported for PPQ providers".to_string(),
-        ));
-    }
-
-    // Call PPQ's /accounts/create endpoint to generate a new API key
-    let client = Client::new();
-    let response = client
-        .post("https://api.ppq.ai/accounts/create")
-        .send()
-        .await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to contact PPQ: {}", e)))?;
-
-    if !response.status().is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            format!("PPQ account creation failed: {}", error_text),
-        ));
-    }
-
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid PPQ response: {}", e)))?;
-
-    // Extract the API key and credit_id from the response
-    let api_key = body
-        .get("data")
-        .and_then(|d| d.get("api_key"))
-        .and_then(|k| k.as_str())
-        .ok_or_else(|| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "PPQ did not return an API key".to_string()))?;
-
-    let credit_id = body
-        .get("data")
-        .and_then(|d| d.get("credit_id"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-
-    // Update the provider with the new API key
-    let updated = state.config.db.update_provider(provider.id, crate::db::UpdateProvider {
-        name: None,
-        slug: None,
-        base_url: None,
-        api_key: Some(Some(api_key)),
-        provider_type: None,
-    }).await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // Reload config
-    state.config.router.reload_config().await
-        .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    tracing::info!(provider_slug = slug, "Generated new PPQ API key");
-
-    // Return the API key and credit_id to the client
-    Ok(Json(serde_json::json!({
-        "api_key": api_key,
-        "credit_id": credit_id,
-        "provider": {
-            "id": updated.id,
-            "name": updated.name,
-            "slug": updated.slug,
-            "base_url": updated.base_url,
-            "provider_type": updated.provider_type.as_str(),
-        }
-    })))
-}
-
-/// POST /providers/:slug/topup — Create top-up request for any provider
-///
-/// Returns a generic PaymentInstruction enum that tells the admin UI how to handle the payment.
-#[axum::debug_handler]
-pub async fn create_provider_topup(
-    Path(slug): Path<String>,
-    State(state): State<std::sync::Arc<AppState>>,
-    Json(body): Json<crate::payments::instructions::TopupRequest>,
-) -> Result<Json<crate::payments::instructions::TopupResponse>, (axum::http::StatusCode, String)> {
-    // Get the provider
-    let provider = state.config.db.get_provider_by_slug(&slug).await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, format!("Provider '{}' not found", slug)))?;
-
-    if body.amount <= 0 {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "Amount must be greater than 0".to_string(),
-        ));
-    }
-
-    // Create top-up via provider trait method
-    let providers = state.config.router.get_providers().await;
-    let provider_arc = providers.into_iter().find(|p| p.slug() == slug)
-        .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST, "Provider not found in router".to_string()))?;
-
-    // Convert to CurrencyAmount based on currency type
-    let amount = match body.currency {
-        crate::payments::instructions::CurrencyType::Sats => CurrencyAmount::Sats(body.amount),
-        crate::payments::instructions::CurrencyType::Msats => CurrencyAmount::Msats(body.amount),
-        crate::payments::instructions::CurrencyType::UsdMicro => CurrencyAmount::UsdMicro(body.amount),
-    };
-
-    let instruction = provider_arc.create_topup(amount).await
-        .ok_or_else(|| {
-            tracing::error!(
-                provider_slug = slug,
-                provider_type = provider.provider_type.as_str(),
-                "Provider does not support top-ups or top-up failed"
-            );
-            (axum::http::StatusCode::BAD_REQUEST, format!("Provider '{}' does not support top-ups or the top-up request failed. Check server logs for details.", provider.name))
-        })?;
-
-    Ok(Json(crate::payments::instructions::TopupResponse {
-        provider: crate::payments::instructions::ProviderInfo {
-            slug: provider.slug.clone(),
-            name: provider.name.clone(),
-        },
-        instruction,
-        message: Some(format!("Complete payment to top up {} balance", provider.name)),
-    }))
-}
-
 pub async fn delete_provider(
     Path(slug): Path<String>,
-    State(state): State<std::sync::Arc<AppState>>,
-) -> Result<Json<ProviderDeleteResponse>, (axum::http::StatusCode, String)> {
-    tracing::info!(provider_slug = slug, "Deleting provider");
-
-    state
-        .config
-        .db
-        .delete_provider_by_slug(&slug)
-        .await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    state.config.router.reload_config().await
-        .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    tracing::info!(provider_slug = slug, "Provider deleted and config reloaded");
-
-    Ok(Json(ProviderDeleteResponse {
-        deleted: true,
-        slug,
-    }))
+    State(state): State<Arc<AppState>>,
+    user: UserExtractor,
+) -> ApiResult<ProviderDeleteResponse> {
+    let provider = Scope::from(user).provider(&state, &slug).await?;
+    state.db.delete_provider(provider.id).await.map_err(internal)?;
+    reload(&state).await?;
+    tracing::info!(provider_slug = slug, "Provider deleted");
+    Ok(Json(ProviderDeleteResponse { deleted: true, slug }))
 }
 
-#[axum::debug_handler]
 pub async fn update_provider(
     Path(slug): Path<String>,
-    State(state): State<std::sync::Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
+    user: UserExtractor,
     Json(request): Json<ProviderUpdateRequest>,
-) -> Result<Json<ProviderResponse>, (axum::http::StatusCode, String)> {
-    use crate::db::ProviderType;
-
-    let provider = state.config.db.get_provider_by_slug(&slug).await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, format!("Provider '{}' not found", slug)))?;
-
-    let provider_type = request.provider_type.as_deref()
-        .and_then(ProviderType::from_str);
+) -> ApiResult<ProviderResponse> {
+    let scope = Scope::from(user);
+    let provider = scope.provider(&state, &slug).await?;
+    if let Some(url) = request.base_url.as_deref() {
+        scope.check_url(url).await?;
+    }
+    let provider_type = match request.provider_type.as_deref() {
+        Some(raw) => Some(scope.provider_type(raw)?),
+        None => None,
+    };
+    if !scope.is_admin() && (request.slug.is_some() || request.owner_user_id.is_some()) {
+        return Err(bad_request("Only admins can change a provider's slug or owner"));
+    }
     let extra_body = crate::api::shared::parse_extra_body(request.extra_body.clone())?;
-
-    let api_key = request.api_key.as_deref().map(Some);
-
-    let updated = state.config.db.update_provider(provider.id, crate::db::UpdateProvider {
-        name: request.name.as_deref(),
-        slug: request.slug.as_deref(),
-        base_url: request.base_url.as_deref(),
-        api_key,
-        provider_type,
-    }).await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
+    let updated = state
+        .db
+        .update_provider(
+            provider.id,
+            crate::db::UpdateProvider {
+                name: request.name.as_deref(),
+                slug: request.slug.as_deref(),
+                base_url: request.base_url.as_deref(),
+                api_key: request.api_key.as_deref().filter(|k| !k.is_empty()).map(Some),
+                provider_type,
+            },
+        )
+        .await
+        .map_err(internal)?;
     let updated = match request.client_version.as_deref() {
         Some(version) => {
             let version = Some(version.trim()).filter(|v| !v.is_empty());
-            state.config.db.set_provider_client_version(updated.id, version).await
-                .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            state.db.set_provider_client_version(updated.id, version).await.map_err(internal)?
         }
         None => updated,
     };
-
     let updated = match request.owner_user_id {
         Some(owner) => {
             if let Some(id) = owner {
-                state.config.db.get_user_by_id(id).await
-                    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-                    .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST, format!("User {id} not found")))?;
+                state
+                    .db
+                    .get_user_by_id(id)
+                    .await
+                    .map_err(internal)?
+                    .ok_or_else(|| bad_request(&format!("User {id} not found")))?;
             }
-            state.config.db.set_provider_owner(updated.id, owner).await
-                .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            state.db.set_provider_owner(updated.id, owner).await.map_err(internal)?
         }
         None => updated,
     };
-
     let updated = if request.extra_body.is_some() {
-        state.config.db.set_provider_extra_body(updated.id, extra_body.as_ref()).await
-            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        state.db.set_provider_extra_body(updated.id, extra_body.as_ref()).await.map_err(internal)?
     } else {
         updated
     };
-
-    state.config.router.reload_config().await
-        .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    tracing::info!(provider_slug = slug, "Provider updated and config reloaded");
-
-    // Determine supported currencies based on provider type
-    let payment_options = match updated.provider_type {
-        crate::db::ProviderType::Routstr => vec![PaymentOption {
-            currency: SupportedCurrencyType::Sats,
-            payment_method: PaymentMethod::Lightning,
-        }],
-        crate::db::ProviderType::Ppq => vec![PaymentOption {
-            currency: SupportedCurrencyType::UsdMicro,
-            payment_method: PaymentMethod::Lightning,
-        }],
-        _ => vec![],
-    };
-
-    Ok(Json(ProviderResponse {
-        extra_body: updated.extra_body_map(),
-        id: updated.id,
-        name: updated.name,
-        slug: updated.slug,
-        base_url: updated.base_url,
-        provider_type: updated.provider_type.as_str().to_string(),
-        owner_username: owner_username(&state, updated.owner_user_id).await,
-        owner_user_id: updated.owner_user_id,
-        created_at: updated.created_at,
-        updated_at: updated.updated_at,
-        health: None,
-        payment_options,
-        is_oauth: updated.provider_type.is_oauth(),
-        oauth: None,
-        default_client_version: crate::providers::default_client_version(updated.provider_type),
-        client_version: updated.client_version,
-    }))
+    reload(&state).await?;
+    tracing::info!(provider_slug = slug, "Provider updated");
+    let name = owner_username(&state, updated.owner_user_id).await;
+    Ok(Json(response(updated, name, None)))
 }

@@ -1,6 +1,10 @@
+use crate::api::tenant::{Scope, TenantError};
+use crate::auth::admin::UserExtractor;
 use crate::state::AppState;
 use axum::{extract::State, Json};
 use serde::Serialize;
+
+const RECENT_EVENTS: usize = 50;
 
 #[derive(Serialize)]
 pub struct HealthResponse {
@@ -134,8 +138,35 @@ pub async fn build_provider_health_entry(
     }
 }
 
-pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<MetricsResponse> {
-    let providers = state.config.router.get_providers().await;
+struct Visible(Option<std::collections::HashSet<String>>);
+
+impl Visible {
+    async fn of(state: &AppState, user: UserExtractor) -> Result<Self, TenantError> {
+        let names = Scope::from(user).provider_names(state).await?;
+        Ok(Self(names.map(|n| n.into_iter().collect())))
+    }
+
+    fn admits(&self, provider: &str) -> bool {
+        self.0.as_ref().is_none_or(|names| names.contains(provider))
+    }
+
+    fn is_tenant(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
+fn outcome_counts(events: &[crate::metrics::ProviderMetrics]) -> (u64, u64, u64) {
+    let successes = events.iter().filter(|e| matches!(e.event, crate::metrics::MetricsEvent::Success)).count() as u64;
+    let failures = events.iter().filter(|e| matches!(e.event, crate::metrics::MetricsEvent::Failure(_))).count() as u64;
+    (successes + failures, successes, failures)
+}
+
+pub async fn get_metrics(
+    State(state): State<std::sync::Arc<AppState>>,
+    user: UserExtractor,
+) -> Result<Json<MetricsResponse>, TenantError> {
+    let visible = Visible::of(&state, user).await?;
+    let providers: Vec<_> = state.config.router.get_providers().await.into_iter().filter(|p| visible.admits(p.name())).collect();
     let mut provider_metrics = Vec::new();
 
     for provider in &providers {
@@ -166,19 +197,21 @@ pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<
         });
     }
 
-    let recent_events: Vec<serde_json::Value> = state
+    let events: Vec<_> = state
         .metrics_store
-        .recent_events(50)
+        .recent_events(usize::MAX)
         .await
-        .iter()
-        .map(|e| serde_json::to_value(e).unwrap_or_default())
+        .into_iter()
+        .filter(|e| visible.admits(&e.provider))
         .collect();
+    let recent_events = events.iter().take(RECENT_EVENTS).map(|e| serde_json::to_value(e).unwrap_or_default()).collect();
+    let ((total_requests, total_successes, total_failures), (transient_retries, transient_retry_successes)) = if visible.is_tenant() {
+        (outcome_counts(&events), (0, 0))
+    } else {
+        (state.metrics_store.get_total_requests(), state.metrics_store.emitter().get_transient_retries())
+    };
 
-    let (total_requests, total_successes, total_failures) = state.metrics_store.get_total_requests();
-
-    let (transient_retries, transient_retry_successes) = state.metrics_store.emitter().get_transient_retries();
-
-    Json(MetricsResponse {
+    Ok(Json(MetricsResponse {
         providers: provider_metrics,
         recent_events,
         total_requests,
@@ -186,31 +219,37 @@ pub async fn get_metrics(State(state): State<std::sync::Arc<AppState>>) -> Json<
         total_failures,
         transient_retries,
         transient_retry_successes,
-    })
+    }))
 }
 
-pub async fn get_health_overview(State(state): State<std::sync::Arc<AppState>>) -> Json<HealthOverviewResponse> {
-    let providers = state.config.router.get_providers().await;
+pub async fn get_health_overview(
+    State(state): State<std::sync::Arc<AppState>>,
+    user: UserExtractor,
+) -> Result<Json<HealthOverviewResponse>, TenantError> {
+    let visible = Visible::of(&state, user).await?;
     let mut health_entries = Vec::new();
-    let mut unhealthy = 0;
-    let mut degraded = 0;
-
-    for provider in &providers {
-        let entry = build_provider_health_entry(&state, provider.as_ref()).await;
-        if entry.health_state == "unhealthy" { unhealthy += 1; }
-        else if entry.health_state == "degraded" { degraded += 1; }
-        health_entries.push(entry);
+    for provider in state.config.router.get_providers().await.iter().filter(|p| visible.admits(p.name())) {
+        health_entries.push(build_provider_health_entry(&state, provider.as_ref()).await);
     }
-
-    Json(HealthOverviewResponse {
+    Ok(Json(HealthOverviewResponse {
+        provider_count: health_entries.len(),
+        unhealthy_count: health_entries.iter().filter(|e| e.health_state == "unhealthy").count(),
+        degraded_count: health_entries.iter().filter(|e| e.health_state == "degraded").count(),
         providers: health_entries,
-        provider_count: providers.len(),
-        unhealthy_count: unhealthy,
-        degraded_count: degraded,
-    })
+    }))
 }
 
-pub async fn get_metrics_history(State(state): State<std::sync::Arc<AppState>>) -> Json<serde_json::Value> {
-    let history = state.metrics_store.get_history().await;
-    Json(serde_json::to_value(history).unwrap_or_default())
+pub async fn get_metrics_history(
+    State(state): State<std::sync::Arc<AppState>>,
+    user: UserExtractor,
+) -> Result<Json<Vec<crate::metrics::MetricsSnapshot>>, TenantError> {
+    let visible = Visible::of(&state, user).await?;
+    let mut history = state.metrics_store.get_history().await;
+    if visible.is_tenant() {
+        for snapshot in &mut history {
+            snapshot.providers.retain(|p| visible.admits(&p.provider));
+            snapshot.provider_health.retain(|p| visible.admits(&p.provider));
+        }
+    }
+    Ok(Json(history))
 }

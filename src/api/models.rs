@@ -568,7 +568,9 @@ pub async fn sync_provider_models(
 pub async fn list_provider_models(
     Path(provider_slug): Path<String>,
     State(state): State<std::sync::Arc<AppState>>,
+    user: crate::auth::admin::UserExtractor,
 ) -> Result<Json<ProviderModelsResponse>, (axum::http::StatusCode, String)> {
+    crate::api::tenant::Scope::from(user).provider(&state, &provider_slug).await?;
     let providers = state.config.router.get_providers().await;
     let provider = providers
         .iter()

@@ -4,84 +4,96 @@ use axum::{
     response::IntoResponse,
 };
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+const VISIBILITY_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Deserialize)]
 pub struct WsMetricsQuery {
     pub token: Option<String>,
 }
 
-/// Admin-only WebSocket endpoint that streams real-time metrics events.
-///
-/// Connect via: `ws://host/api/metrics/ws?token=<bearer_token>`
-///
-/// Each message is a JSON-encoded `ProviderMetrics` event pushed in real time
-/// as they are emitted by the metrics system.
 pub async fn ws_metrics_handler(
     ws: WebSocketUpgrade,
     Query(params): Query<WsMetricsQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    // Authenticate before upgrading
-    if !is_admin(&state, params.token.as_deref()).await {
+    let Some(user) = token_user(&state, params.token.as_deref()).await else {
         return (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
-
-    ws.on_upgrade(move |socket| handle_ws(socket, state))
+    };
+    ws.on_upgrade(move |socket| handle_ws(socket, state, user))
 }
 
-async fn is_admin(state: &Arc<AppState>, token: Option<&str>) -> bool {
-    let token = match token {
-        Some(t) if !t.is_empty() => t,
-        _ => return false,
-    };
-
-    // Try session store first
+async fn token_user(state: &Arc<AppState>, token: Option<&str>) -> Option<crate::db::User> {
+    let token = token.filter(|t| !t.is_empty())?;
     if let Some(session) = state.session_store.validate(token).await {
-        if session.is_admin {
-            return true;
+        if let Ok(Some(user)) = state.db.get_user_by_username(&session.username).await {
+            return Some(user);
         }
     }
+    validate_api_key(state, token).await
+}
 
-    // Try API key
-    if let Some(user) = validate_api_key(state, token).await {
-        if user.is_admin {
-            return true;
-        }
-    }
-
-    false
+#[cfg(test)]
+async fn is_admin(state: &Arc<AppState>, token: Option<&str>) -> bool {
+    token_user(state, token).await.is_some_and(|u| u.is_admin)
 }
 
 async fn validate_api_key(state: &Arc<AppState>, token: &str) -> Option<crate::db::User> {
     use sha2::{Digest, Sha256};
 
-    let mut hasher = Sha256::new();
-    hasher.update(token.as_bytes());
-    let key_hash = hex::encode(hasher.finalize());
-
-    if let Ok(Some(api_key)) = state.db.get_api_key_by_hash(&key_hash).await {
-        if api_key.is_active {
-            let is_expired = state.db.is_api_key_expired(api_key.id).await.unwrap_or(false);
-            if !is_expired {
-                if let Ok(Some(user)) = state.db.get_user_by_id(api_key.user_id).await {
-                    return Some(user);
-                }
-            }
-        }
+    let key_hash = hex::encode(Sha256::digest(token.as_bytes()));
+    let api_key = state.db.get_api_key_by_hash(&key_hash).await.ok().flatten().filter(|k| k.is_active)?;
+    if state.db.is_api_key_expired(api_key.id).await.unwrap_or(false) {
+        return None;
     }
-
-    None
+    state.db.get_user_by_id(api_key.user_id).await.ok().flatten()
 }
 
-async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
+struct Visibility {
+    user: crate::db::User,
+    names: Option<HashSet<String>>,
+    refreshed: Instant,
+}
+
+impl Visibility {
+    async fn new(state: &AppState, user: crate::db::User) -> Self {
+        let mut visibility = Self { user, names: None, refreshed: Instant::now() };
+        visibility.refresh(state).await;
+        visibility
+    }
+
+    async fn refresh(&mut self, state: &AppState) {
+        let scope = crate::api::tenant::Scope { user: self.user.clone() };
+        self.names = scope.provider_names(state).await.ok().flatten().map(|n| n.into_iter().collect());
+        if !self.user.is_admin && self.names.is_none() {
+            self.names = Some(HashSet::new());
+        }
+        self.refreshed = Instant::now();
+    }
+
+    async fn admits(&mut self, state: &AppState, provider: &str) -> bool {
+        if self.refreshed.elapsed() > VISIBILITY_TTL {
+            self.refresh(state).await;
+        }
+        self.names.as_ref().is_none_or(|names| names.contains(provider))
+    }
+}
+
+async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, user: crate::db::User) {
     let mut receiver = state.metrics_emitter.receiver();
+    let mut visibility = Visibility::new(&state, user).await;
 
     loop {
         tokio::select! {
             result = receiver.recv() => {
                 match result {
                     Ok(metrics) => {
+                        if !visibility.admits(&state, &metrics.provider).await {
+                            continue;
+                        }
                         let json = match serde_json::to_string(&metrics) {
                             Ok(j) => j,
                             Err(e) => {
@@ -90,15 +102,13 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
                             }
                         };
                         if socket.send(Message::Text(json)).await.is_err() {
-                            // Client disconnected
                             break;
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(skipped = n, "Metrics WS client lagged behind");
-                        // Send a lag notification so the client knows it missed events
-                        let msg = serde_json::json!({"type": "lag", "skipped": n});
-                        let _ = socket.send(Message::Text(msg.to_string())).await;
+                        let lag = Lag { kind: "lag", skipped: n };
+                        let _ = socket.send(Message::Text(serde_json::to_string(&lag).unwrap_or_default())).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         tracing::info!("Metrics broadcast channel closed, ending WS connection");
@@ -108,9 +118,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
             }
             msg = socket.recv() => {
                 match msg {
-                    Some(Ok(Message::Close(_))) | None => {
-                        break;
-                    }
+                    Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(Message::Ping(data))) => {
                         let _ = socket.send(Message::Pong(data)).await;
                     }
@@ -119,6 +127,13 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
             }
         }
     }
+}
+
+#[derive(serde::Serialize)]
+struct Lag {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    skipped: u64,
 }
 
 #[cfg(test)]
@@ -238,6 +253,33 @@ mod tests {
         let (state, _) = setup_test_state().await;
         let token = setup_non_admin_user(&state).await;
         assert!(!is_admin(&state, Some(&token)).await);
+    }
+
+    #[tokio::test]
+    async fn a_tenant_stream_carries_only_its_own_providers_events() {
+        let (state, _) = setup_test_state().await;
+        let viewer = state.db.add_test_user("tenant", false).await;
+        state
+            .db
+            .create_owned_provider(
+                viewer.id,
+                crate::db::NewProvider {
+                    name: "tenant/gpu",
+                    slug: "u-tenant-gpu",
+                    base_url: "http://127.0.0.1:9/v1",
+                    api_key: None,
+                    provider_type: None,
+                },
+            )
+            .await
+            .unwrap();
+        let mut visibility = Visibility::new(&state, viewer).await;
+        assert!(visibility.admits(&state, "tenant/gpu").await);
+        assert!(!visibility.admits(&state, "platform-openai").await);
+
+        let admin = state.db.add_test_user("root", true).await;
+        let mut everything = Visibility::new(&state, admin).await;
+        assert!(everything.admits(&state, "platform-openai").await);
     }
 
     #[tokio::test]

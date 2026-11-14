@@ -1,8 +1,17 @@
+use crate::api::tenant::{bad_request, forbidden, internal, not_found, Scope, TenantError};
+use crate::auth::admin::UserExtractor;
+use crate::db::{RoutingConfig, RoutingConfigProvider};
 use crate::state::AppState;
-use axum::{extract::{Path, State}, Json};
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use super::routing_modalities::{store_modalities, RequestedModalities};
+
+type ApiResult<T> = Result<Json<T>, TenantError>;
 
 #[derive(Deserialize)]
 pub struct RoutingConfigCreateRequest {
@@ -28,29 +37,6 @@ pub struct RoutingConfigUpdateRequest {
     pub input_modalities: Option<Vec<String>>,
     #[serde(default)]
     pub output_modalities: Option<Vec<String>>,
-}
-
-/// Reject health-check seconds that would break the health loop.
-/// A 0 (or negative) timeout makes `tokio::time::timeout` elapse immediately and
-/// a 0 interval panics `tokio::time::interval`, so they must be >= 1.
-fn validate_health_seconds(
-    interval: Option<i32>,
-    timeout: Option<i32>,
-) -> Result<(), (axum::http::StatusCode, String)> {
-    for (field, value) in [
-        ("health_check_interval_seconds", interval),
-        ("health_check_timeout_seconds", timeout),
-    ] {
-        if let Some(v) = value {
-            if v < 1 {
-                return Err((
-                    axum::http::StatusCode::BAD_REQUEST,
-                    format!("{field} must be >= 1 (got {v})"),
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -84,6 +70,7 @@ pub struct RoutingConfigFullResponse {
     pub health_check_enabled: bool,
     pub health_check_interval_seconds: i32,
     pub health_check_timeout_seconds: i32,
+    pub owner_user_id: Option<i64>,
     pub created_at: crate::db::Timestamp,
     pub updated_at: crate::db::Timestamp,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -117,376 +104,240 @@ pub struct RoutingConfigProviderFullResponse {
     pub updated_at: crate::db::Timestamp,
 }
 
-fn internal_error(e: sqlx::Error) -> (axum::http::StatusCode, String) {
-    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+#[derive(Serialize)]
+pub struct Message {
+    pub message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<i64>,
 }
 
-fn provider_responses(
-    members: &[crate::db::RoutingConfigProvider],
-    db_providers: &[crate::db::Provider],
-    configs: &[crate::db::RoutingConfig],
-) -> Vec<RoutingConfigProviderFullResponse> {
-    members
-        .iter()
-        .map(|rp| {
-            let provider = rp.provider_id.and_then(|id| db_providers.iter().find(|p| p.id == id));
-            let child = rp.child_config_id.and_then(|id| configs.iter().find(|c| c.id == id));
-            let is_child = rp.child_config_id.is_some();
-            RoutingConfigProviderFullResponse {
-                id: rp.id,
-                routing_config_id: rp.routing_config_id,
-                kind: if is_child { "config" } else { "provider" },
-                provider_id: rp.provider_id,
-                provider_name: rp
-                    .provider_id
-                    .map(|_| provider.map_or_else(|| "Unknown".to_string(), |p| p.name.clone())),
-                provider_slug: rp
-                    .provider_id
-                    .map(|_| provider.map_or_else(|| "unknown".to_string(), |p| p.slug.clone())),
-                config_id: rp.child_config_id,
-                config_name: rp
-                    .child_config_id
-                    .map(|_| child.map_or_else(|| "Unknown".to_string(), |c| c.name.clone())),
-                model: rp.model.clone(),
-                weight: rp.weight,
-                is_active: rp.is_active,
-                extra_body: rp.extra_body_map(),
-                created_at: rp.created_at,
-                updated_at: rp.updated_at,
-            }
-        })
-        .collect()
-}
-
-#[axum::debug_handler]
-pub async fn list_routing_configs(State(state): State<std::sync::Arc<AppState>>) -> Json<Vec<RoutingConfigFullResponse>> {
-    let configs = match state.config.db.list_routing_configs().await {
-        Ok(configs) => configs,
-        Err(e) => {
-            tracing::error!("Failed to list routing configs: {}", e);
-            return Json(vec![]);
+fn validate_health_seconds(interval: Option<i32>, timeout: Option<i32>) -> Result<(), TenantError> {
+    for (field, value) in [("health_check_interval_seconds", interval), ("health_check_timeout_seconds", timeout)] {
+        if let Some(v) = value.filter(|v| *v < 1) {
+            return Err(bad_request(&format!("{field} must be >= 1 (got {v})")));
         }
-    };
-
-    let db_providers = match state.config.db.list_providers().await {
-        Ok(providers) => providers,
-        Err(e) => {
-            tracing::error!("Failed to list providers: {}", e);
-            return Json(vec![]);
-        }
-    };
-
-    let mut response = Vec::new();
-    for config in configs.clone() {
-        let providers = match state.config.db.list_routing_config_providers_for_config(config.id).await {
-            Ok(providers) => providers,
-            Err(e) => {
-                tracing::error!("Failed to list providers for routing config {}: {}", config.id, e);
-                continue;
-            }
-        };
-
-        let provider_responses = provider_responses(&providers, &db_providers, &configs);
-
-        response.push(RoutingConfigFullResponse {
-            id: config.id,
-            input_modalities: crate::db::DeclaredModalities::names(&config.declared_modalities().input),
-            output_modalities: crate::db::DeclaredModalities::names(&config.declared_modalities().output),
-            name: config.name,
-            strategy: config.strategy,
-            health_check_enabled: config.health_check_enabled,
-            health_check_interval_seconds: config.health_check_interval_seconds,
-            health_check_timeout_seconds: config.health_check_timeout_seconds,
-            created_at: config.created_at,
-            updated_at: config.updated_at,
-            providers: provider_responses,
-        });
     }
-
-    Json(response)
+    Ok(())
 }
 
-#[axum::debug_handler]
+fn member_response(
+    rp: &RoutingConfigProvider,
+    providers: &[crate::db::Provider],
+    configs: &[RoutingConfig],
+) -> RoutingConfigProviderFullResponse {
+    let provider = rp.provider_id.and_then(|id| providers.iter().find(|p| p.id == id));
+    let child = rp.child_config_id.and_then(|id| configs.iter().find(|c| c.id == id));
+    RoutingConfigProviderFullResponse {
+        id: rp.id,
+        routing_config_id: rp.routing_config_id,
+        kind: if rp.child_config_id.is_some() { "config" } else { "provider" },
+        provider_id: rp.provider_id,
+        provider_name: rp.provider_id.map(|_| provider.map_or_else(|| "Unknown".to_string(), |p| p.name.clone())),
+        provider_slug: rp.provider_id.map(|_| provider.map_or_else(|| "unknown".to_string(), |p| p.slug.clone())),
+        config_id: rp.child_config_id,
+        config_name: rp.child_config_id.map(|_| child.map_or_else(|| "Unknown".to_string(), |c| c.name.clone())),
+        model: rp.model.clone(),
+        weight: rp.weight,
+        is_active: rp.is_active,
+        extra_body: rp.extra_body_map(),
+        created_at: rp.created_at,
+        updated_at: rp.updated_at,
+    }
+}
+
+async fn full_response(state: &AppState, config: RoutingConfig) -> Result<RoutingConfigFullResponse, TenantError> {
+    let members = state.db.list_routing_config_providers_for_config(config.id).await.map_err(internal)?;
+    let providers = state.db.list_providers().await.map_err(internal)?;
+    let configs = state.db.list_routing_configs().await.map_err(internal)?;
+    let declared = config.declared_modalities();
+    Ok(RoutingConfigFullResponse {
+        id: config.id,
+        input_modalities: crate::db::DeclaredModalities::names(&declared.input),
+        output_modalities: crate::db::DeclaredModalities::names(&declared.output),
+        name: config.name,
+        strategy: config.strategy,
+        health_check_enabled: config.health_check_enabled,
+        health_check_interval_seconds: config.health_check_interval_seconds,
+        health_check_timeout_seconds: config.health_check_timeout_seconds,
+        owner_user_id: config.owner_user_id,
+        created_at: config.created_at,
+        updated_at: config.updated_at,
+        providers: members.iter().map(|m| member_response(m, &providers, &configs)).collect(),
+    })
+}
+
+async fn reload(state: &AppState) -> Result<(), TenantError> {
+    crate::api::providers::reload(state).await
+}
+
+async fn owned_member(scope: &Scope, state: &AppState, id: i64) -> Result<RoutingConfigProvider, TenantError> {
+    let member = state
+        .db
+        .get_routing_config_provider(id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| not_found("Routing config provider not found"))?;
+    scope.config(state, member.routing_config_id).await.map_err(|_| not_found("Routing config provider not found"))?;
+    Ok(member)
+}
+
+pub async fn list_routing_configs(State(state): State<Arc<AppState>>, user: UserExtractor) -> ApiResult<Vec<RoutingConfigFullResponse>> {
+    let configs = Scope::from(user).configs(&state).await?;
+    let mut out = Vec::with_capacity(configs.len());
+    for config in configs {
+        out.push(full_response(&state, config).await?);
+    }
+    Ok(Json(out))
+}
+
 pub async fn create_routing_config(
-    State(state): State<std::sync::Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
+    user: UserExtractor,
     Json(request): Json<RoutingConfigCreateRequest>,
-) -> Result<Json<RoutingConfigFullResponse>, (axum::http::StatusCode, String)> {
-    validate_health_seconds(
-        Some(request.health_check_interval_seconds),
-        Some(request.health_check_timeout_seconds),
-    )?;
+) -> ApiResult<RoutingConfigFullResponse> {
+    let scope = Scope::from(user);
+    validate_health_seconds(Some(request.health_check_interval_seconds), Some(request.health_check_timeout_seconds))?;
+    let declared = RequestedModalities::parse(request.input_modalities.as_deref(), request.output_modalities.as_deref())?
+        .apply(Default::default());
     let config = crate::db::NewRoutingConfig {
-        name: request.name.clone(),
+        name: scope.config_name(&request.name)?,
         strategy: request.strategy.clone(),
         health_check_enabled: request.health_check_enabled,
         health_check_interval_seconds: request.health_check_interval_seconds,
         health_check_timeout_seconds: request.health_check_timeout_seconds,
     };
-
-    let declared = RequestedModalities::parse(
-        request.input_modalities.as_deref(),
-        request.output_modalities.as_deref(),
-    )?
-    .apply(Default::default());
-
-    let created = match state.config.db.create_routing_config(config).await {
-        Ok(config) => config,
-        Err(e) => {
-            tracing::error!("Failed to create routing config: {}", e);
-            return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-        }
-    };
+    let created = state.db.create_owned_routing_config(scope.owner(), config).await.map_err(internal)?;
     let created = store_modalities(&state, created, &declared).await?;
-
-    let full = match state.config.db.list_routing_config_providers_for_config(created.id).await {
-        Ok(providers) => {
-            let db_providers = match state.config.db.list_providers().await {
-                Ok(providers) => providers,
-                Err(e) => {
-                    tracing::error!("Failed to list providers: {}", e);
-                    return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-                }
-            };
-
-            let configs = state.config.db.list_routing_configs().await.map_err(internal_error)?;
-            let provider_responses = provider_responses(&providers, &db_providers, &configs);
-
-            RoutingConfigFullResponse {
-                id: created.id,
-                input_modalities: crate::db::DeclaredModalities::names(&created.declared_modalities().input),
-                output_modalities: crate::db::DeclaredModalities::names(&created.declared_modalities().output),
-                name: created.name,
-                strategy: created.strategy,
-                health_check_enabled: created.health_check_enabled,
-                health_check_interval_seconds: created.health_check_interval_seconds,
-                health_check_timeout_seconds: created.health_check_timeout_seconds,
-                created_at: created.created_at,
-                updated_at: created.updated_at,
-                providers: provider_responses,
-            }
-        }
-        Err(e) => {
-            tracing::error!("Failed to list providers for new routing config: {}", e);
-            return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-        }
-    };
-
-    Ok(Json(full))
+    Ok(Json(full_response(&state, created).await?))
 }
 
-#[axum::debug_handler]
 pub async fn update_routing_config(
     Path(id): Path<i64>,
-    State(state): State<std::sync::Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
+    user: UserExtractor,
     Json(request): Json<RoutingConfigUpdateRequest>,
-) -> Result<Json<RoutingConfigFullResponse>, (axum::http::StatusCode, String)> {
-    validate_health_seconds(
-        request.health_check_interval_seconds,
-        request.health_check_timeout_seconds,
-    )?;
-    let requested = RequestedModalities::parse(
-        request.input_modalities.as_deref(),
-        request.output_modalities.as_deref(),
-    )?;
+) -> ApiResult<RoutingConfigFullResponse> {
+    let scope = Scope::from(user);
+    scope.config(&state, id).await?;
+    validate_health_seconds(request.health_check_interval_seconds, request.health_check_timeout_seconds)?;
+    let requested = RequestedModalities::parse(request.input_modalities.as_deref(), request.output_modalities.as_deref())?;
+    let name = match request.name.as_deref() {
+        Some(name) => Some(scope.config_name(name)?),
+        None => None,
+    };
     let updates = crate::db::UpdateRoutingConfig {
-        name: request.name.clone(),
+        name,
         strategy: request.strategy.clone(),
         health_check_enabled: request.health_check_enabled,
         health_check_interval_seconds: request.health_check_interval_seconds,
         health_check_timeout_seconds: request.health_check_timeout_seconds,
     };
-
-    let updated = match state.config.db.update_routing_config(id, updates).await {
-        Ok(config) => config,
-        Err(e) => {
-            tracing::error!("Failed to update routing config: {}", e);
-            return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-        }
-    };
+    let updated = state.db.update_routing_config(id, updates).await.map_err(internal)?;
     let declared = requested.apply(updated.declared_modalities());
     let updated = store_modalities(&state, updated, &declared).await?;
-
-    state.config.router.reload_config().await
-        .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let providers = match state.config.db.list_routing_config_providers_for_config(updated.id).await {
-        Ok(providers) => providers,
-        Err(e) => {
-            tracing::error!("Failed to list providers for routing config {}: {}", updated.id, e);
-            return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-        }
-    };
-
-    let db_providers = match state.config.db.list_providers().await {
-        Ok(providers) => providers,
-        Err(e) => {
-            tracing::error!("Failed to list providers: {}", e);
-            return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-        }
-    };
-
-    let configs = state.config.db.list_routing_configs().await.map_err(internal_error)?;
-    let provider_responses = provider_responses(&providers, &db_providers, &configs);
-
-    Ok(Json(RoutingConfigFullResponse {
-        id: updated.id,
-        input_modalities: crate::db::DeclaredModalities::names(&updated.declared_modalities().input),
-        output_modalities: crate::db::DeclaredModalities::names(&updated.declared_modalities().output),
-        name: updated.name,
-        strategy: updated.strategy,
-        health_check_enabled: updated.health_check_enabled,
-        health_check_interval_seconds: updated.health_check_interval_seconds,
-        health_check_timeout_seconds: updated.health_check_timeout_seconds,
-        created_at: updated.created_at,
-        updated_at: updated.updated_at,
-        providers: provider_responses,
-    }))
+    reload(&state).await?;
+    Ok(Json(full_response(&state, updated).await?))
 }
 
-#[axum::debug_handler]
 pub async fn delete_routing_config(
     Path(id): Path<i64>,
-    State(state): State<std::sync::Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    let deleted = match state.config.db.delete_routing_config(id).await {
-        Ok(deleted) => deleted,
-        Err(e) => {
-            tracing::error!("Failed to delete routing config: {}", e);
-            return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-        }
-    };
-
-    if !deleted {
-        return Err((axum::http::StatusCode::NOT_FOUND, "Routing config not found".to_string()));
+    State(state): State<Arc<AppState>>,
+    user: UserExtractor,
+) -> ApiResult<Message> {
+    Scope::from(user).config(&state, id).await?;
+    if !state.db.delete_routing_config(id).await.map_err(internal)? {
+        return Err(not_found("Routing config not found"));
     }
-
-    Ok(Json(serde_json::json!({
-        "message": "Routing config deleted successfully",
-        "id": id
-    })))
+    reload(&state).await?;
+    Ok(Json(Message { message: "Routing config deleted successfully", id: Some(id) }))
 }
 
-#[axum::debug_handler]
 pub async fn create_routing_config_provider(
-    State(state): State<std::sync::Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
+    user: UserExtractor,
     Json(request): Json<RoutingConfigProviderCreateRequest>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    let bad_request = |message: &str| (axum::http::StatusCode::BAD_REQUEST, message.to_string());
+) -> ApiResult<Message> {
+    let scope = Scope::from(user);
+    let parent = scope.config(&state, request.routing_config_id).await?;
     let extra_body = crate::api::shared::parse_extra_body(request.extra_body.clone())?;
     let created = match (request.provider_id, request.config_id) {
         (Some(provider_id), None) => {
-            let rcp = crate::db::NewRoutingConfigProvider {
-                routing_config_id: request.routing_config_id,
-                provider_id,
-                model: request.model.clone(),
-                weight: request.weight,
-                is_active: request.is_active,
-            };
-            state.config.db.create_routing_config_provider(rcp).await
-        }
-        (None, Some(child_id)) => {
-            if state.config.db.get_routing_config(child_id).await.map_err(internal_error)?.is_none() {
-                return Err((axum::http::StatusCode::NOT_FOUND, "Child routing config not found".to_string()));
+            let provider = scope.provider_by_id(&state, provider_id).await?;
+            if provider.owner_user_id.is_some() && provider.owner_user_id != parent.owner_user_id {
+                return Err(forbidden("A user's provider can only be assigned to that user's own routing configs"));
             }
             state
-                .config
                 .db
-                .validate_nested_link(request.routing_config_id, child_id)
+                .create_routing_config_provider(crate::db::NewRoutingConfigProvider {
+                    routing_config_id: parent.id,
+                    provider_id,
+                    model: request.model.clone(),
+                    weight: request.weight,
+                    is_active: request.is_active,
+                })
                 .await
-                .map_err(internal_error)?
+        }
+        (None, Some(child_id)) => {
+            scope.config(&state, child_id).await.map_err(|_| not_found("Child routing config not found"))?;
+            state
+                .db
+                .validate_nested_link(parent.id, child_id)
+                .await
+                .map_err(internal)?
                 .map_err(|e| bad_request(&e.to_string()))?;
-            let child = crate::db::NewRoutingConfigChild {
-                routing_config_id: request.routing_config_id,
-                child_config_id: child_id,
-                model: request.model.clone(),
-                weight: request.weight,
-                is_active: request.is_active,
-            };
-            state.config.db.create_routing_config_child(child).await
+            state
+                .db
+                .create_routing_config_child(crate::db::NewRoutingConfigChild {
+                    routing_config_id: parent.id,
+                    child_config_id: child_id,
+                    model: request.model.clone(),
+                    weight: request.weight,
+                    is_active: request.is_active,
+                })
+                .await
         }
         _ => return Err(bad_request("Provide exactly one of provider_id or config_id")),
-    };
-
-    let created = match (created, extra_body) {
-        (Ok(entry), Some(body)) => {
-            state.config.db.set_routing_config_provider_extra_body(entry.id, Some(&body)).await
-        }
-        (created, _) => created,
-    };
-
-    match created.map(|_| ()) {
-        Ok(_) => {
-            state.config.router.reload_config().await
-                .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            Ok(Json(serde_json::json!({
-                "message": "Routing config provider created successfully"
-            })))
-        },
-        Err(e) => {
-            tracing::error!("Failed to create routing config provider: {}", e);
-            Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
-        }
     }
+    .map_err(internal)?;
+    if let Some(body) = extra_body {
+        state.db.set_routing_config_provider_extra_body(created.id, Some(&body)).await.map_err(internal)?;
+    }
+    reload(&state).await?;
+    Ok(Json(Message { message: "Routing config provider created successfully", id: Some(created.id) }))
 }
 
-#[axum::debug_handler]
 pub async fn update_routing_config_provider(
     Path(id): Path<i64>,
-    State(state): State<std::sync::Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
+    user: UserExtractor,
     Json(request): Json<RoutingConfigProviderUpdateRequest>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> ApiResult<Message> {
+    let scope = Scope::from(user);
+    owned_member(&scope, &state, id).await?;
     let extra_body = crate::api::shared::parse_extra_body(request.extra_body.clone())?;
     let updates = crate::db::UpdateRoutingConfigProvider {
         model: request.model.clone(),
         weight: request.weight,
         is_active: request.is_active,
     };
-
-    let updated = state.config.db.update_routing_config_provider(id, updates).await;
-    let updated = match (updated, request.extra_body.is_some()) {
-        (Ok(entry), true) => {
-            state.config.db.set_routing_config_provider_extra_body(entry.id, extra_body.as_ref()).await
-        }
-        (updated, _) => updated,
-    };
-
-    match updated {
-        Ok(_) => {
-            state.config.router.reload_config().await
-                .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            Ok(Json(serde_json::json!({
-                "message": "Routing config provider updated successfully"
-            })))
-        },
-        Err(e) => {
-            tracing::error!("Failed to update routing config provider: {}", e);
-            Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
-        }
+    let updated = state.db.update_routing_config_provider(id, updates).await.map_err(internal)?;
+    if request.extra_body.is_some() {
+        state.db.set_routing_config_provider_extra_body(updated.id, extra_body.as_ref()).await.map_err(internal)?;
     }
+    reload(&state).await?;
+    Ok(Json(Message { message: "Routing config provider updated successfully", id: Some(id) }))
 }
 
-#[axum::debug_handler]
 pub async fn delete_routing_config_provider(
     Path(id): Path<i64>,
-    State(state): State<std::sync::Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    let deleted = match state.config.db.delete_routing_config_provider(id).await {
-        Ok(deleted) => deleted,
-        Err(e) => {
-            tracing::error!("Failed to delete routing config provider: {}", e);
-            return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-        }
-    };
-
-    if !deleted {
-        return Err((axum::http::StatusCode::NOT_FOUND, "Routing config provider not found".to_string()));
+    State(state): State<Arc<AppState>>,
+    user: UserExtractor,
+) -> ApiResult<Message> {
+    let scope = Scope::from(user);
+    owned_member(&scope, &state, id).await?;
+    if !state.db.delete_routing_config_provider(id).await.map_err(internal)? {
+        return Err(not_found("Routing config provider not found"));
     }
-
-    state.config.router.reload_config().await
-        .map_err(|e: Box<dyn std::error::Error + Send + Sync>| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    Ok(Json(serde_json::json!({
-        "message": "Routing config provider deleted successfully",
-        "id": id
-    })))
+    reload(&state).await?;
+    Ok(Json(Message { message: "Routing config provider deleted successfully", id: Some(id) }))
 }
