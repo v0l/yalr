@@ -26,6 +26,7 @@ pub mod my_pricing;
 pub mod models;
 pub mod my_providers;
 pub mod oauth;
+pub mod pool_models;
 pub mod providers;
 pub mod request_log;
 pub mod responses;

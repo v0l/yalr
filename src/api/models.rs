@@ -31,6 +31,10 @@ pub struct ModelEntry {
     /// told a confident "text only" we cannot actually verify.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub architecture: Option<ModelArchitecture>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price_range: Option<Vec<crate::api::pool_models::PriceRange>>,
 }
 
 /// Pricing breakdown per RIP-05, in sats.
@@ -320,6 +324,8 @@ async fn models_for(state: &std::sync::Arc<AppState>, user: &crate::db::User) ->
             context_length,
             max_output_tokens,
             architecture: routing_architecture(&state, rc).await,
+            provider_count: None,
+            price_range: None,
         });
     }
 
@@ -385,9 +391,18 @@ async fn models_for(state: &std::sync::Arc<AppState>, user: &crate::db::User) ->
     }))
     .await;
 
+    let owned = crate::api::pool_models::owned_slugs(&state).await;
+    let configured: std::collections::HashSet<String> = routing_configs.iter().map(|rc| rc.name.to_lowercase()).collect();
+    for entry in crate::api::pool_models::pool_entries(&state, |id| model_allowed(id) && !configured.contains(&id.to_lowercase())).await {
+        all_models.push(entry);
+    }
+
     // Add actual models from providers with provider slug prefix
     for (provider, models) in listings {
         let provider_slug = provider.slug();
+        if owned.contains(provider_slug) {
+            continue;
+        }
 
         for model in models {
             let full_id = format!("{}/{}", provider_slug, model.id);
@@ -440,6 +455,8 @@ async fn models_for(state: &std::sync::Arc<AppState>, user: &crate::db::User) ->
                 context_length,
                 max_output_tokens,
                 architecture: provider_architecture(&state, provider, &model.id).await,
+                provider_count: None,
+                price_range: None,
             });
         }
     }
@@ -595,6 +612,8 @@ mod tests {
             context_length: Some(1048576),
             max_output_tokens: Some(65536),
             architecture: None,
+            provider_count: None,
+            price_range: None,
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert!(
@@ -617,6 +636,8 @@ mod tests {
                 input_modalities: vec!["text".to_string(), "image".to_string()],
                 output_modalities: vec![],
             }),
+            provider_count: None,
+            price_range: None,
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert_eq!(
