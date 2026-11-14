@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { api } from '../api/client'
+import { authApi, landingPath, storeSession } from '../api/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -22,12 +22,25 @@ export default function Login() {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.login(formData)
-      localStorage.setItem('token', response.token)
-      localStorage.setItem('user', JSON.stringify({ username: response.username, isAdmin: response.isAdmin }))
-      navigate(from)
+      const session = await authApi.login(formData.username, formData.password)
+      storeSession(session)
+      navigate(from === '/' ? landingPath(session) : from)
     } catch (e2) {
       setError(e2 instanceof Error ? e2.message : 'Login failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleNostr() {
+    setLoading(true)
+    setError(null)
+    try {
+      const session = await authApi.nostr()
+      storeSession(session)
+      navigate(from === '/' ? landingPath(session) : from)
+    } catch (e2) {
+      setError(e2 instanceof Error ? e2.message : 'Nostr sign in failed')
     } finally {
       setLoading(false)
     }
@@ -190,6 +203,22 @@ export default function Login() {
               )}
             </Button>
           </form>
+
+          <div className="mt-4 space-y-3">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={loading}
+              onClick={handleNostr}
+              className="w-full h-11 font-mono text-[13px] tracking-[0.05em] uppercase border-border"
+            >
+              Sign in with Nostr
+            </Button>
+            <p className="font-mono text-[12px] text-muted-foreground">
+              New here?{' '}
+              <Link to="/register" className="text-brand hover:text-brand/80 uppercase tracking-[0.08em]">Create an account</Link>
+            </p>
+          </div>
 
           <div className="mt-6 border border-border/50 bg-surface p-4">
             <p className="mb-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
