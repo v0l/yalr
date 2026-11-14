@@ -94,7 +94,10 @@ async fn add_owned(w: &World, owner: Option<i64>, backend: &Arc<Listed>, model: 
         provider_type: None,
     };
     let record = match owner {
-        Some(id) => w.db.create_owned_provider(id, new).await.unwrap(),
+        Some(id) => {
+            let created = w.db.create_owned_provider(id, new).await.unwrap();
+            w.db.set_provider_status(created.id, crate::db::APPROVED, None, false).await.unwrap()
+        }
         None => w.db.create_provider(new).await.unwrap(),
     };
     if let Some(price) = price_milli {
@@ -242,4 +245,63 @@ async fn slug_prefixed_models_still_route_directly() {
     w.router.add_provider(direct.clone()).await;
     w.router.chat_completions(&chat("fast/m", &Trace::new()), None).await.unwrap();
     assert_eq!(direct.calls(), 1);
+}
+
+fn as_user(id: i64) -> Option<crate::metrics::MetricsUser> {
+    Some(crate::metrics::MetricsUser { id: Some(id), name: None, api_key_id: None, api_key_name: None })
+}
+
+#[tokio::test]
+async fn a_pending_provider_serves_its_owner_but_not_other_users() {
+    let w = world().await;
+    let alice = w.db.add_test_user("alice", false).await;
+    let bob = w.db.add_test_user("bob", false).await;
+    let pending = Listed::new("alice-p", &["acme/m-1"]);
+    let record = w
+        .db
+        .create_owned_provider(
+            alice.id,
+            NewProvider { name: "alice-p", slug: "alice-p", base_url: "https://example.com/v1", api_key: None, provider_type: None },
+        )
+        .await
+        .unwrap();
+    assert_eq!(record.status, crate::db::PENDING);
+    w.db.create_model_pricing(NewModelPricing {
+        model_name: "acme/m-1",
+        is_advertised: true,
+        is_free: false,
+        price_per_1m_input_sats: None,
+        price_per_1m_output_sats: None,
+        price_per_1m_cache_read_sats: None,
+        price_per_1m_cache_write_sats: None,
+        price_per_request_sats: None,
+        context_window: None,
+        max_output_tokens: None,
+        owner_user_id: Some(alice.id),
+        provider_id: Some(record.id),
+        currency: "usd",
+        fiat: FiatPrices { input: Some(10), output: Some(10), ..Default::default() },
+    })
+    .await
+    .unwrap();
+    w.router.add_provider(pending.clone()).await;
+
+    let denied = w.router.chat_completions(&chat("acme/m-1", &Trace::new()), as_user(bob.id)).await;
+    assert!(matches!(denied, Err(RouterError::NoAvailableProvider)));
+    let anonymous = w.router.chat_completions(&chat("acme/m-1", &Trace::new()), None).await;
+    assert!(matches!(anonymous, Err(RouterError::NoAvailableProvider)));
+    assert_eq!(pending.calls(), 0);
+
+    w.router.chat_completions(&chat("acme/m-1", &Trace::new()), as_user(alice.id)).await.unwrap();
+    assert_eq!(pending.calls(), 1);
+
+    w.db.set_provider_status(record.id, crate::db::APPROVED, None, false).await.unwrap();
+    w.router.refresh_full_name_index().await;
+    w.router.chat_completions(&chat("acme/m-1", &Trace::new()), as_user(bob.id)).await.unwrap();
+    assert_eq!(pending.calls(), 2);
+
+    w.db.set_provider_status(record.id, crate::db::SUSPENDED, Some("failed"), false).await.unwrap();
+    w.router.refresh_full_name_index().await;
+    let suspended = w.router.chat_completions(&chat("acme/m-1", &Trace::new()), as_user(alice.id)).await;
+    assert!(matches!(suspended, Err(RouterError::NoAvailableProvider)));
 }

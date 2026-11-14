@@ -9,6 +9,7 @@ pub(crate) struct IndexedModel {
     pub(crate) model_id: String,
     pub(crate) provider_id: i64,
     pub(crate) owner_user_id: Option<i64>,
+    pub(crate) status: String,
 }
 
 #[derive(Default)]
@@ -18,6 +19,14 @@ pub(crate) struct FullNameIndex {
     refreshed: Option<Instant>,
 }
 
+fn visible_to(member: &IndexedModel, viewer: Option<i64>) -> bool {
+    match member.status.as_str() {
+        "approved" => true,
+        "pending" => member.owner_user_id.is_some() && member.owner_user_id == viewer,
+        _ => false,
+    }
+}
+
 pub(crate) fn is_full_name(model: &str) -> bool {
     model.contains('/')
 }
@@ -25,27 +34,28 @@ pub(crate) fn is_full_name(model: &str) -> bool {
 impl Router {
     pub async fn refresh_full_name_index(&self) {
         let records = self.db.list_providers().await.unwrap_or_default();
-        let providers: Vec<(Arc<dyn Provider>, i64, Option<i64>)> = {
+        let providers: Vec<(Arc<dyn Provider>, i64, Option<i64>, String)> = {
             let loaded = self.providers.read().await;
             records
                 .iter()
-                .filter_map(|r| loaded.get(&r.slug).map(|p| (p.clone(), r.id, r.owner_user_id)))
+                .filter_map(|r| loaded.get(&r.slug).map(|p| (p.clone(), r.id, r.owner_user_id, r.status.clone())))
                 .collect()
         };
-        let listings = futures::future::join_all(providers.into_iter().map(|(provider, id, owner)| async move {
+        let listings = futures::future::join_all(providers.into_iter().map(|(provider, id, owner, status)| async move {
             let models = tokio::time::timeout(LIST_TIMEOUT, provider.list_models()).await.ok().and_then(Result::ok);
-            (provider.slug().to_string(), id, owner, models.unwrap_or_default())
+            (provider.slug().to_string(), id, owner, status, models.unwrap_or_default())
         }))
         .await;
 
         let mut models: HashMap<String, Vec<IndexedModel>> = HashMap::new();
-        for (slug, provider_id, owner_user_id, listed) in listings {
+        for (slug, provider_id, owner_user_id, status, listed) in listings {
             for model in listed.into_iter().filter(|m| is_full_name(&m.id)) {
                 models.entry(model.id.to_lowercase()).or_default().push(IndexedModel {
                     slug: slug.clone(),
                     model_id: model.id,
                     provider_id,
                     owner_user_id,
+                    status: status.clone(),
                 });
             }
         }
@@ -65,7 +75,7 @@ impl Router {
         }
     }
 
-    async fn pool_members(&self, model: &str) -> Vec<(IndexedModel, Arc<dyn Provider>)> {
+    async fn pool_members(&self, model: &str, viewer: Option<i64>) -> Vec<(IndexedModel, Arc<dyn Provider>)> {
         self.ensure_index_for(model).await;
         let key = model.to_lowercase();
         let indexed = self.full_names.read().await.models.get(&key).cloned().unwrap_or_default();
@@ -84,20 +94,22 @@ impl Router {
         indexed
             .into_iter()
             .filter(|m| m.owner_user_id.is_none() || priced.contains(&m.provider_id))
+            .filter(|m| visible_to(m, viewer))
             .filter_map(|m| providers.get(&m.slug).cloned().map(|p| (m, p)))
             .collect()
     }
 
     pub(crate) async fn full_name_backends(&self, model: &str) -> Vec<(Arc<dyn Provider>, String)> {
-        self.pool_members(model).await.into_iter().map(|(m, p)| (p, m.model_id)).collect()
+        self.pool_members(model, None).await.into_iter().map(|(m, p)| (p, m.model_id)).collect()
     }
 
     pub(crate) async fn rank_full_name(
         &self,
         model: &str,
         session: Option<&SessionKey>,
+        viewer: Option<i64>,
     ) -> Result<Vec<Candidate>, RouterError> {
-        let members = self.pool_members(model).await;
+        let members = self.pool_members(model, viewer).await;
         if members.is_empty() {
             return Ok(vec![]);
         }
@@ -132,6 +144,6 @@ impl Router {
     }
 
     pub async fn full_name_providers(&self, model: &str) -> Vec<(String, i64, Option<i64>)> {
-        self.pool_members(model).await.into_iter().map(|(m, _)| (m.slug, m.provider_id, m.owner_user_id)).collect()
+        self.pool_members(model, None).await.into_iter().map(|(m, _)| (m.slug, m.provider_id, m.owner_user_id)).collect()
     }
 }

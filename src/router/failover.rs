@@ -45,7 +45,7 @@ impl Router {
         F: Fn(Arc<dyn Provider>, String, crate::db::ExtraBody) -> Fut,
         Fut: std::future::Future<Output = Attempt<T>>,
     {
-        let candidates = self.collect_routed(model, None).await?;
+        let candidates = self.collect_routed(model, None, user.as_ref().and_then(|u| u.id)).await?;
         if candidates.is_empty() {
             return Err(RouterError::NoAvailableProvider);
         }

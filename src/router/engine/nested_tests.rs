@@ -183,7 +183,7 @@ async fn a_child_whose_providers_are_all_unhealthy_is_skipped_while_a_direct_pro
             })
             .await;
     }
-    let routed = router.collect_routed("parent", None).await.unwrap();
+    let routed = router.collect_routed("parent", None, None).await.unwrap();
     assert_eq!(routed.len(), 1);
     assert_eq!(routed[0].route, "parent > direct");
 }
@@ -220,7 +220,7 @@ async fn extra_body_merges_from_the_leaf_entry_up_to_the_outermost_config() {
         ),
     ])
     .await;
-    let routed = router.collect_routed("top", None).await.unwrap();
+    let routed = router.collect_routed("top", None, None).await.unwrap();
     assert_eq!(routed.len(), 1);
     assert_eq!(
         serde_json::Value::Object(routed[0].extra_body.clone()),
@@ -249,7 +249,7 @@ async fn a_child_member_model_overrides_the_childs_model_name() {
         ("keeps", RoutingTable::with_strategy(vec![mapped], StrategyKind::Priority)),
     ])
     .await;
-    let routed = router.collect_routed("parent", None).await.unwrap();
+    let routed = router.collect_routed("parent", None, None).await.unwrap();
     let models: Vec<(&str, &str)> = routed.iter().map(|c| (c.provider.name(), c.model.as_str())).collect();
     assert_eq!(models, vec![("plain", "child-model"), ("leaf", "pinned")]);
 }
@@ -268,14 +268,14 @@ async fn nesting_deeper_than_the_cap_errors_instead_of_looping() {
         tables.push((name, table));
     }
     let router = router_with(tables.iter().map(|(n, t)| (n.as_str(), RoutingTable::with_children(t.entries.clone(), t.children.clone(), t.strategy))).collect()).await;
-    assert!(matches!(router.collect_routed("c0", None).await, Err(RouterError::NestingTooDeep(_))));
+    assert!(matches!(router.collect_routed("c0", None, None).await, Err(RouterError::NestingTooDeep(_))));
 
     let looped = router_with(vec![(
         "loop",
         RoutingTable::with_children(vec![], vec![child("loop", 1, None)], StrategyKind::Priority),
     )])
     .await;
-    assert!(matches!(looped.collect_routed("loop", None).await, Err(RouterError::NestingTooDeep(_))));
+    assert!(matches!(looped.collect_routed("loop", None, None).await, Err(RouterError::NestingTooDeep(_))));
 }
 
 #[tokio::test]

@@ -3,7 +3,7 @@ use super::{Database, NewProvider, NewRoutingConfig, Provider, RoutingConfig};
 impl Database {
     pub async fn create_owned_provider(&self, owner_user_id: i64, provider: NewProvider<'_>) -> Result<Provider, sqlx::Error> {
         let created = self.create_provider(provider).await?;
-        sqlx::query("UPDATE providers SET owner_user_id = ? WHERE id = ?")
+        sqlx::query("UPDATE providers SET owner_user_id = ?, status = 'pending' WHERE id = ?")
             .bind(owner_user_id)
             .bind(created.id)
             .execute(&self.pool)

@@ -3,6 +3,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 mod anonymous;
+mod approval;
 mod auth_cache;
 mod billing_exempt;
 mod currency;
@@ -24,6 +25,7 @@ mod types;
 mod usage;
 mod users;
 
+pub use approval::{APPROVED, PENDING, SUSPENDED};
 pub use anonymous::{random_hex, AccountInvoice, PublicInvoice};
 pub use extra_body::{merge_extra_body, validate_extra_body, ExtraBody};
 pub use import::ImportReport;

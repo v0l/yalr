@@ -100,6 +100,13 @@ pub struct Provider {
     pub extra_body: Option<String>,
     #[sqlx(default)]
     pub owner_user_id: Option<i64>,
+    pub status: String,
+    #[sqlx(default)]
+    pub status_reason: Option<String>,
+    #[sqlx(default)]
+    pub status_locked: bool,
+    #[sqlx(default)]
+    pub is_reference: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }

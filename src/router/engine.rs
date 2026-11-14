@@ -839,7 +839,7 @@ impl Router {
         model: &str,
         session: Option<&SessionKey>,
     ) -> Vec<(Arc<dyn Provider>, String)> {
-        self.collect_routed(model, session)
+        self.collect_routed(model, session, None)
             .await
             .map(|routed| routed.into_iter().map(Candidate::pair).collect())
             .unwrap_or_default()
@@ -849,6 +849,7 @@ impl Router {
         &self,
         model: &str,
         session: Option<&SessionKey>,
+        viewer: Option<i64>,
     ) -> Result<Vec<Candidate>, RouterError> {
         if let Some((slug_prefix, actual_model)) = model.split_once('/') {
             let exact = self.providers.read().await.get(slug_prefix).cloned();
@@ -856,7 +857,7 @@ impl Router {
                 return Ok(vec![self.untracked_candidate(provider, actual_model.to_string())]);
             }
             if !self.routing_tables.read().await.contains_key(model) {
-                let pooled = self.rank_full_name(model, session).await?;
+                let pooled = self.rank_full_name(model, session, viewer).await?;
                 if !pooled.is_empty() {
                     return Ok(pooled);
                 }
@@ -1063,7 +1064,7 @@ impl Router {
         let original_model = request.model.clone();
         let session = session_key(user.as_ref(), &original_model, request.session_id());
 
-        let candidates = self.collect_routed(&request.model, session.as_ref()).await?;
+        let candidates = self.collect_routed(&request.model, session.as_ref(), user.as_ref().and_then(|u| u.id)).await?;
         if candidates.is_empty() {
             return Err(RouterError::NoAvailableProvider);
         }
@@ -1295,7 +1296,7 @@ impl Router {
         );
 
         let session = session_key(user.as_ref(), &original_model, request.session_id());
-        let candidates = self.collect_routed(&request.model, session.as_ref()).await?;
+        let candidates = self.collect_routed(&request.model, session.as_ref(), user.as_ref().and_then(|u| u.id)).await?;
         if candidates.is_empty() {
             return Err(RouterError::NoAvailableProvider);
         }
@@ -1815,7 +1816,7 @@ impl Router {
         let original_model = request.model.clone().unwrap_or_default();
         let session = session_key(user.as_ref(), &original_model, session.or(request.prompt_cache_key.as_deref()));
 
-        let candidates = self.collect_routed(&original_model, session.as_ref()).await?;
+        let candidates = self.collect_routed(&original_model, session.as_ref(), user.as_ref().and_then(|u| u.id)).await?;
         if candidates.is_empty() {
             return Err(RouterError::NoAvailableProvider);
         }

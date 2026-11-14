@@ -24,6 +24,10 @@ async fn provider(base_url: &str) -> AnthropicOAuthProvider {
         client_version: None,
         extra_body: None,
         owner_user_id: None,
+        status: "approved".to_string(),
+        status_reason: None,
+        status_locked: false,
+        is_reference: false,
         created_at: Default::default(),
         updated_at: Default::default(),
     };
