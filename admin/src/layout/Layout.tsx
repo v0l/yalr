@@ -5,17 +5,16 @@ import { cn } from '@/lib/utils'
 import {
   LayoutDashboardIcon, SlidersIcon, ActivityIcon,
   UsersIcon, CreditCardIcon, MessageSquareIcon, SunIcon, MoonIcon,
-  LogOutIcon, ChevronRightIcon, ScrollTextIcon, ServerIcon
+  LogOutIcon, ChevronRightIcon, ScrollTextIcon
 } from 'lucide-react'
 
 const navigation = [
-  { name: 'Dashboard', path: '/', icon: LayoutDashboardIcon, adminOnly: true },
-  { name: 'Config', path: '/config', icon: SlidersIcon, adminOnly: true },
-  { name: 'Metrics', path: '/metrics', icon: ActivityIcon, adminOnly: true },
-  { name: 'Requests', path: '/request-log', icon: ScrollTextIcon, adminOnly: true },
+  { name: 'Dashboard', path: '/', icon: LayoutDashboardIcon, adminOnly: false },
+  { name: 'Config', path: '/config', icon: SlidersIcon, adminOnly: false },
+  { name: 'Metrics', path: '/metrics', icon: ActivityIcon, adminOnly: false },
+  { name: 'Requests', path: '/request-log', icon: ScrollTextIcon, adminOnly: false },
   { name: 'Users', path: '/users', icon: UsersIcon, adminOnly: true },
-  { name: 'Payments', path: '/payments', icon: CreditCardIcon, adminOnly: true },
-  { name: 'My providers', path: '/my-providers', icon: ServerIcon, adminOnly: false },
+  { name: 'Payments', path: '/payments', icon: CreditCardIcon, adminOnly: false },
   { name: 'Chat', path: '/chat', icon: MessageSquareIcon, adminOnly: false },
 ]
 

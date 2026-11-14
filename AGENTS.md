@@ -74,6 +74,8 @@ audio.
 
 **Metrics**: `src/metrics.rs` - Shared metrics store for health/load tracking
 
+**Tenancy**: regular users use the same admin UI and `/api/*` routes as admins, scoped to their own rows. Routes live in `src/api/routes.rs` (shared by the server and `create_test_app`): `tenant()` routes run on `auth_middleware`, `admin()` routes on `admin_middleware`. A tenant handler takes `UserExtractor` and goes through `Scope` in `src/api/tenant.rs` (`provider`, `config`, `providers`, `configs`, `owner()`), which answers 404 for rows the user does not own. Providers and `routing_config` carry `owner_user_id`; the router only routes an owned provider inside a config with the same owner. Add new scoped endpoints the same way and cover them in `src/api/tenant_tests.rs`.
+
 **Database**: `src/db/` - MariaDB via sqlx, migrations in `./migrations/`. Every SQL query
 lives on `Database`, split by domain (`providers.rs`, `routing.rs`, `users.rs`, `payments.rs`,
 `pricing.rs`, `usage.rs`, `request_log/`, ...). Nothing outside `src/db/` touches the pool;
@@ -235,7 +237,8 @@ admin/
 | `/config` | Config | Private + SetupCheck | Routing configs with nested provider assignments |
 | `/metrics` | Metrics | Private + SetupCheck | WebSocket live events, charts, model breakdown |
 | `/users` | Users | Private + SetupCheck | User CRUD |
-| `/users/:id` | UserDetail | Private + SetupCheck | User detail, API keys, model permissions |
+| `/users/:id` | UserDetail | Private + SetupCheck + Admin | User detail, API keys, model permissions |
+| `/providers/:slug` | ProviderDetail | Private + SetupCheck | Per-provider traffic, throughput and earnings |
 | `/payments` | Payments | Private + SetupCheck | 4 tabs: balances, pricing, transactions, invoices |
 | `/chat` | Chat | Private + SetupCheck | assistant-ui chat with streaming |
 

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeftIcon } from 'lucide-react'
-import { userApi } from '@/api/userApi'
-import type { MyProviderStats } from '@/types/userProviders'
+import { tenantApi } from '@/api/tenantApi'
+import type { ProviderStats } from '@/types/providerStats'
 import { formatMilli } from '@/lib/money'
 
 const RANGES = [1, 7, 30, 90]
@@ -20,15 +20,15 @@ function rate(value: number | null): string {
   return value === null ? '—' : `${value.toFixed(1)} tok/s`
 }
 
-export default function MyProviderDetail() {
+export default function ProviderDetail() {
   const { slug = '' } = useParams()
   const [days, setDays] = useState(30)
-  const [stats, setStats] = useState<MyProviderStats | null>(null)
+  const [stats, setStats] = useState<ProviderStats | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     setError(null)
-    userApi.providerStats(slug, days).then(setStats).catch(e => setError(e instanceof Error ? e.message : 'Failed to load'))
+    tenantApi.providerStats(slug, days).then(setStats).catch(e => setError(e instanceof Error ? e.message : 'Failed to load'))
   }, [slug, days])
 
   const traffic = stats?.traffic
@@ -37,11 +37,11 @@ export default function MyProviderDetail() {
   return (
     <div className="space-y-4 p-4 sm:p-5">
       <div>
-        <Link to="/my-providers" className="inline-flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground mb-2">
-          <ArrowLeftIcon className="size-3" /> My providers
+        <Link to="/" className="inline-flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground mb-2">
+          <ArrowLeftIcon className="size-3" /> Dashboard
         </Link>
-        <h1 className="font-display text-[28px] tracking-[0.04em] text-foreground leading-none mb-1">{stats?.provider.name ?? slug}</h1>
-        {stats && <p className="font-mono text-[13px] text-muted-foreground">{stats.provider.base_url}</p>}
+        <h1 className="font-display text-[28px] tracking-[0.04em] text-foreground leading-none mb-1">{stats?.name ?? slug}</h1>
+        {stats && <p className="font-mono text-[13px] text-muted-foreground">{stats.base_url}</p>}
       </div>
       {error && <div className="panel p-3 font-mono text-[12px] text-destructive">{error}</div>}
       <div className="flex gap-1">

@@ -164,7 +164,7 @@ export const api = {
         localStorage.removeItem('token')
         window.location.href = '/login'
       }
-      throw new Error('Failed to create provider')
+      throw new Error((await response.text().catch(() => '')) || 'Failed to create provider')
     }
     
     return response.json()
@@ -201,7 +201,7 @@ export const api = {
         localStorage.removeItem('token')
         window.location.href = '/login'
       }
-      throw new Error('Failed to update provider')
+      throw new Error((await response.text().catch(() => '')) || 'Failed to update provider')
     }
     
     return response.json()
@@ -836,47 +836,41 @@ export const api = {
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
-    if (!response.ok) throw new Error('Failed to create model pricing')
+    if (!response.ok) throw new Error((await response.text().catch(() => '')) || 'Failed to create model pricing')
     return response.json()
   },
 
-  async updateModelPricing(modelName: string, data: import('../types').ModelPricingUpdateRequest): Promise<import('../types').ModelPricingEntry> {
+  async updateModelPricing(id: number, data: import('../types').ModelPricingUpdateRequest): Promise<import('../types').ModelPricingEntry> {
     const headers = await getAuthHeaders()
-    const response = await fetch(`${API_BASE_URL}/api/model-pricing/${encodeURIComponent(modelName)}`, {
+    const response = await fetch(`${API_BASE_URL}/api/model-pricing/id/${id}`, {
       method: 'PUT',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
-    if (!response.ok) throw new Error('Failed to update model pricing')
+    if (!response.ok) throw new Error((await response.text().catch(() => '')) || 'Failed to update model pricing')
     return response.json()
   },
 
-  async deleteModelPricing(modelName: string): Promise<{ deleted: boolean; model_name: string }> {
+  async deleteModelPricing(id: number): Promise<{ deleted: boolean; id: number }> {
     const headers = await getAuthHeaders()
-    const response = await fetch(`${API_BASE_URL}/api/model-pricing/${encodeURIComponent(modelName)}`, {
+    const response = await fetch(`${API_BASE_URL}/api/model-pricing/id/${id}`, {
       method: 'DELETE',
       headers,
     })
-    if (!response.ok) throw new Error('Failed to delete model pricing')
+    if (!response.ok) throw new Error((await response.text().catch(() => '')) || 'Failed to delete model pricing')
     return response.json()
   },
 
   // ── Lightning Invoice Creation ───────────────────────────────────────
 
-  async createLightningInvoice(data: { amount_sats: number; memo?: string; expire_seconds?: number }): Promise<{
-    invoice_id: number
-    bolt11: string
-    payment_hash: string
-    amount_sats: number
-    expires_at: string
-  }> {
+  async createLightningInvoice(data: { amount_sats: number; memo?: string; expire_seconds?: number }): Promise<TopupResponse> {
     const headers = await getAuthHeaders()
     const response = await fetch(`${API_BASE_URL}/lightning/invoice`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
-    if (!response.ok) throw new Error('Failed to create Lightning invoice')
+    if (!response.ok) throw new Error((await response.text().catch(() => '')) || 'Failed to create Lightning invoice')
     return response.json()
   },
 

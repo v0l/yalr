@@ -30,10 +30,11 @@ export interface ProviderFormDialogProps {
   apiKeysUrl?: string
   ownerLabel?: string | null
   onOwnerLabel?: (label: string | null) => void
+  canAssignOwner?: boolean
 }
 
 export function ProviderFormDialog({
-  open, onOpenChange, editingProvider, form, setForm, onSave, saving, error, onClearError, apiKeysUrl, ownerLabel, onOwnerLabel,
+  open, onOpenChange, editingProvider, form, setForm, onSave, saving, error, onClearError, apiKeysUrl, ownerLabel, onOwnerLabel, canAssignOwner = false,
 }: ProviderFormDialogProps) {
   const isOauth = !!editingProvider?.is_oauth || form.provider_type.endsWith('-oauth')
   return (
@@ -61,7 +62,7 @@ export function ProviderFormDialog({
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="p-slug" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Slug</Label>
-              <Input id="p-slug" value={form.slug} onChange={e => setForm({ ...form, slug: e.target.value })} placeholder="my-openai" className="font-mono bg-surface border-border text-foreground" required />
+              <Input id="p-slug" value={form.slug} onChange={e => setForm({ ...form, slug: e.target.value })} placeholder="my-openai" disabled={!!editingProvider && !canAssignOwner} className="font-mono bg-surface border-border text-foreground" required />
             </div>
             {!isOauth && (
               <div className="flex flex-col gap-1.5">
@@ -118,7 +119,7 @@ export function ProviderFormDialog({
               provider card to refresh access.
             </div>
           )}
-          {editingProvider && (
+          {editingProvider && canAssignOwner && (
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="p-owner" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Owner</Label>
               <UserPicker

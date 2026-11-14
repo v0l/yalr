@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { PencilIcon, TrashIcon, WalletIcon, KeyIcon, RefreshCwIcon } from 'lucide-react'
 import type { Provider, ProviderHealthEntry, QuotaSnapshot } from '../types'
 import { Button } from '@/components/ui/button'
@@ -56,7 +57,7 @@ export function ProviderCard({ provider, onEdit, onDelete, onTopup, onGenerateKe
           />
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-1.5">
-              <span className="font-mono text-[13px] font-bold leading-none truncate">{provider.name}</span>
+              <Link to={`/providers/${encodeURIComponent(provider.slug)}`} className="font-mono text-[13px] font-bold leading-none truncate hover:text-brand">{provider.name}</Link>
               <span className="font-mono text-[10px] text-muted-foreground truncate">{provider.slug}</span>
             </div>
           </div>

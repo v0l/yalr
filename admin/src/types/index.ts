@@ -362,6 +362,7 @@ export interface RoutingConfigFull {
   health_check_enabled: boolean
   health_check_interval_seconds: number
   health_check_timeout_seconds: number
+  owner_user_id?: number | null
   created_at: string
   updated_at: string
   input_modalities?: Modality[]
@@ -413,6 +414,7 @@ export interface ProviderListItem {
   name: string
   slug: string
   base_url: string
+  owner_user_id?: number | null
 }
 
 export interface User {
@@ -619,8 +621,18 @@ export interface ModelPricingEntry {
   updated_at: string
 }
 
-export interface ModelPricingCreateRequest {
+export interface FiatPriceFields {
+  price_per_1m_input_milli?: number | null
+  price_per_1m_output_milli?: number | null
+  price_per_1m_cache_read_milli?: number | null
+  price_per_1m_cache_write_milli?: number | null
+  price_per_request_milli?: number | null
+}
+
+export interface ModelPricingCreateRequest extends FiatPriceFields {
   model_name: string
+  provider_slug?: string | null
+  currency?: string
   is_advertised: boolean
   is_free: boolean
   price_per_1m_input_sats?: number | null
@@ -632,7 +644,8 @@ export interface ModelPricingCreateRequest {
   max_output_tokens?: number | null
 }
 
-export interface ModelPricingUpdateRequest {
+export interface ModelPricingUpdateRequest extends FiatPriceFields {
+  currency?: string
   is_advertised?: boolean
   is_free?: boolean
   price_per_1m_input_sats?: number | null

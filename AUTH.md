@@ -106,36 +106,44 @@ Authorization: Bearer <api_key>
 ### Admin vs Regular Users
 
 - **Admin users** (`is_admin = true`):
-  - Full access to `/api/*` routes
-  - Can manage providers, users, billing, routing config
-  - Can create API keys for any user
+  - See and manage every row behind `/api/*`
+  - Can manage platform providers, users, billing, routing config
+  - Can create API keys for any user, and link a provider to an owner
 
-- **Regular users**:
-  - Access to chat/completions endpoints (`/v1/chat/completions`)
-  - Manage own API keys
-  - View own billing data
+- **Regular users** (tenants) see the same admin UI pages, scoped to their own rows:
+  - **Dashboard / providers**: only providers they own. New ones get a `u{id}-` slug and a `username/` name prefix, must have a public base URL (SSRF guard) and cannot be OAuth
+  - **Config**: only routing configs they own, named `username/...`. Only their own providers can be assigned, and the router only routes an owned provider inside its owner's configs
+  - **Metrics**: health, throughput and events of their own providers only, on the REST endpoints and the metrics WebSocket
+  - **Requests**: only requests they made. Upstream URL, headers, route and the upstream body are hidden unless the request was served by their own provider
+  - **Payments**: own balance, transactions and invoices, Lightning top up, and pricing of their own providers. Credit and debit stay admin-only
+  - **Users**: hidden
 
 ### Route Protection
 
-| Route Pattern | Auth Required | Admin Only? | Methods |
-|---------------|---------------|-------------|---------|
-| `/api/auth/*` | ❌ No | No | Login, setup |
-| `/api/health` | ❌ No | No | GET |
-| `/v1/models` | ❌ No | No | GET |
-| `/v1/chat/completions` | ✅ Yes | No | POST |
-| `/v1/responses` | ✅ Yes | No | POST |
-| `/api/providers/*` | ✅ Yes | **Yes** | All |
-| `/api/metrics/*` | ✅ Yes | **Yes** | All |
-| `/api/users/*` | ✅ Yes | **Yes** | All |
-| `/api/payments/*` | ✅ Yes | **Yes** | All |
-| `/api/routing-configs/*` | ✅ Yes | **Yes** | All |
+| Route Pattern | Auth Required | Scope | Methods |
+|---------------|---------------|-------|---------|
+| `/api/auth/*` | ❌ No | - | Login, setup |
+| `/api/health` | ❌ No | - | GET |
+| `/v1/models` | ❌ No | - | GET |
+| `/v1/chat/completions` | ✅ Yes | Own account | POST |
+| `/v1/responses` | ✅ Yes | Own account | POST |
+| `/api/providers/*` | ✅ Yes | Tenant scoped | All |
+| `/api/metrics/*`, `/api/metrics/ws` | ✅ Yes | Tenant scoped | GET |
+| `/api/request-log/*` | ✅ Yes | Tenant scoped | GET |
+| `/api/routing-configs/*` | ✅ Yes | Tenant scoped | All |
+| `/api/model-pricing`, `/api/model-pricing/id/:id` | ✅ Yes | Tenant scoped | All |
+| `/api/payments/{balances,transactions,invoices,currencies}` | ✅ Yes | Tenant scoped | GET |
+| `/api/payments/{credit,debit}`, `/api/payments/balances/:user_id` | ✅ Yes | **Admin** | All |
+| `/api/users/*`, `/api/api-keys/*`, `/api/oauth/*`, `/api/config` | ✅ Yes | **Admin** | All |
+
+Tenant scoping lives in one place, `Scope` in [`src/api/tenant.rs`](src/api/tenant.rs): an admin sees every row, a regular user sees only rows whose `owner_user_id` is theirs, and a row they cannot see answers 404. [`src/api/tenant_tests.rs`](src/api/tenant_tests.rs) drives the HTTP app as two users and an admin to prove it.
 
 ### Middleware
 
-- **`auth_middleware`**: Extracts user from NIP-98, session, or API key
+- **`auth_middleware`**: Extracts user from NIP-98, session, or API key. Guards the tenant scoped routes
 - **`admin_middleware`**: Builds on auth_middleware, requires `is_admin = true`
 
-**See**: [`src/api/server.rs`](src/api/server.rs) - Route definitions
+**See**: [`src/api/routes.rs`](src/api/routes.rs) - Route definitions
 
 ---
 

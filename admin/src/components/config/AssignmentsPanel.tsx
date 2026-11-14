@@ -207,7 +207,7 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
               >
                 <SelectTrigger className="h-7 w-44 font-mono text-[12px] bg-surface border-border text-foreground"><SelectValue placeholder="select…" /></SelectTrigger>
                 <SelectContent className="bg-card border-border">
-                  <SelectGroup>{providers.map(p => <SelectItem key={p.id} value={String(p.id)} className="font-mono text-[12px] text-foreground">{p.name} ({p.slug})</SelectItem>)}</SelectGroup>
+                  <SelectGroup>{providers.filter(p => (p.owner_user_id ?? null) === null || p.owner_user_id === config.owner_user_id).map(p => <SelectItem key={p.id} value={String(p.id)} className="font-mono text-[12px] text-foreground">{p.name} ({p.slug})</SelectItem>)}</SelectGroup>
                 </SelectContent>
               </Select>
             </div>

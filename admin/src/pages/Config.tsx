@@ -14,6 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import ConfigRail from '../components/config/ConfigRail'
 import AssignmentsPanel from '../components/config/AssignmentsPanel'
 import ModalityPicker from '../components/config/ModalityPicker'
+import { currentRole } from '@/lib/role'
 
 const emptyConfigForm: RoutingConfigCreateRequest = {
   name: '', strategy: 'round_robin', health_check_enabled: true,
@@ -22,6 +23,7 @@ const emptyConfigForm: RoutingConfigCreateRequest = {
 }
 
 export default function Config() {
+  const { isAdmin, username } = currentRole()
   const [configs, setConfigs] = useState<RoutingConfigFull[]>([])
   const [providers, setProviders] = useState<ProviderListItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -155,6 +157,7 @@ export default function Config() {
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="c-name" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Name</Label>
               <Input id="c-name" value={configForm.name} onChange={e => setConfigForm({ ...configForm, name: e.target.value })} placeholder="production" required className="font-mono bg-surface border-border text-foreground" />
+              {!isAdmin && <p className="font-mono text-[10px] text-muted-foreground">Saved under your username prefix, for example <span className="text-foreground">{username.toLowerCase()}/{configForm.name || 'name'}</span>. Call it by that model name. Only your own providers can be assigned.</p>}
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="c-strategy" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Strategy</Label>

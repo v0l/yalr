@@ -4,7 +4,9 @@ import { BalanceAdjustDialog } from '@/components/BalanceAdjustDialog'
 import type { BalanceAdjustKind } from '../types'
 import { formatMilli, formatPrice } from '@/lib/money'
 import { api } from '../api/client'
-import type { UserBalanceEntry, BalanceTransaction, LightningInvoice, ModelPricingEntry, ModelPricingCreateRequest, Model } from '../types'
+import type { UserBalanceEntry, BalanceTransaction, LightningInvoice, ModelPricingEntry, Provider } from '../types'
+import { currentRole } from '@/lib/role'
+import { TopupBalanceDialog } from '@/components/TopupBalanceDialog'
 import { Button } from '@/components/ui/button'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
@@ -77,80 +79,47 @@ export default function Payments() {
   const [transactions, setTransactions] = useState<BalanceTransaction[]>([])
   const [invoices, setInvoices] = useState<LightningInvoice[]>([])
   const [modelPricings, setModelPricings] = useState<ModelPricingEntry[]>([])
-  const [availableModels, setAvailableModels] = useState<Model[]>([])
+  const [providers, setProviders] = useState<Provider[]>([])
+  const { isAdmin } = currentRole()
 
-  /* Credit/Debit */
   const [adjustKind, setAdjustKind] = useState<BalanceAdjustKind | null>(null)
+  const [topupOpen, setTopupOpen] = useState(false)
 
-  /* Model Pricing */
   const [pricingDialog, setPricingDialog] = useState(false)
-  const [editingModel, setEditingModel] = useState<string | null>(null)
-  const [pricingForm, setPricingForm] = useState<ModelPricingCreateRequest>({
-    model_name: '', is_advertised: true, is_free: false,
-    price_per_1m_input_sats: null, price_per_1m_output_sats: null,
-    price_per_request_sats: null, context_window: null, max_output_tokens: null,
-  })
-  const [pricingSaving, setPricingSaving] = useState(false)
+  const [editingPrice, setEditingPrice] = useState<ModelPricingEntry | null>(null)
   const [compareTarget, setCompareTarget] = useState<ModelPricingEntry | null>(null)
   const [listing, setListing] = useState<ListingStatus | null>(null)
-  const [deletePricingTarget, setDeletePricingTarget] = useState<string | null>(null)
+  const [deletePricingTarget, setDeletePricingTarget] = useState<ModelPricingEntry | null>(null)
 
-  useEffect(() => { loadAll(); marketApi.listing().then(setListing).catch(() => undefined) }, [])
-
-  const pricedNames = new Set(modelPricings.map(p => p.model_name))
-  const unpricedModels = availableModels.filter(m => !pricedNames.has(m.id))
-
-  function pickModel(id: string) {
-    const model = availableModels.find(m => m.id === id)
-    setPricingForm(f => ({
-      ...f,
-      model_name: id,
-      context_window: f.context_window ?? model?.context_length ?? null,
-      max_output_tokens: f.max_output_tokens ?? model?.max_output_tokens ?? null,
-    }))
-  }
+  useEffect(() => {
+    loadAll()
+    if (isAdmin) marketApi.listing().then(setListing).catch(() => undefined)
+  }, [])
 
   async function loadAll() {
     setLoading(true); setError(null)
     try {
-      const [b, t, i, m] = await Promise.allSettled([api.getAllBalances(), api.getAllTransactions(), api.getAllInvoices(), api.getModelPricing()])
+      const [b, t, i, m, p] = await Promise.allSettled([api.getAllBalances(), api.getAllTransactions(), api.getAllInvoices(), api.getModelPricing(), api.getProviders()])
       if (b.status === 'fulfilled') setBalances(b.value)
       if (t.status === 'fulfilled') setTransactions(t.value)
       if (i.status === 'fulfilled') setInvoices(i.value)
       if (m.status === 'fulfilled') setModelPricings(m.value)
+      if (p.status === 'fulfilled') setProviders(p.value.providers)
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load payment data') }
     finally { setLoading(false) }
   }
 
   function openCreatePricing() {
-    if (availableModels.length === 0) api.getModels().then(r => setAvailableModels(r.data)).catch(() => undefined)
-    setPricingForm({ model_name: '', is_advertised: true, is_free: false, price_per_1m_input_sats: null, price_per_1m_output_sats: null, price_per_1m_cache_read_sats: null, price_per_1m_cache_write_sats: null, price_per_request_sats: null, context_window: null, max_output_tokens: null })
-    setEditingModel(null); setPricingDialog(true)
+    setEditingPrice(null); setPricingDialog(true)
   }
 
   function openEditPricing(entry: ModelPricingEntry) {
-    setPricingForm({ model_name: entry.model_name, is_advertised: entry.is_advertised, is_free: entry.is_free, price_per_1m_input_sats: entry.price_per_1m_input_sats, price_per_1m_output_sats: entry.price_per_1m_output_sats, price_per_1m_cache_read_sats: entry.price_per_1m_cache_read_sats, price_per_1m_cache_write_sats: entry.price_per_1m_cache_write_sats, price_per_request_sats: entry.price_per_request_sats, context_window: entry.context_window, max_output_tokens: entry.max_output_tokens })
-    setEditingModel(entry.model_name); setPricingDialog(true)
-  }
-
-  async function handlePricingSave(e: React.FormEvent) {
-    e.preventDefault(); setPricingSaving(true)
-    try {
-      if (editingModel) {
-        await api.updateModelPricing(editingModel, { is_advertised: pricingForm.is_advertised, is_free: pricingForm.is_free, price_per_1m_input_sats: pricingForm.price_per_1m_input_sats, price_per_1m_output_sats: pricingForm.price_per_1m_output_sats, price_per_1m_cache_read_sats: pricingForm.price_per_1m_cache_read_sats, price_per_1m_cache_write_sats: pricingForm.price_per_1m_cache_write_sats, price_per_request_sats: pricingForm.price_per_request_sats, context_window: pricingForm.context_window, max_output_tokens: pricingForm.max_output_tokens })
-        setSuccessMessage('PRICING UPDATED')
-      } else {
-        await api.createModelPricing({ model_name: pricingForm.model_name, is_advertised: pricingForm.is_advertised, is_free: pricingForm.is_free, price_per_1m_input_sats: pricingForm.price_per_1m_input_sats ?? 5, price_per_1m_output_sats: pricingForm.price_per_1m_output_sats ?? 15, price_per_1m_cache_read_sats: pricingForm.price_per_1m_cache_read_sats, price_per_1m_cache_write_sats: pricingForm.price_per_1m_cache_write_sats, price_per_request_sats: pricingForm.price_per_request_sats ?? 1, context_window: pricingForm.context_window ?? 8192, max_output_tokens: pricingForm.max_output_tokens ?? 4096 })
-        setSuccessMessage('PRICING CREATED')
-      }
-      setPricingDialog(false); loadAll()
-    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to save pricing') }
-    finally { setPricingSaving(false) }
+    setEditingPrice(entry); setPricingDialog(true)
   }
 
   async function handleDeletePricing() {
     if (!deletePricingTarget) return
-    try { await api.deleteModelPricing(deletePricingTarget); setDeletePricingTarget(null); setSuccessMessage('PRICING DELETED'); loadAll() }
+    try { await api.deleteModelPricing(deletePricingTarget.id); setDeletePricingTarget(null); setSuccessMessage('PRICING DELETED'); loadAll() }
     catch (e) { setError(e instanceof Error ? e.message : 'Failed to delete') }
   }
 
@@ -204,12 +173,19 @@ export default function Payments() {
       {activeTab === 'balances' && (
         <div className="space-y-4">
           <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => setAdjustKind('credit')} className="font-mono text-[11px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20 h-8">
-              <PlusIcon className="size-3" /> Credit
+            <Button size="sm" onClick={() => setTopupOpen(true)} className="font-mono text-[11px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20 h-8">
+              <ZapIcon className="size-3" /> Top up
             </Button>
-            <Button size="sm" variant="outline" onClick={() => setAdjustKind('debit')} className="font-mono text-[11px] tracking-wider uppercase border-border text-muted-foreground h-8">
-              <PlusIcon className="size-3" /> Debit
-            </Button>
+            {isAdmin && (
+              <>
+                <Button size="sm" variant="outline" onClick={() => setAdjustKind('credit')} className="font-mono text-[11px] tracking-wider uppercase border-brand/40 text-brand h-8">
+                  <PlusIcon className="size-3" /> Credit
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setAdjustKind('debit')} className="font-mono text-[11px] tracking-wider uppercase border-border text-muted-foreground h-8">
+                  <PlusIcon className="size-3" /> Debit
+                </Button>
+              </>
+            )}
           </div>
 
           <div className="panel">
@@ -247,7 +223,7 @@ export default function Payments() {
       {/* ══ Model Pricing ══════════════════════════════════════════ */}
       {activeTab === 'pricing' && (
         <div className="space-y-4">
-          <Button size="sm" onClick={openCreatePricing} className="font-mono text-[11px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20 h-8">
+          <Button size="sm" onClick={openCreatePricing} disabled={!isAdmin && providers.length === 0} className="font-mono text-[11px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20 h-8">
             <PlusIcon className="size-3" /> Add Pricing
           </Button>
           <div className="panel">
@@ -275,7 +251,7 @@ export default function Payments() {
                     <tr key={mp.id} className="border-b border-border/50 hover:bg-surface">
                       <td className="px-4 py-3 font-mono text-[13px] font-medium">{mp.model_name}</td>
                       <td className="px-4 py-3 font-mono text-[12px]">
-                        {mp.owner_user_id === null ? <span className="text-muted-foreground">platform</span> : <Link to={`/users/${mp.owner_user_id}`} className="text-brand hover:underline">{mp.owner_username ?? `user ${mp.owner_user_id}`}</Link>}
+                        {mp.owner_user_id === null ? <span className="text-muted-foreground">platform</span> : isAdmin ? <Link to={`/users/${mp.owner_user_id}`} className="text-brand hover:underline">{mp.owner_username ?? `user ${mp.owner_user_id}`}</Link> : <span>{mp.owner_username ?? 'you'}</span>}
                         {mp.provider_slug && <span className="ml-2 text-muted-foreground">{mp.provider_slug}</span>}
                       </td>
                       <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{formatPrice(mp.currency === 'sats' ? mp.price_per_1m_input_sats : mp.price_per_1m_input_milli, mp.currency)}</td>
@@ -295,9 +271,9 @@ export default function Payments() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
-                          <Button variant="ghost" size="icon-xs" title="Compare with other Routstr nodes" onClick={() => setCompareTarget(mp)} className="text-muted-foreground hover:text-foreground"><ScaleIcon className="size-3" /></Button>
+                          {isAdmin && <Button variant="ghost" size="icon-xs" title="Compare with other Routstr nodes" onClick={() => setCompareTarget(mp)} className="text-muted-foreground hover:text-foreground"><ScaleIcon className="size-3" /></Button>}
                           <Button variant="ghost" size="icon-xs" onClick={() => openEditPricing(mp)} className="text-muted-foreground hover:text-foreground"><PencilIcon className="size-3" /></Button>
-                          <Button variant="ghost" size="icon-xs" onClick={() => setDeletePricingTarget(mp.model_name)} className="text-muted-foreground hover:text-destructive"><TrashIcon className="size-3" /></Button>
+                          <Button variant="ghost" size="icon-xs" onClick={() => setDeletePricingTarget(mp)} className="text-muted-foreground hover:text-destructive"><TrashIcon className="size-3" /></Button>
                         </div>
                       </td>
                     </tr>
@@ -383,16 +359,15 @@ export default function Payments() {
       <PricingDialog
         open={pricingDialog}
         onOpenChange={setPricingDialog}
-        editing={editingModel}
-        form={pricingForm}
-        setForm={setPricingForm}
-        saving={pricingSaving}
-        onSave={handlePricingSave}
-        availableModels={availableModels}
-        unpricedModels={unpricedModels}
-        pickModel={pickModel}
+        editing={editingPrice}
+        isAdmin={isAdmin}
+        providers={providers}
+        prices={modelPricings}
         listing={listing}
+        onSaved={m => { setSuccessMessage(m); loadAll() }}
+        onError={setError}
       />
+      <TopupBalanceDialog open={topupOpen} onOpenChange={setTopupOpen} onPaid={() => { setSuccessMessage('TOP UP RECEIVED'); loadAll() }} />
       <CompareDialog open={!!compareTarget} onOpenChange={o => { if (!o) setCompareTarget(null) }} entry={compareTarget} />
 
       {/* ══ Delete Pricing ══════════════════════════════════════════ */}
@@ -400,7 +375,7 @@ export default function Payments() {
         <AlertDialogContent className="border-border bg-card">
           <AlertDialogHeader>
             <AlertDialogTitle className="font-display text-xl tracking-[0.04em] text-destructive">DELETE PRICING</AlertDialogTitle>
-            <AlertDialogDescription className="font-mono text-[13px] text-muted-foreground">Delete pricing for <span className="text-foreground">{deletePricingTarget}</span>?</AlertDialogDescription>
+            <AlertDialogDescription className="font-mono text-[13px] text-muted-foreground">Delete pricing for <span className="text-foreground">{deletePricingTarget?.model_name}</span>{deletePricingTarget?.provider_slug ? ` on ${deletePricingTarget.provider_slug}` : ''}?</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</AlertDialogCancel>

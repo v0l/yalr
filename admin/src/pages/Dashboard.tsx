@@ -18,6 +18,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import StatCard from '@/components/StatCard'
 import { formatExtraBody, parseExtraBody } from '@/components/ExtraBodyField'
 import { cn } from '@/lib/utils'
+import { currentRole } from '@/lib/role'
 
 /* ── Form helpers ──────────────────────────────────────────────── */
 
@@ -28,6 +29,7 @@ const emptyForm: ProviderFormData = { name: '', slug: '', base_url: '', api_key:
 /* ═══════════════════════════════════════════════════════════════ */
 
 export default function Dashboard() {
+  const { isAdmin } = currentRole()
   /* ── Data ─────────────────────────────────────────────── */
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null)
   const [providers, setProviders] = useState<Provider[]>([])
@@ -277,7 +279,7 @@ export default function Dashboard() {
               {wsStatus === 'connected' ? 'LIVE' : wsStatus === 'connecting' ? 'CONN' : 'OFF'}
             </div>
           </div>
-          <p className="font-mono text-[13px] text-muted-foreground">System overview &amp; provider management</p>
+          <p className="font-mono text-[13px] text-muted-foreground">{isAdmin ? 'System overview & provider management' : 'Your providers, their health and traffic'}</p>
         </div>
 
         {/* Quick health summary */}
@@ -311,9 +313,11 @@ export default function Dashboard() {
         <div className="flex items-center justify-between mb-3">
           <h2 className="section-header mb-0">Providers</h2>
           <div className="flex items-center gap-2">
-            <Button onClick={() => { setOauthReauth(undefined); setOauthOpen(true) }} className="font-mono text-[12px] tracking-wider uppercase border border-border bg-transparent text-muted-foreground hover:text-brand hover:border-brand/40">
-              <ShieldCheckIcon className="size-3.5" /> Connect Subscription
-            </Button>
+            {isAdmin && (
+              <Button onClick={() => { setOauthReauth(undefined); setOauthOpen(true) }} className="font-mono text-[12px] tracking-wider uppercase border border-border bg-transparent text-muted-foreground hover:text-brand hover:border-brand/40">
+                <ShieldCheckIcon className="size-3.5" /> Connect Subscription
+              </Button>
+            )}
             <Button onClick={() => setCatalogOpen(true)} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">
               <PlusIcon className="size-3.5" /> Add Provider
             </Button>
@@ -328,7 +332,7 @@ export default function Dashboard() {
             placeholder="Search providers"
             className="h-8 w-56 px-2 font-mono text-[12px] bg-surface border border-border text-foreground placeholder:text-muted-foreground"
           />
-          <select
+          {isAdmin && <select
             value={ownerFilter}
             onChange={e => setOwnerFilter(e.target.value)}
             className="h-8 px-2 font-mono text-[12px] bg-surface border border-border text-foreground"
@@ -337,7 +341,7 @@ export default function Dashboard() {
             <option value="platform">Platform only</option>
             <option value="users">User providers</option>
             {owners.map(([id, name]) => <option key={id} value={`user:${id}`}>{name}</option>)}
-          </select>
+          </select>}
           <span className="font-mono text-[11px] text-muted-foreground tabular-nums">{visibleProviders.length}/{providers.length}</span>
         </div>
         {visibleProviders.length === 0 ? (
@@ -393,6 +397,7 @@ export default function Dashboard() {
         apiKeysUrl={apiKeysUrl}
         ownerLabel={ownerLabel}
         onOwnerLabel={setOwnerLabel}
+        canAssignOwner={isAdmin}
       />
 
       <ProviderDeleteDialog
