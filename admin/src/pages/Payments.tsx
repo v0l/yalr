@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import CurrencyCreditDialog from '@/components/mine/CurrencyCreditDialog'
+import { formatMilli, formatPrice } from '@/lib/money'
 import { api } from '../api/client'
 import type { UserBalanceEntry, BalanceTransaction, LightningInvoice, ModelPricingEntry, ModelPricingCreateRequest, Model } from '../types'
 import { Button } from '@/components/ui/button'
@@ -45,6 +48,8 @@ function txTypeBadge(type: string) {
     charge: { c: 'var(--destructive)', t: 'var(--destructive)', b: 'var(--destructive)', l: 'CHARGE' },
     admin_credit: { c: 'var(--brand)', t: 'var(--brand)', b: 'var(--brand)', l: 'CREDIT' },
     admin_debit: { c: 'var(--destructive)', t: 'var(--destructive)', b: 'var(--destructive)', l: 'DEBIT' },
+    usage: { c: 'var(--destructive)', t: 'var(--destructive)', b: 'var(--destructive)', l: 'USAGE' },
+    provider_earning: { c: 'var(--brand)', t: 'var(--brand)', b: 'var(--brand)', l: 'EARNING' },
   }
   const m = v[type] ?? { c: 'var(--muted-foreground)', t: 'var(--muted-foreground)', b: 'var(--border)', l: type.toUpperCase() }
   return <Badge className="font-mono text-[9px] tracking-wider uppercase px-1.5 py-0" style={{ background: `${m.c}10`, color: m.t, borderColor: `${m.b}30` }}>{m.l}</Badge>
@@ -83,6 +88,7 @@ export default function Payments() {
   const [adjustSaving, setAdjustSaving] = useState(false)
 
   /* Model Pricing */
+  const [fiatDialog, setFiatDialog] = useState(false)
   const [pricingDialog, setPricingDialog] = useState(false)
   const [editingModel, setEditingModel] = useState<string | null>(null)
   const [pricingForm, setPricingForm] = useState<ModelPricingCreateRequest>({
@@ -221,6 +227,9 @@ export default function Payments() {
             <Button size="sm" onClick={() => { setAdjustForm({ user_id: 0, amount_sats: 0, reason: '' }); setCreditDialog(true) }} className="font-mono text-[11px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20 h-8">
               <PlusIcon className="size-3" /> Credit
             </Button>
+            <Button size="sm" variant="outline" onClick={() => setFiatDialog(true)} className="font-mono text-[11px] tracking-wider uppercase border-brand/40 text-brand h-8">
+              <PlusIcon className="size-3" /> Credit fiat
+            </Button>
             <Button size="sm" variant="outline" onClick={() => { setAdjustForm({ user_id: 0, amount_sats: 0, reason: '' }); setDebitDialog(true) }} className="font-mono text-[11px] tracking-wider uppercase border-border text-muted-foreground h-8">
               <PlusIcon className="size-3" /> Debit
             </Button>
@@ -270,6 +279,7 @@ export default function Payments() {
                 <thead>
                   <tr className="border-b border-border/50 text-left">
                     <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Model</th>
+                    <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Owner / Provider</th>
                     <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">In/1M</th>
                     <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Out/1M</th>
                     <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Cache Rd/1M</th>
@@ -283,15 +293,19 @@ export default function Payments() {
                 </thead>
                 <tbody>
                   {modelPricings.length === 0 ? (
-                    <tr><td colSpan={10} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO CUSTOM PRICING</td></tr>
+                    <tr><td colSpan={11} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO CUSTOM PRICING</td></tr>
                   ) : modelPricings.map(mp => (
                     <tr key={mp.id} className="border-b border-border/50 hover:bg-surface">
                       <td className="px-4 py-3 font-mono text-[13px] font-medium">{mp.model_name}</td>
-                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.price_per_1m_input_sats ?? '—'} sats</td>
-                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.price_per_1m_output_sats ?? '—'} sats</td>
-                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.price_per_1m_cache_read_sats ?? mp.price_per_1m_input_sats ?? '—'} sats</td>
-                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.price_per_1m_cache_write_sats ?? mp.price_per_1m_input_sats ?? '—'} sats</td>
-                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.price_per_request_sats ?? '—'} sats</td>
+                      <td className="px-4 py-3 font-mono text-[12px]">
+                        {mp.owner_user_id === null ? <span className="text-muted-foreground">platform</span> : <Link to={`/users/${mp.owner_user_id}`} className="text-brand hover:underline">{mp.owner_username ?? `user ${mp.owner_user_id}`}</Link>}
+                        {mp.provider_slug && <span className="ml-2 text-muted-foreground">{mp.provider_slug}</span>}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{formatPrice(mp.currency === 'sats' ? mp.price_per_1m_input_sats : mp.price_per_1m_input_milli, mp.currency)}</td>
+                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{formatPrice(mp.currency === 'sats' ? mp.price_per_1m_output_sats : mp.price_per_1m_output_milli, mp.currency)}</td>
+                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{formatPrice(mp.currency === 'sats' ? (mp.price_per_1m_cache_read_sats ?? mp.price_per_1m_input_sats) : mp.price_per_1m_cache_read_milli, mp.currency)}</td>
+                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{formatPrice(mp.currency === 'sats' ? (mp.price_per_1m_cache_write_sats ?? mp.price_per_1m_input_sats) : mp.price_per_1m_cache_write_milli, mp.currency)}</td>
+                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{formatPrice(mp.currency === 'sats' ? mp.price_per_request_sats : mp.price_per_request_milli, mp.currency)}</td>
                       <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.context_window?.toLocaleString() ?? '—'}</td>
                       <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{mp.max_output_tokens?.toLocaleString() ?? '—'}</td>
                       <td className="px-4 py-3">
@@ -340,8 +354,8 @@ export default function Payments() {
                     <td className="px-4 py-3 font-mono text-[12px] text-muted-foreground">{formatDate(tx.created_at)}</td>
                     <td className="px-4 py-3 font-mono text-[12px] text-muted-foreground">ID:{tx.user_id}</td>
                     <td className="px-4 py-3">{txTypeBadge(tx.transaction_type)}</td>
-                    <td className={`px-4 py-3 font-mono text-[13px] tabular-nums text-right ${tx.amount_msat >= 0 ? 'text-brand' : 'text-destructive'}`}>
-                      {tx.amount_msat >= 0 ? '+' : ''}{formatMsat(tx.amount_msat)}
+                    <td className={`px-4 py-3 font-mono text-[13px] tabular-nums text-right ${(tx.currency === 'sats' ? tx.amount_msat : tx.amount_milli) >= 0 ? 'text-brand' : 'text-destructive'}`}>
+                      {(tx.currency === 'sats' ? tx.amount_msat : tx.amount_milli) >= 0 ? '+' : ''}{tx.currency === 'sats' ? formatMsat(tx.amount_msat) : formatMilli(tx.amount_milli, tx.currency)}
                     </td>
                     <td className="px-4 py-3 font-mono text-[11px] text-muted-foreground truncate max-w-40" title={tx.reference_id || ''}>{tx.reference_id || '—'}</td>
                   </tr>
@@ -426,6 +440,7 @@ export default function Payments() {
         </DialogContent>
       </Dialog>
 
+      <CurrencyCreditDialog open={fiatDialog} onOpenChange={setFiatDialog} onDone={m => { setSuccessMessage(m); loadAll() }} onError={setError} />
       <PricingDialog
         open={pricingDialog}
         onOpenChange={setPricingDialog}

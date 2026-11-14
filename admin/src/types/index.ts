@@ -467,6 +467,8 @@ export interface BalanceTransaction {
   id: number
   user_id: number
   amount_msat: number
+  currency: string
+  amount_milli: number
   transaction_type: string
   reference_id: string | null
   metadata: string | null
@@ -588,6 +590,16 @@ export interface ModelPricingEntry {
   price_per_request_sats: number | null
   context_window: number | null
   max_output_tokens: number | null
+  currency: string
+  price_per_1m_input_milli: number | null
+  price_per_1m_output_milli: number | null
+  price_per_1m_cache_read_milli: number | null
+  price_per_1m_cache_write_milli: number | null
+  price_per_request_milli: number | null
+  owner_user_id: number | null
+  owner_username: string | null
+  provider_id: number | null
+  provider_slug: string | null
   created_at: string
   updated_at: string
 }
