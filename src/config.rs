@@ -19,6 +19,8 @@ pub struct Config {
     #[serde(default)]
     pub router: RouterSettings,
     #[serde(default)]
+    pub verification: crate::verify::VerificationConfig,
+    #[serde(default)]
     pub list_prices: std::collections::HashMap<String, crate::list_price::ListPrice>,
 }
 
@@ -158,6 +160,7 @@ impl Default for Config {
             anthropic: AnthropicConfig::default(),
             request_log: RequestLogConfig::default(),
             router: RouterSettings::default(),
+            verification: Default::default(),
             list_prices: Default::default(),
         }
     }
@@ -290,6 +293,7 @@ impl AppConfig {
         crate::providers::anthropic::set_prompt_cache_enabled(config.anthropic.prompt_cache);
         crate::request_log::settings::set(config.request_log.clone());
         crate::list_price::set_overrides(config.list_prices.clone());
+        crate::verify::settings::set(config.verification.clone());
 
         let payments_config = config.payments;
         let discovery_config = config.discovery;

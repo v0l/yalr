@@ -24,6 +24,7 @@ pub mod testing;
 mod types;
 mod usage;
 mod users;
+mod verifications;
 
 pub use approval::{APPROVED, PENDING, SUSPENDED};
 pub use anonymous::{random_hex, AccountInvoice, PublicInvoice};
@@ -37,6 +38,7 @@ pub use provider_stats::{ProviderEarning, ProviderModelTraffic, ProviderTraffic}
 pub use currency::{fee_for, milli_per_unit, normalize_currency, Settled, Settlement, SATS};
 pub use types::*;
 pub use users::UserChanges;
+pub use verifications::{NewVerification, VerificationRow};
 pub use usage::{ApiKeyUsage, HourUsage, ModelUsage, UsageReport, UsageScope};
 
 const DB_MAX_CONNECTIONS: u32 = 32;

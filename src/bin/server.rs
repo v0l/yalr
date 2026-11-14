@@ -45,6 +45,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         yalr::payments::anonymous::spawn_unpaid_pruner(config.db.clone());
     }
 
+    yalr::verify::spawn_scheduler(config.db.clone(), config.router.clone());
+
     let addr = format!("{}:{}", config.host, config.port);
 
     tracing::info!(addr = %addr, "Starting YALR");

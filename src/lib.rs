@@ -16,6 +16,7 @@ pub mod serving;
 pub mod ssrf;
 pub mod state;
 pub mod usage;
+pub mod verify;
 
 pub use metrics::{HealthConfig, HealthState};
 

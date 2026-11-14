@@ -45,6 +45,7 @@ mod tests {
             anthropic: Default::default(),
             request_log: Default::default(),
             router: Default::default(),
+            verification: Default::default(),
             list_prices: Default::default(),
         };
 
