@@ -19,6 +19,16 @@ pub struct ModelPricingResponse {
     pub price_per_request_sats: Option<i64>,
     pub context_window: Option<i32>,
     pub max_output_tokens: Option<i32>,
+    pub currency: String,
+    pub price_per_1m_input_milli: Option<i64>,
+    pub price_per_1m_output_milli: Option<i64>,
+    pub price_per_1m_cache_read_milli: Option<i64>,
+    pub price_per_1m_cache_write_milli: Option<i64>,
+    pub price_per_request_milli: Option<i64>,
+    pub owner_user_id: Option<i64>,
+    pub owner_username: Option<String>,
+    pub provider_id: Option<i64>,
+    pub provider_slug: Option<String>,
     pub created_at: crate::db::Timestamp,
     pub updated_at: crate::db::Timestamp,
 }
@@ -54,30 +64,52 @@ pub struct ModelPricingUpdateRequest {
 
 fn default_true() -> bool { true }
 
+pub async fn response(state: &AppState, r: crate::db::ModelPricingRow) -> ModelPricingResponse {
+    let owner_username = match r.owner_user_id {
+        Some(id) => state.db.provider_owner_username(id).await.ok().flatten(),
+        None => None,
+    };
+    let provider_slug = match r.provider_id {
+        Some(id) => state.db.get_provider_by_id(id).await.ok().flatten().map(|p| p.slug),
+        None => None,
+    };
+    ModelPricingResponse {
+        id: r.id,
+        model_name: r.model_name,
+        is_advertised: r.is_advertised,
+        is_free: r.is_free,
+        price_per_1m_input_sats: r.price_per_1m_input_sats,
+        price_per_1m_output_sats: r.price_per_1m_output_sats,
+        price_per_1m_cache_read_sats: r.price_per_1m_cache_read_sats,
+        price_per_1m_cache_write_sats: r.price_per_1m_cache_write_sats,
+        price_per_request_sats: r.price_per_request_sats,
+        context_window: r.context_window,
+        max_output_tokens: r.max_output_tokens,
+        currency: r.currency,
+        price_per_1m_input_milli: r.price_per_1m_input_milli,
+        price_per_1m_output_milli: r.price_per_1m_output_milli,
+        price_per_1m_cache_read_milli: r.price_per_1m_cache_read_milli,
+        price_per_1m_cache_write_milli: r.price_per_1m_cache_write_milli,
+        price_per_request_milli: r.price_per_request_milli,
+        owner_user_id: r.owner_user_id,
+        owner_username,
+        provider_id: r.provider_id,
+        provider_slug,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+    }
+}
+
 #[axum::debug_handler]
 pub async fn list_model_pricing(
     State(state): State<std::sync::Arc<AppState>>,
 ) -> Json<Vec<ModelPricingResponse>> {
     let rows = state.config.db.list_model_pricings().await.unwrap_or_default();
-    Json(
-        rows.into_iter()
-            .map(|r| ModelPricingResponse {
-                id: r.id,
-                model_name: r.model_name,
-                is_advertised: r.is_advertised,
-                is_free: r.is_free,
-                price_per_1m_input_sats: r.price_per_1m_input_sats,
-                price_per_1m_output_sats: r.price_per_1m_output_sats,
-                price_per_1m_cache_read_sats: r.price_per_1m_cache_read_sats,
-                price_per_1m_cache_write_sats: r.price_per_1m_cache_write_sats,
-                price_per_request_sats: r.price_per_request_sats,
-                context_window: r.context_window,
-                max_output_tokens: r.max_output_tokens,
-                created_at: r.created_at,
-                updated_at: r.updated_at,
-            })
-            .collect(),
-    )
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(response(&state, row).await);
+    }
+    Json(out)
 }
 
 #[axum::debug_handler]
@@ -103,21 +135,7 @@ pub async fn create_model_pricing(
     };
 
     match state.config.db.create_model_pricing(mp).await {
-        Ok(r) => Ok(Json(ModelPricingResponse {
-            id: r.id,
-            model_name: r.model_name,
-            is_advertised: r.is_advertised,
-            is_free: r.is_free,
-            price_per_1m_input_sats: r.price_per_1m_input_sats,
-            price_per_1m_output_sats: r.price_per_1m_output_sats,
-            price_per_1m_cache_read_sats: r.price_per_1m_cache_read_sats,
-            price_per_1m_cache_write_sats: r.price_per_1m_cache_write_sats,
-            price_per_request_sats: r.price_per_request_sats,
-            context_window: r.context_window,
-            max_output_tokens: r.max_output_tokens,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-        })),
+        Ok(r) => Ok(Json(response(&state, r).await)),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
@@ -143,21 +161,7 @@ pub async fn update_model_pricing(
     };
 
     match state.config.db.update_model_pricing(&model_name, updates).await {
-        Ok(r) => Ok(Json(ModelPricingResponse {
-            id: r.id,
-            model_name: r.model_name,
-            is_advertised: r.is_advertised,
-            is_free: r.is_free,
-            price_per_1m_input_sats: r.price_per_1m_input_sats,
-            price_per_1m_output_sats: r.price_per_1m_output_sats,
-            price_per_1m_cache_read_sats: r.price_per_1m_cache_read_sats,
-            price_per_1m_cache_write_sats: r.price_per_1m_cache_write_sats,
-            price_per_request_sats: r.price_per_request_sats,
-            context_window: r.context_window,
-            max_output_tokens: r.max_output_tokens,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-        })),
+        Ok(r) => Ok(Json(response(&state, r).await)),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }

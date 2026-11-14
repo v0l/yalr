@@ -20,7 +20,9 @@ pub mod metered;
 pub mod market;
 pub mod modalities;
 pub mod model_cache;
+pub mod currency_balances;
 pub mod model_pricing;
+pub mod my_pricing;
 pub mod models;
 pub mod my_providers;
 pub mod oauth;
@@ -35,6 +37,8 @@ mod extra_body_tests;
 mod routing_nested_tests;
 pub mod shared;
 pub mod quota;
+#[cfg(test)]
+mod user_provider_tests;
 pub mod usage;
 pub mod users;
 pub mod handlers;
