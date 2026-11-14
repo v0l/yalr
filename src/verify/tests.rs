@@ -24,6 +24,7 @@ struct Fake {
     slug: String,
     behaviour: Behaviour,
     logprobs: bool,
+    listed: Option<&'static str>,
 }
 
 fn filler(prompt: &str, salt: &str) -> Vec<String> {
@@ -38,7 +39,7 @@ fn prompt_of(request: &ChatRequest) -> String {
 
 impl Fake {
     fn new(slug: &str, behaviour: Behaviour) -> Arc<Self> {
-        Arc::new(Self { slug: slug.to_string(), behaviour, logprobs: true })
+        Arc::new(Self { slug: slug.to_string(), behaviour, logprobs: true, listed: None })
     }
 
     fn pieces(&self, prompt: &str) -> Vec<String> {
@@ -79,13 +80,16 @@ impl Provider for Fake {
         &self.slug
     }
     async fn list_models(&self) -> Result<Vec<crate::Model>, ProviderError> {
-        Ok(vec![crate::Model { id: MODEL.into(), object: "model".into(), created: 0, owned_by: "x".into() }])
+        Ok(vec![crate::Model { id: self.listed.unwrap_or(MODEL).into(), object: "model".into(), created: 0, owned_by: "x".into() }])
     }
     async fn chat_completions(&self, request: &ChatRequest) -> Result<crate::ChatResponse, ProviderError> {
         if self.behaviour == Behaviour::Down {
             return Err(ProviderError::ServerError { message: "down".into(), status_code: Some(503) });
         }
         let value = serde_json::to_value(request.inner()).unwrap();
+        if let Some(listed) = self.listed {
+            assert_eq!(value["model"], listed);
+        }
         let wants_logprobs = value["logprobs"] == true && value["top_logprobs"] == 5;
         let prompt = prompt_of(request);
         let pieces = self.pieces(&prompt);
@@ -263,7 +267,7 @@ async fn a_provider_without_logprobs_is_compared_on_text() {
     let w = world().await;
     let alice = w.db.add_test_user("alice", false).await;
     w.reference(Fake::new("ref", Behaviour::Faithful)).await;
-    let plain = Arc::new(Fake { slug: "alice-p".into(), behaviour: Behaviour::Faithful, logprobs: false });
+    let plain = Arc::new(Fake { slug: "alice-p".into(), behaviour: Behaviour::Faithful, logprobs: false, listed: None });
     let id = w.user_provider(alice.id, plain, PENDING).await;
     let reports = verify(&w, id).await;
     assert!(reports[0].passed, "{}", reports[0].reason);
@@ -340,4 +344,15 @@ async fn a_hand_decision_is_not_overwritten_by_a_verification_run() {
     verify(&w, id).await;
     assert_eq!(w.status(id).await, SUSPENDED);
     assert_eq!(w.db.latest_verifications(id).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_provider_that_serves_the_bare_model_name_is_probed_under_that_name() {
+    let w = world().await;
+    let alice = w.db.add_test_user("alice", false).await;
+    w.reference(Fake::new("ref", Behaviour::Faithful)).await;
+    let bare = Arc::new(Fake { slug: "alice-p".into(), behaviour: Behaviour::Faithful, logprobs: true, listed: Some("qwen3.8-27b") });
+    let id = w.user_provider(alice.id, bare, PENDING).await;
+    let reports = verify(&w, id).await;
+    assert!(reports[0].passed, "{}", reports[0].reason);
 }

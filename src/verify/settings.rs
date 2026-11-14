@@ -18,7 +18,7 @@ pub struct VerificationConfig {
     pub random_probes: usize,
     #[serde(default = "default_timeout_secs")]
     pub request_timeout_secs: u64,
-    #[serde(default)]
+    #[serde(default = "default_extras")]
     pub request_extras: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
@@ -46,6 +46,13 @@ fn default_random_probes() -> usize {
     4
 }
 
+fn default_extras() -> std::collections::BTreeMap<String, serde_json::Value> {
+    let mut extras = std::collections::BTreeMap::new();
+    extras.insert("chat_template_kwargs".to_string(), serde_json::json!({"enable_thinking": false}));
+    extras.insert("reasoning".to_string(), serde_json::json!({"enabled": false}));
+    extras
+}
+
 fn default_timeout_secs() -> u64 {
     90
 }
@@ -60,7 +67,7 @@ impl Default for VerificationConfig {
             max_logprob_gap: default_max_logprob_gap(),
             random_probes: default_random_probes(),
             request_timeout_secs: default_timeout_secs(),
-            request_extras: Default::default(),
+            request_extras: default_extras(),
         }
     }
 }

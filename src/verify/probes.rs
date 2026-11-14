@@ -23,7 +23,8 @@ const FIXED: &[(&str, &str, Option<TaskCheck>)] = &[
         Some(TaskCheck::ToolCall { name: "get_weather", argument: "city", value: "Paris" }),
     ),
     ("symbol-gold", "What is the chemical symbol for gold? Answer with only the symbol.", Some(TaskCheck::Contains("au"))),
-    ("reverse-router", "Spell the word router backwards. Answer with only the word.", Some(TaskCheck::Contains("retuor"))),
+    ("sea", "Write one vivid sentence about the sea at night.", None),
+    ("pet-name", "Suggest a name for a grey cat and explain it in one sentence.", None),
     ("fox", "Complete the sentence: The quick brown fox", None),
     ("count", "Write the numbers one to ten separated by commas.", None),
     ("french", "Translate to French: Good morning, how are you today?", None),
@@ -52,8 +53,8 @@ const POOL: &[(&str, &str, &str)] = &[
     ("p-sym-2", "What is the chemical symbol for iron? Answer with only the symbol.", "fe"),
     ("p-sym-3", "What is the chemical symbol for potassium? Answer with only the symbol.", "k"),
     ("p-sym-4", "What is the chemical symbol for silver? Answer with only the symbol.", "ag"),
-    ("p-rev-1", "Spell the word model backwards. Answer with only the word.", "ledom"),
-    ("p-rev-2", "Spell the word token backwards. Answer with only the word.", "nekot"),
+    ("p-sym-5", "What is the chemical symbol for calcium? Answer with only the symbol.", "ca"),
+    ("p-sym-6", "What is the chemical symbol for copper? Answer with only the symbol.", "cu"),
 ];
 
 pub fn fixed_probes() -> Vec<Probe> {

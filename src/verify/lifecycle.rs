@@ -15,14 +15,16 @@ async fn live(router: &Router, slug: &str) -> Option<Arc<dyn ProviderApi>> {
 }
 
 async fn served_name(provider: &Arc<dyn ProviderApi>, model: &str) -> String {
-    match provider.list_models().await {
-        Ok(models) => models
-            .into_iter()
-            .map(|m| m.id)
-            .find(|id| id.eq_ignore_ascii_case(model))
-            .unwrap_or_else(|| model.to_string()),
-        Err(_) => model.to_string(),
-    }
+    let Ok(models) = provider.list_models().await else {
+        return model.to_string();
+    };
+    let ids: Vec<String> = models.into_iter().map(|m| m.id).collect();
+    let bare = model.split_once('/').map(|(_, rest)| rest).unwrap_or(model);
+    ids.iter()
+        .find(|id| id.eq_ignore_ascii_case(model))
+        .or_else(|| ids.iter().find(|id| id.eq_ignore_ascii_case(bare)))
+        .cloned()
+        .unwrap_or_else(|| model.to_string())
 }
 
 async fn run_models(

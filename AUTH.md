@@ -215,6 +215,9 @@ verification:
   min_prefix_tokens: 16
   max_logprob_gap: 0.5
   random_probes: 4
+  request_extras:  # sent with every probe; the defaults switch thinking off
+    chat_template_kwargs: {enable_thinking: false}
+    reasoning: {enabled: false}
 
 payments:
   enabled: false
