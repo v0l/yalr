@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { authApi, storeSession, type Session } from '../api/auth'
+import { authApi, storeSession, useNostrLogin, type Session } from '../api/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -13,6 +13,7 @@ export default function Register() {
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const nostrLogin = useNostrLogin()
 
   async function finish(action: () => Promise<Session>) {
     setBusy(true)
@@ -87,15 +88,17 @@ export default function Register() {
           </Button>
         </form>
 
-        <Button
-          type="button"
-          variant="outline"
-          disabled={busy}
-          onClick={() => finish(() => authApi.nostr())}
-          className="h-11 w-full border-border font-mono text-[13px] uppercase tracking-[0.05em]"
-        >
-          Sign up with Nostr
-        </Button>
+        {nostrLogin && (
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy}
+            onClick={() => finish(() => authApi.nostr())}
+            className="h-11 w-full border-border font-mono text-[13px] uppercase tracking-[0.05em]"
+          >
+            Sign up with Nostr
+          </Button>
+        )}
 
         <p className="font-mono text-[12px] text-muted-foreground">
           Already registered?{' '}

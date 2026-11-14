@@ -109,7 +109,7 @@ export const api = {
     return request('/api/health')
   },
 
-  async checkSetupComplete(): Promise<{ setup_complete: boolean }> {
+  async checkSetupComplete(): Promise<{ setup_complete: boolean; nostr_login: boolean }> {
     return request('/api/setup/status')
   },
 

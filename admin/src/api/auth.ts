@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { API_BASE_URL } from './client'
 
 export interface Session {
@@ -39,6 +40,17 @@ async function post(path: string, init: RequestInit): Promise<Session> {
     throw new Error(text || `Request failed (${response.status})`)
   }
   return toSession(await response.json())
+}
+
+export function useNostrLogin(): boolean {
+  const [enabled, setEnabled] = useState(false)
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/setup/status`)
+      .then(r => (r.ok ? r.json() : null))
+      .then((s: { nostr_login?: boolean } | null) => setEnabled(!!s?.nostr_login))
+      .catch(() => setEnabled(false))
+  }, [])
+  return enabled
 }
 
 export const authApi = {

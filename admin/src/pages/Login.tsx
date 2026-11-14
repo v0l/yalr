@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { authApi, storeSession } from '../api/auth'
+import { authApi, storeSession, useNostrLogin } from '../api/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -16,6 +16,7 @@ export default function Login() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [focused, setFocused] = useState<string | null>(null)
+  const nostrLogin = useNostrLogin()
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -205,15 +206,17 @@ export default function Login() {
           </form>
 
           <div className="mt-4 space-y-3">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={loading}
-              onClick={handleNostr}
-              className="w-full h-11 font-mono text-[13px] tracking-[0.05em] uppercase border-border"
-            >
-              Sign in with Nostr
-            </Button>
+            {nostrLogin && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={loading}
+                onClick={handleNostr}
+                className="w-full h-11 font-mono text-[13px] tracking-[0.05em] uppercase border-border"
+              >
+                Sign in with Nostr
+              </Button>
+            )}
             <p className="font-mono text-[12px] text-muted-foreground">
               New here?{' '}
               <Link to="/register" className="text-brand hover:text-brand/80 uppercase tracking-[0.08em]">Create an account</Link>

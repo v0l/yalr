@@ -144,6 +144,7 @@ pub struct AuthStatusResponse {
 #[derive(Serialize)]
 pub struct SetupStatusResponse {
     pub setup_complete: bool,
+    pub nostr_login: bool,
 }
 
 #[derive(Serialize)]
@@ -237,6 +238,7 @@ pub async fn check_setup_complete(
     let db = &state.db;
     Json(SetupStatusResponse {
         setup_complete: db.has_users().await.unwrap_or(false),
+        nostr_login: state.config.auth_config.enabled,
     })
 }
 

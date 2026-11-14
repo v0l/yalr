@@ -143,6 +143,9 @@ pub async fn nostr_login(
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .ok_or((StatusCode::UNAUTHORIZED, "Missing Nostr authorization".to_string()))?;
+    if !state.config.auth_config.enabled {
+        return Err((StatusCode::FORBIDDEN, "Nostr sign in is disabled on this server".to_string()));
+    }
     let pubkey = crate::auth::admin::verified_pubkey(&state, header, "POST", "/api/auth/nostr")
         .map_err(|code| (code, "Invalid Nostr authorization".to_string()))?;
     let existing = state.db.get_user_by_external_id(&pubkey, UserType::Nostr).await.map_err(internal)?;
@@ -329,6 +332,31 @@ mod tests {
             .unwrap();
         let status = body_json(app.oneshot(status).await.unwrap()).await;
         assert_eq!(status["authenticated"], true);
+    }
+
+    #[tokio::test]
+    async fn nostr_sign_in_reports_disabled_when_nostr_auth_is_off() {
+        let (state, _) = app(true).await;
+        let mut off = (*state).clone();
+        off.config.auth_config.enabled = false;
+        let app = crate::api::server::create_test_app(Arc::new(off)).await;
+
+        let status = Request::builder().uri("/api/setup/status").body(Body::empty()).unwrap();
+        let status = body_json(app.clone().oneshot(status).await.unwrap()).await;
+        assert_eq!(status["nostr_login"], false);
+
+        let res = app.oneshot(nostr_request(&Keys::generate())).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let text = String::from_utf8(axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
+        assert_eq!(text, "Nostr sign in is disabled on this server");
+    }
+
+    #[tokio::test]
+    async fn setup_status_reports_nostr_login_when_enabled() {
+        let (_state, app) = app(true).await;
+        let status = Request::builder().uri("/api/setup/status").body(Body::empty()).unwrap();
+        let status = body_json(app.oneshot(status).await.unwrap()).await;
+        assert_eq!(status["nostr_login"], true);
     }
 
     #[tokio::test]
