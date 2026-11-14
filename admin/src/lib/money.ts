@@ -10,5 +10,5 @@ export function formatMilli(milli: number, currency: string): string {
 
 export function formatPrice(value: number | null, currency: string): string {
   if (value === null) return '—'
-  return currency === 'sats' ? `${value.toLocaleString()} sats` : `${value.toLocaleString()} m${currency.toUpperCase()}`
+  return currency === 'sats' ? `${value.toLocaleString()} sats` : formatMilli(value, currency)
 }
