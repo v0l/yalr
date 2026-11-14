@@ -8,6 +8,7 @@ import { BalanceDisplay } from '@/components/BalanceDisplay'
 import { QuotaDisplay } from '@/components/QuotaDisplay'
 import { QuotaDialog } from '@/components/QuotaDialog'
 import { Badge } from '@/components/ui/badge'
+import { StatusBadge } from '@/components/VerificationView'
 
 /* ═══════════════════════════════════════════════════════════════ */
 /*  ProviderCard                                                   */
@@ -72,6 +73,13 @@ export function ProviderCard({ provider, onEdit, onDelete, onTopup, onGenerateKe
             {provider.provider_type.toUpperCase()}
           </Badge>
           <HealthBadge state={state} />
+          {provider.status && provider.status !== 'approved' && <StatusBadge status={provider.status} />}
+          {provider.is_reference && (
+            <Badge variant="outline" className="font-mono text-[10px] tracking-wider bg-brand/15 text-brand border-brand/30 px-1.5 py-0 h-5">REFERENCE</Badge>
+          )}
+          {provider.verifications?.some(v => v.outcome === 'failed') && (
+            <Badge variant="outline" className="font-mono text-[10px] tracking-wider bg-destructive/15 text-destructive border-destructive/30 px-1.5 py-0 h-5">VERIFY FAILED</Badge>
+          )}
           {provider.is_oauth && (
             provider.oauth?.expired ? (
               <Badge variant="outline" className="font-mono text-[10px] tracking-wider bg-destructive/15 text-destructive border-destructive/30 px-1.5 py-0 h-5">OAUTH EXPIRED</Badge>

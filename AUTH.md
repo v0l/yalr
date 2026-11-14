@@ -77,12 +77,12 @@ auth:
 - Admin can create keys for any user
 
 **Endpoints**:
-- `POST /api/api-keys` - Create new key (authenticated user)
+- `POST /api/api-keys` - Create new key (any signed-in user, for themselves)
 - `GET /api/api-keys` - List own keys
+- `DELETE /api/api-keys/:id` - Delete one of your own keys (admins: any key)
 - `POST /api/users/:id/api-keys` - Admin create for user
-- `DELETE /api/api-keys/:id` - Delete key
-- `POST /api/api-keys/:id/disable` - Disable key
-- `POST /api/api-keys/:id/enable` - Enable key
+- `POST /api/api-keys/:id/disable` - Disable key (admin)
+- `POST /api/api-keys/:id/enable` - Enable key (admin)
 
 **Usage**:
 ```
@@ -122,19 +122,21 @@ Authorization: Bearer <api_key>
 
 | Route Pattern | Auth Required | Scope | Methods |
 |---------------|---------------|-------|---------|
-| `/api/auth/*` | ❌ No | - | Login, setup |
+| `/api/auth/*` | ❌ No | - | Login, setup, register, Nostr sign in |
 | `/api/health` | ❌ No | - | GET |
 | `/v1/models` | ❌ No | - | GET |
 | `/v1/chat/completions` | ✅ Yes | Own account | POST |
 | `/v1/responses` | ✅ Yes | Own account | POST |
-| `/api/providers/*` | ✅ Yes | Tenant scoped | All |
+| `/api/providers/*` | ✅ Yes | Tenant scoped | All, except `status` and `reference` |
+| `/api/providers/:slug/{status,reference}` | ✅ Yes | **Admin** | PUT |
+| `GET/POST /api/api-keys`, `DELETE /api/api-keys/:id` | ✅ Yes | Own keys | All |
 | `/api/metrics/*`, `/api/metrics/ws` | ✅ Yes | Tenant scoped | GET |
 | `/api/request-log/*` | ✅ Yes | Tenant scoped | GET |
 | `/api/routing-configs/*` | ✅ Yes | Tenant scoped | All |
 | `/api/model-pricing`, `/api/model-pricing/id/:id` | ✅ Yes | Tenant scoped | All |
 | `/api/payments/{balances,transactions,invoices,currencies}` | ✅ Yes | Tenant scoped | GET |
 | `/api/payments/{credit,debit}`, `/api/payments/balances/:user_id` | ✅ Yes | **Admin** | All |
-| `/api/users/*`, `/api/api-keys/*`, `/api/oauth/*`, `/api/config` | ✅ Yes | **Admin** | All |
+| `/api/users/*`, `/api/api-keys/:id/{disable,enable,usage}`, `/api/oauth/*`, `/api/config` | ✅ Yes | **Admin** | All |
 
 Tenant scoping lives in one place, `Scope` in [`src/api/tenant.rs`](src/api/tenant.rs): an admin sees every row, a regular user sees only rows whose `owner_user_id` is theirs, and a row they cannot see answers 404. [`src/api/tenant_tests.rs`](src/api/tenant_tests.rs) drives the HTTP app as two users and an admin to prove it.
 
@@ -238,7 +240,7 @@ Anyone can create an account unless `auth.open_registration` is `false`. There i
 - **Nostr**: `POST /api/auth/nostr` with an `Authorization: Nostr <base64 event>` header holding a NIP-98 event (kind 27235, `u` tag ending in `/api/auth/nostr`, `method` tag `POST`). The admin UI signs it with a NIP-07 extension (`window.nostr`). It returns the same session response and creates the user on first use, as the NIP-98 middleware does. `allowed_pubkeys` still applies. With registration closed, existing Nostr users can still sign in.
 - **Anonymous Lightning**: unchanged. Paying an invoice at `/v2/lightning/invoice` creates an `anon_*` user and an API key.
 
-A new user lands on the Account page of the admin UI (`/me`) with API key creation (`/api/my/api-keys`), a Lightning top-up (`/lightning/invoice`) and a link to My providers.
+A new user lands on the Dashboard of the admin UI, scoped to their own data like every tenant page. They add their own providers there; Payments has the Lightning top-up and, for regular users, their API keys (`/api/api-keys`). Pricing a model on one of their providers is what offers it to other users, once it passes verification.
 
 ## Provider approval and verification
 
@@ -261,7 +263,8 @@ A model passes when token counts match, every task probe passes, no more than `m
 - A run that cannot finish (provider down, no reference marked) is recorded as inconclusive and changes nothing for an approved provider.
 - Approved providers are re-verified every `provider_verify_interval_hours` (default 24). Changing the base URL, key or type, or adding or removing a priced model, sends an approved provider back to `pending` and re-verifies it.
 - Admins can `approve`, `suspend`, `reject` or `requeue` with `PUT /api/providers/:slug/status` (`{"action", "reason"}`). Suspend and reject lock the status so verification does not undo them; approve and requeue unlock it. `POST /api/providers/:slug/verify` runs the suite now, `GET /api/providers/:slug/verifications` returns the history.
-- Owners can run `POST /api/my/providers/:slug/verify` and read `GET /api/my/providers/:slug/verifications`.
+- `verify` and `verifications` are tenant scoped: owners run and read them for their own providers, admins for any. The provider detail page (`/providers/:slug`) shows the status, the latest result per model and the probe table; the Dashboard card shows PENDING, SUSPENDED, REFERENCE and VERIFY FAILED badges; `/approvals` (admin only) lists every user provider and the reference toggles.
+- Approval status and owner configs both apply. A user provider routes only inside its owner's routing configs, and only while it is approved or, while pending, for its owner's own requests. A pending provider in `alice/fast` serves Alice and nobody else calling `alice/fast`; a suspended one serves no one. The same rule covers the full-name pool and `slug/model` prefixed requests ([`src/router/engine/ownership_tests.rs`](src/router/engine/ownership_tests.rs)).
 
 ---
 

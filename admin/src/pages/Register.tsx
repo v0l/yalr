@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { authApi, landingPath, storeSession, type Session } from '../api/auth'
+import { authApi, storeSession, type Session } from '../api/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -20,7 +20,7 @@ export default function Register() {
     try {
       const session = await action()
       storeSession(session)
-      navigate(landingPath(session))
+      navigate('/')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Sign up failed')
     } finally {
@@ -49,7 +49,7 @@ export default function Register() {
           </div>
           <h1 className="mb-1 font-display text-3xl tracking-[0.06em] text-foreground">CREATE ACCOUNT</h1>
           <p className="font-mono text-[13px] text-muted-foreground">
-            A username and a password. No email. Add a balance and create API keys once you are in.
+            A username and a password. No email. Top up and create API keys on Payments once you are in.
           </p>
         </div>
 

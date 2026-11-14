@@ -14,6 +14,8 @@ import RequestLogDetail from './pages/RequestLogDetail'
 import Payments from './pages/Payments'
 import Account from './pages/Account'
 import ProviderDetail from './pages/ProviderDetail'
+import Approvals from './pages/Approvals'
+import Register from './pages/Register'
 import { currentRole } from './lib/role'
 import { api } from './api/client'
 import { API_BASE_URL } from './api/client'
@@ -74,6 +76,7 @@ export default function App() {
       <Routes>
         <Route path="/setup" element={<Setup />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
         <Route path="/account/*" element={<Account />} />
         <Route path="/" element={
           <SetupCheckRoute>
@@ -90,6 +93,7 @@ export default function App() {
           <Route path="payments" element={<Payments />} />
           <Route path="chat" element={<Chat />} />
           <Route path="providers/:slug" element={<ProviderDetail />} />
+          <Route path="approvals" element={<AdminRoute><Approvals /></AdminRoute>} />
           <Route path="request-log" element={<RequestLog />} />
           <Route path="request-log/:id" element={<RequestLogDetail />} />
         </Route>

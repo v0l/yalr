@@ -2,17 +2,17 @@ import { useEffect, useState } from 'react'
 import { CheckIcon, CopyIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { userApi } from '@/api/userApi'
-import type { MyApiKey } from '@/types/userProviders'
+import { tenantApi } from '@/api/tenantApi'
+import type { MyApiKey } from '@/types/verification'
 
-export default function MyApiKeys({ onError }: { onError: (message: string | null) => void }) {
+export default function ApiKeysPanel({ onError }: { onError: (message: string | null) => void }) {
   const [keys, setKeys] = useState<MyApiKey[]>([])
   const [name, setName] = useState('')
   const [fresh, setFresh] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
   async function load() {
-    try { setKeys(await userApi.listApiKeys()) } catch (e) { onError(e instanceof Error ? e.message : 'Failed to load keys') }
+    try { setKeys(await tenantApi.listApiKeys()) } catch (e) { onError(e instanceof Error ? e.message : 'Failed to load keys') }
   }
   useEffect(() => { load() }, [])
 
@@ -20,7 +20,7 @@ export default function MyApiKeys({ onError }: { onError: (message: string | nul
     e.preventDefault()
     onError(null)
     try {
-      const made = await userApi.createApiKey(name.trim() || 'default')
+      const made = await tenantApi.createApiKey(name.trim() || 'default')
       setFresh(made.key)
       setName('')
       await load()
@@ -29,7 +29,7 @@ export default function MyApiKeys({ onError }: { onError: (message: string | nul
 
   async function remove(id: number) {
     if (!confirm('Delete this key? Anything using it stops working.')) return
-    try { await userApi.deleteApiKey(id); await load() } catch (err) { onError(err instanceof Error ? err.message : 'Could not delete key') }
+    try { await tenantApi.deleteApiKey(id); await load() } catch (err) { onError(err instanceof Error ? err.message : 'Could not delete key') }
   }
 
   async function copy() {

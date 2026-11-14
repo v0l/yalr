@@ -59,7 +59,3 @@ export const authApi = {
     return post('/api/auth/nostr', { headers: { Authorization: `Nostr ${btoa(JSON.stringify(event))}` } })
   },
 }
-
-export function landingPath(session: Session): string {
-  return session.isAdmin ? '/' : '/me'
-}

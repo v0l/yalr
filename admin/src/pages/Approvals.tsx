@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { userApi } from '@/api/userApi'
-import type { AdminProvider } from '@/types/userProviders'
-import { StatusBadge, VerificationHistory, VerificationLine } from '@/components/mine/VerificationView'
+import { Link } from 'react-router-dom'
+import { api } from '@/api/client'
+import { tenantApi } from '@/api/tenantApi'
+import type { Provider } from '@/types'
+import { StatusBadge, VerificationHistory, VerificationLine } from '@/components/VerificationView'
 
 export default function Approvals() {
-  const [rows, setRows] = useState<AdminProvider[]>([])
+  const [rows, setRows] = useState<Provider[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [filter, setFilter] = useState<'all' | 'pending' | 'suspended' | 'approved'>('all')
 
   async function load() {
-    try { setRows((await userApi.listAdminProviders()).providers) } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load') }
+    try { setRows((await api.getProviders()).providers) } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load') }
   }
   useEffect(() => { load() }, [])
 
@@ -23,11 +25,11 @@ export default function Approvals() {
 
   function ask(slug: string, action: 'suspend' | 'reject') {
     const reason = prompt(`Reason for ${action}`) ?? ''
-    act(slug, () => userApi.setProviderStatus(slug, action, reason))
+    act(slug, () => tenantApi.setProviderStatus(slug, action, reason))
   }
 
-  const shown = rows.filter(r => (r.owner_user_id !== null || r.is_reference) && (filter === 'all' || r.status === filter))
-  const platform = rows.filter(r => r.owner_user_id === null)
+  const shown = rows.filter(r => (r.owner_user_id != null || r.is_reference) && (filter === 'all' || r.status === filter))
+  const platform = rows.filter(r => r.owner_user_id == null)
 
   return (
     <div className="space-y-4 p-4 sm:p-5">
@@ -47,7 +49,7 @@ export default function Approvals() {
               size="xs"
               variant="outline"
               disabled={busy === p.slug}
-              onClick={() => act(p.slug, () => userApi.setProviderReference(p.slug, !p.is_reference))}
+              onClick={() => act(p.slug, () => tenantApi.setProviderReference(p.slug, !p.is_reference))}
               className={`font-mono text-[11px] ${p.is_reference ? 'border-brand/40 bg-brand/10 text-brand' : 'border-border'}`}
             >
               {p.is_reference ? '[x] ' : '[ ] '}{p.name}
@@ -68,22 +70,23 @@ export default function Approvals() {
           <div key={p.slug} className="panel space-y-2 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2 font-mono text-[13px]">
-                <span className="text-foreground">{p.name}</span>
-                <StatusBadge status={p.status} />
+                <Link to={`/providers/${encodeURIComponent(p.slug)}`} className="text-foreground hover:text-brand">{p.name}</Link>
+                {p.owner_username && <span className="text-[11px] text-muted-foreground">owner {p.owner_username}</span>}
+                <StatusBadge status={p.status ?? 'approved'} />
                 {p.is_reference && <span className="text-[10px] uppercase tracking-wider text-brand">reference</span>}
                 {p.status_locked && <span className="text-[10px] uppercase tracking-wider text-muted-foreground">decided by admin</span>}
                 <span className="text-[11px] text-muted-foreground">{p.base_url}</span>
               </div>
               <div className="flex gap-1">
-                <Button size="xs" variant="outline" disabled={busy === p.slug} onClick={() => act(p.slug, () => userApi.adminVerify(p.slug))} className="border-border font-mono text-[10px] uppercase">Verify</Button>
-                <Button size="xs" variant="outline" disabled={busy === p.slug} onClick={() => act(p.slug, () => userApi.setProviderStatus(p.slug, 'approve'))} className="border-border font-mono text-[10px] uppercase text-brand">Approve</Button>
+                <Button size="xs" variant="outline" disabled={busy === p.slug} onClick={() => act(p.slug, () => tenantApi.verifyProvider(p.slug))} className="border-border font-mono text-[10px] uppercase">Verify</Button>
+                <Button size="xs" variant="outline" disabled={busy === p.slug} onClick={() => act(p.slug, () => tenantApi.setProviderStatus(p.slug, 'approve'))} className="border-border font-mono text-[10px] uppercase text-brand">Approve</Button>
                 <Button size="xs" variant="outline" disabled={busy === p.slug} onClick={() => ask(p.slug, 'suspend')} className="border-border font-mono text-[10px] uppercase">Suspend</Button>
                 <Button size="xs" variant="outline" disabled={busy === p.slug} onClick={() => ask(p.slug, 'reject')} className="border-border font-mono text-[10px] uppercase text-destructive">Reject</Button>
               </div>
             </div>
             {p.status_reason && <p className="font-mono text-[11px] text-muted-foreground">{p.status_reason}</p>}
-            {p.verifications.map(v => <VerificationLine key={v.model} v={v} />)}
-            <VerificationHistory load={() => userApi.adminVerifications(p.slug)} />
+            {(p.verifications ?? []).map(v => <VerificationLine key={v.model} v={v} />)}
+            <VerificationHistory load={() => tenantApi.verifications(p.slug)} />
           </div>
         ))}
       </div>

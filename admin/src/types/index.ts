@@ -6,6 +6,11 @@ export interface Provider {
   provider_type: string
   owner_user_id?: number | null
   owner_username?: string | null
+  status?: import('./verification').ProviderStatus
+  status_reason?: string | null
+  status_locked?: boolean
+  is_reference?: boolean
+  verifications?: import('./verification').VerificationSummary[]
   created_at: string
   updated_at: string
   health?: ProviderHealthEntry

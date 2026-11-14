@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
-import type { ProviderStatus, VerificationDetail, VerificationSummary } from '@/types/userProviders'
+import type { ProviderStatus, VerificationDetail, VerificationSummary } from '@/types/verification'
 
 const statusStyle: Record<ProviderStatus, string> = {
   approved: 'bg-brand/15 text-brand border-brand/30',

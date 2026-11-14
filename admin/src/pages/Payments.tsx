@@ -7,6 +7,7 @@ import { api } from '../api/client'
 import type { UserBalanceEntry, BalanceTransaction, LightningInvoice, ModelPricingEntry, Provider } from '../types'
 import { currentRole } from '@/lib/role'
 import { TopupBalanceDialog } from '@/components/TopupBalanceDialog'
+import ApiKeysPanel from '@/components/ApiKeysPanel'
 import { Button } from '@/components/ui/button'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
@@ -187,6 +188,8 @@ export default function Payments() {
               </>
             )}
           </div>
+
+          {!isAdmin && <ApiKeysPanel onError={setError} />}
 
           <div className="panel">
             <div className="overflow-x-auto">

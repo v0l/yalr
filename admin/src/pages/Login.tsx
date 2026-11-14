@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { authApi, landingPath, storeSession } from '../api/auth'
+import { authApi, storeSession } from '../api/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -24,7 +24,7 @@ export default function Login() {
     try {
       const session = await authApi.login(formData.username, formData.password)
       storeSession(session)
-      navigate(from === '/' ? landingPath(session) : from)
+      navigate(from)
     } catch (e2) {
       setError(e2 instanceof Error ? e2.message : 'Login failed')
     } finally {
@@ -38,7 +38,7 @@ export default function Login() {
     try {
       const session = await authApi.nostr()
       storeSession(session)
-      navigate(from === '/' ? landingPath(session) : from)
+      navigate(from)
     } catch (e2) {
       setError(e2 instanceof Error ? e2.message : 'Nostr sign in failed')
     } finally {

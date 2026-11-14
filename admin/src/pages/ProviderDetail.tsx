@@ -4,6 +4,7 @@ import { ArrowLeftIcon } from 'lucide-react'
 import { tenantApi } from '@/api/tenantApi'
 import type { ProviderStats } from '@/types/providerStats'
 import { formatMilli } from '@/lib/money'
+import ProviderVerificationPanel from '@/components/ProviderVerificationPanel'
 
 const RANGES = [1, 7, 30, 90]
 
@@ -44,6 +45,7 @@ export default function ProviderDetail() {
         {stats && <p className="font-mono text-[13px] text-muted-foreground">{stats.base_url}</p>}
       </div>
       {error && <div className="panel p-3 font-mono text-[12px] text-destructive">{error}</div>}
+      <ProviderVerificationPanel slug={slug} />
       <div className="flex gap-1">
         {RANGES.map(r => (
           <button
