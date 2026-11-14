@@ -132,7 +132,8 @@ export const api = {
       throw new Error(`Login failed: ${error}`)
     }
     
-    return response.json()
+    const body: { token: string; username: string; is_admin: boolean } = await response.json()
+    return { token: body.token, username: body.username, isAdmin: body.is_admin }
   },
 
   async getProviders(): Promise<{ providers: Provider[] }> {
