@@ -95,7 +95,7 @@ struct RoutingTable {
     entries: Vec<ProviderEntry>,
     children: Vec<ChildEntry>,
     strategy: StrategyKind,
-    rr_counter: AtomicUsize,
+    rr_counter: Arc<AtomicUsize>,
 }
 
 impl RoutingTable {
@@ -107,12 +107,18 @@ impl RoutingTable {
         Self::with_children(entries, Vec::new(), strategy)
     }
 
+    fn with_counter(entries: Vec<ProviderEntry>, counter: Arc<AtomicUsize>) -> Self {
+        let mut table = Self::new(entries);
+        table.rr_counter = counter;
+        table
+    }
+
     fn with_children(entries: Vec<ProviderEntry>, children: Vec<ChildEntry>, strategy: StrategyKind) -> Self {
         Self {
             entries,
             children,
             strategy,
-            rr_counter: AtomicUsize::new(0),
+            rr_counter: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -267,6 +273,7 @@ pub struct Router {
     shutdown_tx: RwLock<Option<tokio::sync::broadcast::Sender<()>>>,
     sticky: StickySessions,
     provider_bodies: std::sync::RwLock<HashMap<String, crate::db::ExtraBody>>,
+    full_names: RwLock<full_name::FullNameIndex>,
 }
 
 impl Router {
@@ -285,6 +292,7 @@ impl Router {
             shutdown_tx: RwLock::new(None),
             sticky: StickySessions::default(),
             provider_bodies: std::sync::RwLock::new(HashMap::new()),
+            full_names: RwLock::new(Default::default()),
         }
     }
 
@@ -320,6 +328,8 @@ impl Router {
         let mut providers = HashMap::new();
         let mut provider_bodies: HashMap<String, crate::db::ExtraBody> = HashMap::new();
         let mut id_to_slug: HashMap<i64, String> = HashMap::new();
+        let owned_ids: std::collections::HashSet<i64> =
+            provider_records.iter().filter(|r| r.owner_user_id.is_some()).map(|r| r.id).collect();
 
         for record in &provider_records {
             let provider = match create_provider_from_record(record, self.db.clone()) {
@@ -362,6 +372,9 @@ impl Router {
                             extra_body: rcp.extra_body_map().unwrap_or_default(),
                         });
                     }
+                    continue;
+                }
+                if rcp.provider_id.is_some_and(|id| owned_ids.contains(&id)) {
                     continue;
                 }
                 let slug = match rcp.provider_id.and_then(|id| id_to_slug.get(&id)) {
@@ -426,6 +439,9 @@ impl Router {
                 continue;
             }
 
+            if owned_ids.contains(&mp.provider_id) {
+                continue;
+            }
             let slug = match id_to_slug.get(&mp.provider_id) {
                 Some(s) => s,
                 None => continue,
@@ -463,6 +479,8 @@ impl Router {
             routing_tables = ?table_names,
             "Router config reloaded"
         );
+
+        self.refresh_full_name_index().await;
 
         // Restart health checks with the new config
         if let Err(e) = self.start_health_checks().await {
@@ -696,24 +714,43 @@ impl Router {
     /// the configured entry order, not a routing decision.
     pub async fn candidate_backends(&self, model: &str) -> Vec<(Arc<dyn Provider>, String)> {
         if let Some((slug_prefix, actual_model)) = model.split_once('/') {
-            let providers = self.providers.read().await;
-            return providers
-                .get(slug_prefix)
-                .cloned()
-                .or_else(|| {
-                    providers
-                        .values()
-                        .find(|p| p.slug().starts_with(slug_prefix))
-                        .cloned()
-                })
-                .map(|p| vec![(p, actual_model.to_string())])
-                .unwrap_or_default();
+            let exact = self.providers.read().await.get(slug_prefix).cloned();
+            if let Some(p) = exact {
+                return vec![(p, actual_model.to_string())];
+            }
+            if !self.routing_tables.read().await.contains_key(model) {
+                let pool = self.full_name_backends(model).await;
+                if !pool.is_empty() {
+                    return pool;
+                }
+                return self.legacy_prefix_provider(slug_prefix).await
+                    .map(|p| vec![(p, actual_model.to_string())])
+                    .unwrap_or_default();
+            }
         }
 
         let tables = self.routing_tables.read().await;
         let mut out = Vec::new();
         Self::flatten_backends(&tables, model, model, 1, &mut out);
         out
+    }
+
+    async fn legacy_prefix_provider(&self, prefix: &str) -> Option<Arc<dyn Provider>> {
+        let owned: std::collections::HashSet<String> = self
+            .db
+            .list_providers()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.owner_user_id.is_some())
+            .map(|r| r.slug)
+            .collect();
+        self.providers
+            .read()
+            .await
+            .values()
+            .find(|p| p.slug().starts_with(prefix) && !owned.contains(p.slug()))
+            .cloned()
     }
 
     pub async fn pick_order(&self, model: &str) -> (bool, Vec<(Arc<dyn Provider>, String)>) {
@@ -808,20 +845,20 @@ impl Router {
         session: Option<&SessionKey>,
     ) -> Result<Vec<Candidate>, RouterError> {
         if let Some((slug_prefix, actual_model)) = model.split_once('/') {
-            let providers = self.providers.read().await;
-            let provider = providers
-                .get(slug_prefix)
-                .cloned()
-                .or_else(|| {
-                    providers
-                        .values()
-                        .find(|p| p.slug().starts_with(slug_prefix))
-                        .cloned()
+            let exact = self.providers.read().await.get(slug_prefix).cloned();
+            if let Some(provider) = exact {
+                return Ok(vec![self.untracked_candidate(provider, actual_model.to_string())]);
+            }
+            if !self.routing_tables.read().await.contains_key(model) {
+                let pooled = self.rank_full_name(model, session).await?;
+                if !pooled.is_empty() {
+                    return Ok(pooled);
+                }
+                return Ok(match self.legacy_prefix_provider(slug_prefix).await {
+                    Some(provider) => vec![self.untracked_candidate(provider, actual_model.to_string())],
+                    None => vec![],
                 });
-            return Ok(match provider {
-                Some(provider) => vec![self.untracked_candidate(provider, actual_model.to_string())],
-                None => vec![],
-            });
+            }
         }
 
         let tables = self.routing_tables.read().await;
@@ -1943,6 +1980,10 @@ impl Clone for RouterError {
         }
     }
 }
+
+mod full_name;
+#[cfg(test)]
+mod full_name_tests;
 
 #[cfg(test)]
 mod nested_tests;
