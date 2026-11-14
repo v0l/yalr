@@ -197,3 +197,72 @@ pub async fn enable_api_key(
         id,
     }))
 }
+
+pub async fn delete_my_api_key(
+    Path(id): Path<i64>,
+    State(state): State<Arc<AppState>>,
+    UserExtractor(authenticated_user): UserExtractor,
+) -> Result<Json<ApiKeyDeleteResponse>, (StatusCode, String)> {
+    let internal = |e: sqlx::Error| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    let owned = state.db.list_api_keys_for_user(authenticated_user.user.id).await.map_err(internal)?;
+    if !owned.iter().any(|k| k.id == id) {
+        return Err((StatusCode::NOT_FOUND, "API key not found".to_string()));
+    }
+    state.db.delete_api_key(id).await.map_err(internal)?;
+    Ok(Json(ApiKeyDeleteResponse { deleted: true, id }))
+}
+
+#[cfg(test)]
+mod my_key_tests {
+    use super::*;
+    use crate::auth::admin::{AuthenticatedUser, SessionStore};
+    use crate::db::Database;
+    use crate::metrics::MetricsStore;
+
+    #[tokio::test]
+    async fn a_user_manages_only_their_own_keys() {
+        let db = Arc::new(Database::test().await);
+        let metrics_store = Arc::new(MetricsStore::new(100));
+        let router = Arc::new(crate::router::engine::Router::new((*metrics_store).clone(), db.clone()));
+        let state = Arc::new(AppState {
+            config: crate::config::AppConfig {
+                db: db.clone(),
+                router,
+                auth_config: Default::default(),
+                payments_config: None,
+                discovery_config: None,
+                admin_ui_path: String::new(),
+                host: String::new(),
+                port: 0,
+            },
+            metrics_emitter: metrics_store.emitter().clone(),
+            metrics_store,
+            session_store: Arc::new(SessionStore::new()),
+            db: db.clone(),
+            payments_state: None,
+            oauth_pending: Default::default(),
+            model_cache: Default::default(),
+            modality_cache: Default::default(),
+            limits_cache: Default::default(),
+        });
+        let alice = db.add_test_user("alice", false).await;
+        let bob = db.add_test_user("bob", false).await;
+        let who = |u: crate::db::User| UserExtractor(AuthenticatedUser { user: u, api_key: None });
+        let made = create_api_key(
+            State(state.clone()),
+            who(alice.clone()),
+            Json(CreateApiKeyRequest { name: "laptop".into(), expires_in_days: None }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(made.key.starts_with("sk-") || !made.key.is_empty());
+
+        let foreign = delete_my_api_key(Path(made.id), State(state.clone()), who(bob)).await;
+        assert_eq!(foreign.err().unwrap().0, StatusCode::NOT_FOUND);
+        assert_eq!(list_api_keys(State(state.clone()), who(alice.clone())).await.unwrap().0.len(), 1);
+
+        delete_my_api_key(Path(made.id), State(state.clone()), who(alice.clone())).await.unwrap();
+        assert!(list_api_keys(State(state), who(alice)).await.unwrap().0.is_empty());
+    }
+}

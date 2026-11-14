@@ -203,14 +203,55 @@ database:
 
 auth:
   enabled: true
+  open_registration: true  # default true; false closes self-serve sign up
   allowed_pubkeys:  # Optional - if set, only these pubkeys can auth
     - "your_nostr_pubkey_here"
     - "another_trusted_pubkey"
+
+verification:
+  enabled: true
+  provider_verify_interval_hours: 24
+  probe_max_tokens: 32
+  min_prefix_tokens: 16
+  max_logprob_gap: 0.5
+  random_probes: 4
 
 payments:
   enabled: false
   # ... (see PAYMENTS.md)
 ```
+
+---
+
+## Self-serve sign up
+
+Anyone can create an account unless `auth.open_registration` is `false`. There is no email.
+
+- **Password**: `POST /api/auth/register` with `{"username", "password"}`. Usernames are 3-32 characters (letters, digits, `.`, `-`, `_`), unique, and cannot start with `nostr_` or `anon_`. Passwords are 8-256 characters and stored with Argon2. Each IP address may register 10 accounts per hour (the first `X-Forwarded-For` entry, else the peer address). The response is the same as `POST /api/auth/login`: `{token, username, is_admin}`.
+- **Nostr**: `POST /api/auth/nostr` with an `Authorization: Nostr <base64 event>` header holding a NIP-98 event (kind 27235, `u` tag ending in `/api/auth/nostr`, `method` tag `POST`). The admin UI signs it with a NIP-07 extension (`window.nostr`). It returns the same session response and creates the user on first use, as the NIP-98 middleware does. `allowed_pubkeys` still applies. With registration closed, existing Nostr users can still sign in.
+- **Anonymous Lightning**: unchanged. Paying an invoice at `/v2/lightning/invoice` creates an `anon_*` user and an API key.
+
+A new user lands on the Account page of the admin UI (`/me`) with API key creation (`/api/my/api-keys`), a Lightning top-up (`/lightning/invoice`) and a link to My providers.
+
+## Provider approval and verification
+
+`providers.status` is `pending`, `approved` or `suspended`. Admin-owned providers are `approved`. A provider a user adds starts `pending`: its owner can route to it straight away, but it is left out of the shared full-name pool (`vendor/model`) for everyone else until it is approved.
+
+Verification compares a provider with a **reference**: an approved provider an admin marked with `PUT /api/providers/:slug/reference` (`{"is_reference": true}`) that serves the same full model name. For each model the provider prices, the suite sends about 12 probes to both providers (fixed prompts plus a few drawn at random from a hidden pool) with `temperature 0`, `seed 1`, `max_tokens 32`, and `logprobs` with `top_logprobs 5` when supported. It scores:
+
+- prefix agreement: leading tokens identical to the reference (text agreement when logprobs are missing);
+- when logprobs exist, the mean absolute chosen-token logprob gap and top-5 overlap over the agreed prefix;
+- task probes with a known answer (arithmetic, facts, a JSON tool call that must parse);
+- `usage.prompt_tokens` on the fixed prompts, which must equal the reference exactly.
+
+A model passes when token counts match, every task probe passes, the median prefix agreement is at least `min_prefix_tokens` and the logprob gap is under `max_logprob_gap`. Every run is stored in `provider_verifications` with the raw outputs.
+
+- A pending provider is approved automatically when every model it prices passes.
+- A failing pending provider stays pending and shows the reason. A failing approved provider is suspended and the owner sees why.
+- A run that cannot finish (provider down, no reference marked) is recorded as inconclusive and changes nothing for an approved provider.
+- Approved providers are re-verified every `provider_verify_interval_hours` (default 24). Changing the base URL, key or type, or adding or removing a priced model, sends an approved provider back to `pending` and re-verifies it.
+- Admins can `approve`, `suspend`, `reject` or `requeue` with `PUT /api/providers/:slug/status` (`{"action", "reason"}`). Suspend and reject lock the status so verification does not undo them; approve and requeue unlock it. `POST /api/providers/:slug/verify` runs the suite now, `GET /api/providers/:slug/verifications` returns the history.
+- Owners can run `POST /api/my/providers/:slug/verify` and read `GET /api/my/providers/:slug/verifications`.
 
 ---
 
@@ -228,8 +269,8 @@ POST /api/auth/setup
 ```
 
 **Subsequent users**:
-- Admin only via `POST /api/users`
-- Requires admin authentication
+- Self-serve through `/api/auth/register` or `/api/auth/nostr` (see above)
+- Admin via `POST /api/users`
 
 ### API Key Lifecycle
 
