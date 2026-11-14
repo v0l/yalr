@@ -1,7 +1,9 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { userApi } from '@/api/userApi'
 import type { MyProvider } from '@/types/userProviders'
 
@@ -15,6 +17,9 @@ const empty = { name: '', slug: '', base_url: '', api_key: '' }
 
 export default function MyProvidersPanel({ providers, onChange, onError }: Props) {
   const [form, setForm] = useState(empty)
+  const [open, setOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
   const [status, setStatus] = useState<Record<string, string>>({})
 
   async function run(action: () => Promise<unknown>) {
@@ -33,19 +38,47 @@ export default function MyProvidersPanel({ providers, onChange, onError }: Props
     }
   }
 
+  async function add(e: React.FormEvent) {
+    e.preventDefault()
+    setSaving(true)
+    setFormError(null)
+    try {
+      await userApi.createProvider({ ...form, api_key: form.api_key || undefined })
+      setForm(empty)
+      setOpen(false)
+      onChange()
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Request failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="panel p-4 space-y-3">
-      <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Endpoints</div>
-      <form
-        className="grid grid-cols-1 md:grid-cols-5 gap-2"
-        onSubmit={e => { e.preventDefault(); run(async () => { await userApi.createProvider({ ...form, api_key: form.api_key || undefined }); setForm(empty) }) }}
-      >
-        <Input placeholder="Name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required className="font-mono bg-surface border-border" />
-        <Input placeholder="slug" value={form.slug} onChange={e => setForm({ ...form, slug: e.target.value })} required className="font-mono bg-surface border-border" />
-        <Input placeholder="https://host/v1" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} required className="font-mono bg-surface border-border" />
-        <Input type="password" placeholder="API key (write only)" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} className="font-mono bg-surface border-border" />
-        <Button type="submit" className="font-mono text-[11px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">Add</Button>
-      </form>
+      <div className="flex items-center justify-between">
+        <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Endpoints</div>
+        <Button onClick={() => { setFormError(null); setOpen(true) }} className="font-mono text-[11px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">Add provider</Button>
+      </div>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-lg border-border bg-card">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl tracking-[0.04em]">ADD PROVIDER</DialogTitle>
+            <DialogDescription className="font-mono text-[12px] text-muted-foreground">Connect your own OpenAI compatible endpoint.</DialogDescription>
+          </DialogHeader>
+          {formError && <div className="font-mono text-[12px] text-destructive bg-destructive/5 border border-destructive/20 p-2 px-3">{formError}</div>}
+          <form className="space-y-3" onSubmit={add}>
+            <Input placeholder="Name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required className="font-mono bg-surface border-border" />
+            <Input placeholder="slug" value={form.slug} onChange={e => setForm({ ...form, slug: e.target.value })} required className="font-mono bg-surface border-border" />
+            <Input placeholder="https://host/v1" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} required className="font-mono bg-surface border-border" />
+            <Input type="password" placeholder="API key (write only)" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} className="font-mono bg-surface border-border" />
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)} className="font-mono text-[11px] uppercase border-border">Cancel</Button>
+              <Button type="submit" disabled={saving} className="font-mono text-[11px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">{saving ? 'Adding...' : 'Add'}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
       <table className="w-full table-scan">
         <thead>
           <tr className="border-b border-border/50 text-left font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
@@ -62,7 +95,7 @@ export default function MyProvidersPanel({ providers, onChange, onError }: Props
             <tr><td colSpan={6} className="px-2 py-10 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO PROVIDERS YET</td></tr>
           ) : providers.map(p => (
             <tr key={p.id} className="border-b border-border/50 hover:bg-surface font-mono text-[12px]">
-              <td className="px-2 py-2.5">{p.name}</td>
+              <td className="px-2 py-2.5"><Link to={`/my-providers/${encodeURIComponent(p.slug)}`} className="text-brand hover:underline">{p.name}</Link></td>
               <td className="px-2 py-2.5 text-muted-foreground">{p.slug}</td>
               <td className="px-2 py-2.5 text-muted-foreground truncate max-w-64">{p.base_url}</td>
               <td className="px-2 py-2.5">{p.has_api_key ? <Badge className="text-[10px] px-1.5 py-0 h-5 bg-brand/15 text-brand border-brand/30">SET</Badge> : <span className="text-muted-foreground">none</span>}</td>

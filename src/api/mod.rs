@@ -24,6 +24,7 @@ pub mod currency_balances;
 pub mod model_pricing;
 pub mod my_pricing;
 pub mod models;
+pub mod my_provider_stats;
 pub mod my_providers;
 pub mod oauth;
 pub mod pool_models;

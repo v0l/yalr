@@ -14,6 +14,7 @@ import RequestLogDetail from './pages/RequestLogDetail'
 import Payments from './pages/Payments'
 import Account from './pages/Account'
 import MyProviders from './pages/MyProviders'
+import MyProviderDetail from './pages/MyProviderDetail'
 import { api } from './api/client'
 import { API_BASE_URL } from './api/client'
 
@@ -85,6 +86,7 @@ export default function App() {
           <Route path="payments" element={<Payments />} />
           <Route path="chat" element={<Chat />} />
           <Route path="my-providers" element={<MyProviders />} />
+          <Route path="my-providers/:slug" element={<MyProviderDetail />} />
           <Route path="request-log" element={<RequestLog />} />
           <Route path="request-log/:id" element={<RequestLogDetail />} />
         </Route>

@@ -78,3 +78,34 @@ export interface CreditCurrencyRequest {
   amount_milli: number
   reason?: string
 }
+
+export interface ProviderTraffic {
+  requests: number
+  failures: number
+  prompt_tokens: number
+  completion_tokens: number
+  cached_tokens: number
+  avg_ttft_ms: number | null
+  output_tokens_per_second: number | null
+}
+
+export interface ProviderModelTraffic {
+  model: string
+  requests: number
+  completion_tokens: number
+  output_tokens_per_second: number | null
+}
+
+export interface ProviderEarning {
+  currency: string
+  earned_milli: number
+  requests: number
+}
+
+export interface MyProviderStats {
+  provider: MyProvider
+  days: number
+  traffic: ProviderTraffic
+  models: ProviderModelTraffic[]
+  earnings: ProviderEarning[]
+}
