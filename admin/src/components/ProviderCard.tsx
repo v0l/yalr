@@ -82,6 +82,11 @@ export function ProviderCard({ provider, onEdit, onDelete, onTopup, onGenerateKe
           )}
         </div>
 
+        {provider.owner_user_id && (
+          <Badge variant="outline" className="mb-1 font-mono text-[10px] tracking-wider bg-brand/15 text-brand border-brand/30 px-1.5 py-0 h-5">
+            OWNER {provider.owner_username ?? provider.owner_user_id}
+          </Badge>
+        )}
         <div className="font-mono text-[10px] text-muted-foreground/60 truncate" title={provider.base_url}>
           {provider.base_url.replace(/^https?:\/\//, '').replace(/\/v\d+$/, '')}
         </div>

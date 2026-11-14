@@ -11,6 +11,15 @@ impl Database {
         self.get_provider_by_id(created.id).await?.ok_or(sqlx::Error::RowNotFound)
     }
 
+    pub async fn set_provider_owner(&self, provider_id: i64, owner_user_id: Option<i64>) -> Result<Provider, sqlx::Error> {
+        sqlx::query("UPDATE providers SET owner_user_id = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?")
+            .bind(owner_user_id)
+            .bind(provider_id)
+            .execute(&self.pool)
+            .await?;
+        self.get_provider_by_id(provider_id).await?.ok_or(sqlx::Error::RowNotFound)
+    }
+
     pub async fn list_providers_owned_by(&self, owner_user_id: i64) -> Result<Vec<Provider>, sqlx::Error> {
         sqlx::query_as::<_, Provider>("SELECT * FROM providers WHERE owner_user_id = ? ORDER BY name")
             .bind(owner_user_id)
@@ -51,5 +60,27 @@ mod tests {
         assert_eq!(mine.len(), 1);
         assert_eq!(mine[0].slug, "a-one");
         assert!(db.get_provider_by_slug("platform").await.unwrap().unwrap().owner_user_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_existing_provider_can_be_linked_and_unlinked() {
+        let db = Database::test().await;
+        let alice = db.add_test_user("alice", false).await;
+        let platform = db
+            .create_provider(NewProvider {
+                name: "platform",
+                slug: "platform",
+                base_url: "https://example.com/v1",
+                api_key: None,
+                provider_type: None,
+            })
+            .await
+            .unwrap();
+        let linked = db.set_provider_owner(platform.id, Some(alice.id)).await.unwrap();
+        assert_eq!(linked.owner_user_id, Some(alice.id));
+        assert_eq!(db.list_providers_owned_by(alice.id).await.unwrap().len(), 1);
+        let unlinked = db.set_provider_owner(platform.id, None).await.unwrap();
+        assert_eq!(unlinked.owner_user_id, None);
+        assert!(db.list_providers_owned_by(alice.id).await.unwrap().is_empty());
     }
 }

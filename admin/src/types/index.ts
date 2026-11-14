@@ -4,6 +4,8 @@ export interface Provider {
   slug: string
   base_url: string
   provider_type: string
+  owner_user_id?: number | null
+  owner_username?: string | null
   created_at: string
   updated_at: string
   health?: ProviderHealthEntry
@@ -45,6 +47,7 @@ export interface ProviderFormData {
   provider_type: string
   client_version?: string
   extra_body?: string
+  owner_user_id?: number | null
 }
 
 export interface PaymentOption {
@@ -247,6 +250,7 @@ export interface ProviderUpdateRequest {
   provider_type?: string
   client_version?: string
   extra_body?: Record<string, unknown>
+  owner_user_id?: number | null
 }
 
 export interface ModelSyncReport {

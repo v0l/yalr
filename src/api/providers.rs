@@ -14,6 +14,8 @@ pub struct ProviderResponse {
     pub slug: String,
     pub base_url: String,
     pub provider_type: String,
+    pub owner_user_id: Option<i64>,
+    pub owner_username: Option<String>,
     pub created_at: crate::db::Timestamp,
     pub updated_at: crate::db::Timestamp,
     /// Live health+metrics for this provider.
@@ -110,6 +112,20 @@ pub struct ProviderUpdateRequest {
     pub client_version: Option<String>,
     #[serde(default)]
     pub extra_body: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "present_or_null")]
+    pub owner_user_id: Option<Option<i64>>,
+}
+
+fn present_or_null<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+async fn owner_username(state: &AppState, owner: Option<i64>) -> Option<String> {
+    state.db.provider_owner_username(owner?).await.ok().flatten()
 }
 
 #[axum::debug_handler]
@@ -129,6 +145,13 @@ pub async fn list_providers(State(state): State<std::sync::Arc<AppState>>) -> Js
     for provider in &live_providers {
         let entry = build_provider_health_entry(&state, provider.as_ref()).await;
         health_by_slug.insert(provider.slug().to_string(), entry);
+    }
+
+    let mut owner_names: std::collections::HashMap<i64, Option<String>> = std::collections::HashMap::new();
+    for owner in providers.iter().filter_map(|p| p.owner_user_id) {
+        if !owner_names.contains_key(&owner) {
+            owner_names.insert(owner, owner_username(&state, Some(owner)).await);
+        }
     }
 
     let providers_list: Vec<ProviderResponse> = providers
@@ -169,6 +192,8 @@ pub async fn list_providers(State(state): State<std::sync::Arc<AppState>>) -> Js
                 slug: p.slug.clone(),
                 base_url: p.base_url,
                 provider_type: p.provider_type.as_str().to_string(),
+                owner_username: p.owner_user_id.and_then(|id| owner_names.get(&id).cloned().flatten()),
+                owner_user_id: p.owner_user_id,
                 created_at: p.created_at,
                 updated_at: p.updated_at,
                 health: health_by_slug.remove(&p.slug),
@@ -432,6 +457,19 @@ pub async fn update_provider(
         None => updated,
     };
 
+    let updated = match request.owner_user_id {
+        Some(owner) => {
+            if let Some(id) = owner {
+                state.config.db.get_user_by_id(id).await
+                    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                    .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST, format!("User {id} not found")))?;
+            }
+            state.config.db.set_provider_owner(updated.id, owner).await
+                .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        }
+        None => updated,
+    };
+
     let updated = if request.extra_body.is_some() {
         state.config.db.set_provider_extra_body(updated.id, extra_body.as_ref()).await
             .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -464,6 +502,8 @@ pub async fn update_provider(
         slug: updated.slug,
         base_url: updated.base_url,
         provider_type: updated.provider_type.as_str().to_string(),
+        owner_username: owner_username(&state, updated.owner_user_id).await,
+        owner_user_id: updated.owner_user_id,
         created_at: updated.created_at,
         updated_at: updated.updated_at,
         health: None,

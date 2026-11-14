@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { api, API_BASE_URL } from '../api/client'
-import type { MetricsResponse, Provider, ProviderFormData, HealthOverviewResponse } from '../types'
+import type { MetricsResponse, Provider, User, ProviderFormData, HealthOverviewResponse } from '../types'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -32,6 +32,9 @@ export default function Dashboard() {
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null)
   const [providers, setProviders] = useState<Provider[]>([])
   const [health, setHealth] = useState<HealthOverviewResponse | null>(null)
+  const [users, setUsers] = useState<User[]>([])
+  const [ownerFilter, setOwnerFilter] = useState('all')
+  const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
@@ -78,6 +81,7 @@ export default function Dashboard() {
       }
     }
     fetchData()
+    api.getUsers({ limit: 500 }).then(setUsers).catch(() => {})
   }, [])
 
   /* WebSocket for live in-flight counts */
@@ -158,7 +162,7 @@ export default function Dashboard() {
 
   function openEdit(provider: Provider) {
     setEditingProvider(provider)
-    setForm({ name: provider.name, slug: provider.slug, base_url: provider.base_url, api_key: '', provider_type: provider.provider_type, client_version: provider.client_version ?? '', extra_body: formatExtraBody(provider.extra_body) })
+    setForm({ name: provider.name, slug: provider.slug, base_url: provider.base_url, api_key: '', provider_type: provider.provider_type, client_version: provider.client_version ?? '', extra_body: formatExtraBody(provider.extra_body), owner_user_id: provider.owner_user_id ?? null })
     setFormError(null)
     setFormDialogOpen(true)
   }
@@ -169,17 +173,18 @@ export default function Dashboard() {
     if (parsedBody.error !== null) { setFormError(parsedBody.error); setSaving(false); return }
     try {
       if (editingProvider) {
-        const d: Record<string, string | Record<string, unknown>> = {}
+        const d: Record<string, string | number | null | Record<string, unknown>> = {}
         if (form.name !== editingProvider.name) d.name = form.name
         if (form.slug !== editingProvider.slug) d.slug = form.slug
         if (form.base_url !== editingProvider.base_url) d.base_url = form.base_url
         if (form.api_key) d.api_key = form.api_key
         if (form.provider_type !== editingProvider.provider_type) d.provider_type = form.provider_type
         if (editingProvider.default_client_version && form.client_version !== (editingProvider.client_version ?? '')) d.client_version = form.client_version ?? ''
+        if ((form.owner_user_id ?? null) !== (editingProvider.owner_user_id ?? null)) d.owner_user_id = form.owner_user_id ?? null
         await api.updateProvider(editingProvider.slug, { ...d, extra_body: parsedBody.value })
         setSuccessMessage('PROVIDER UPDATED')
       } else {
-        const { extra_body: _text, ...rest } = form
+        const { extra_body: _text, owner_user_id: _owner, ...rest } = form
         await api.createProvider({ ...rest, ...(Object.keys(parsedBody.value).length ? { extra_body: parsedBody.value } : {}) })
         setSuccessMessage('PROVIDER CREATED')
       }
@@ -212,6 +217,15 @@ export default function Dashboard() {
   }
 
   /* ── Derived ─────────────────────────────────────────────── */
+  const owners = Array.from(new Map(providers.filter(p => p.owner_user_id).map(p => [p.owner_user_id!, p.owner_username ?? `user ${p.owner_user_id}`])).entries())
+  const needle = search.trim().toLowerCase()
+  const visibleProviders = providers.filter(p => {
+    if (ownerFilter === 'platform' && p.owner_user_id) return false
+    if (ownerFilter === 'users' && !p.owner_user_id) return false
+    if (ownerFilter.startsWith('user:') && String(p.owner_user_id) !== ownerFilter.slice(5)) return false
+    if (!needle) return true
+    return [p.name, p.slug, p.base_url, p.owner_username ?? ''].some(v => v.toLowerCase().includes(needle))
+  })
   const totalRequests = metrics?.total_requests ?? 0
   const totalSuccesses = metrics?.total_successes ?? 0
   const totalFailures = metrics?.total_failures ?? 0
@@ -307,13 +321,32 @@ export default function Dashboard() {
         </div>
 
         {/* Provider Cards */}
-        {providers.length === 0 ? (
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search providers"
+            className="h-8 w-56 px-2 font-mono text-[12px] bg-surface border border-border text-foreground placeholder:text-muted-foreground"
+          />
+          <select
+            value={ownerFilter}
+            onChange={e => setOwnerFilter(e.target.value)}
+            className="h-8 px-2 font-mono text-[12px] bg-surface border border-border text-foreground"
+          >
+            <option value="all">All owners</option>
+            <option value="platform">Platform only</option>
+            <option value="users">User providers</option>
+            {owners.map(([id, name]) => <option key={id} value={`user:${id}`}>{name}</option>)}
+          </select>
+          <span className="font-mono text-[11px] text-muted-foreground tabular-nums">{visibleProviders.length}/{providers.length}</span>
+        </div>
+        {visibleProviders.length === 0 ? (
           <div className="panel flex items-center justify-center py-16">
-            <span className="font-mono text-[13px] text-muted-foreground">{'>'} NO PROVIDERS CONFIGURED</span>
+            <span className="font-mono text-[13px] text-muted-foreground">{'>'} {providers.length === 0 ? 'NO PROVIDERS CONFIGURED' : 'NO PROVIDERS MATCH'}</span>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {providers.map(p => (
+            {visibleProviders.map(p => (
               <ProviderCard
                 key={p.slug}
                 provider={p}
@@ -358,6 +391,7 @@ export default function Dashboard() {
         error={formError}
         onClearError={() => setFormError(null)}
         apiKeysUrl={apiKeysUrl}
+        users={users}
       />
 
       <ProviderDeleteDialog
