@@ -274,6 +274,7 @@ pub struct Router {
     sticky: StickySessions,
     provider_bodies: std::sync::RwLock<HashMap<String, crate::db::ExtraBody>>,
     full_names: RwLock<full_name::FullNameIndex>,
+    provider_access: std::sync::RwLock<HashMap<String, (Option<i64>, String)>>,
 }
 
 impl Router {
@@ -293,6 +294,7 @@ impl Router {
             sticky: StickySessions::default(),
             provider_bodies: std::sync::RwLock::new(HashMap::new()),
             full_names: RwLock::new(Default::default()),
+            provider_access: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
@@ -324,6 +326,7 @@ impl Router {
         }
         
         let provider_records = self.db.list_providers().await?;
+        self.set_provider_access(&provider_records);
 
         let mut providers = HashMap::new();
         let mut provider_bodies: HashMap<String, crate::db::ExtraBody> = HashMap::new();
@@ -854,6 +857,9 @@ impl Router {
         if let Some((slug_prefix, actual_model)) = model.split_once('/') {
             let exact = self.providers.read().await.get(slug_prefix).cloned();
             if let Some(provider) = exact {
+                if !self.may_serve(provider.slug(), viewer) {
+                    return Ok(vec![]);
+                }
                 return Ok(vec![self.untracked_candidate(provider, actual_model.to_string())]);
             }
             if !self.routing_tables.read().await.contains_key(model) {
@@ -874,6 +880,7 @@ impl Router {
         };
         let ranked = self.rank_table(&tables, model, model, "", 1).await?;
         let mut candidates = ranked.candidates;
+        candidates.retain(|c| self.may_serve(c.provider.slug(), viewer));
         if table.strategy == StrategyKind::RoundRobin {
             self.sticky.move_pinned_first(session, &mut candidates, |c| c.provider.name());
         }

@@ -2,7 +2,7 @@ use crate::api::{config, health, model_pricing, models as model_handlers, provid
 use crate::auth::admin::{
     admin_middleware, auth_middleware, auth_status, check_setup_complete, login, logout, setup_first_user,
 };
-use crate::auth::api_keys::{create_api_key, create_api_key_for_user, delete_api_key, disable_api_key, enable_api_key, list_api_keys};
+use crate::auth::api_keys::{create_api_key, create_api_key_for_user, disable_api_key, enable_api_key, list_api_keys};
 use crate::state::AppState;
 use axum::{
     routing::{delete, get, post, put},
@@ -18,6 +18,8 @@ fn public() -> Router<Arc<AppState>> {
     Router::new()
         .route("/auth/setup", post(setup_first_user))
         .route("/auth/login", post(login))
+        .route("/auth/register", post(crate::auth::signup::register))
+        .route("/auth/nostr", post(crate::auth::signup::nostr_login))
         .route("/setup/status", get(check_setup_complete))
 }
 
@@ -30,6 +32,8 @@ fn tenant(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/providers/:slug/models", get(model_handlers::list_provider_models))
         .route("/providers/:slug/stats", get(provider_stats::stats))
         .route("/providers/:slug/check", post(provider_stats::check))
+        .route("/providers/:slug/verify", post(crate::api::provider_approval::verify))
+        .route("/providers/:slug/verifications", get(crate::api::provider_approval::verifications))
         .route("/providers/:slug/topup", post(provider_payments::create_provider_topup))
         .route("/providers/:slug/generate-api-key", post(provider_payments::generate_provider_api_key))
         .route("/metrics", get(health::get_metrics))
@@ -56,6 +60,8 @@ fn tenant(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/payments/invoices", get(users::list_admin_invoices))
         .route("/payments/currencies", get(crate::api::currency_balances::currencies))
         .route("/my/balances", get(crate::api::currency_balances::my_balances))
+        .route("/api-keys", get(list_api_keys).post(create_api_key))
+        .route("/api-keys/:id", delete(crate::auth::api_keys::delete_my_api_key))
         .layer(axum::middleware::from_fn_with_state(state, auth_middleware))
 }
 
@@ -65,12 +71,12 @@ fn admin(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/oauth/complete", post(crate::api::oauth::complete))
         .route("/oauth/:slug/reauth", post(crate::api::oauth::reauth))
         .route("/config", get(config::get_router_config))
+        .route("/providers/:slug/status", put(crate::api::provider_approval::set_status))
+        .route("/providers/:slug/reference", put(crate::api::provider_approval::set_reference))
         .route("/models/sync/:provider_slug", get(model_handlers::sync_provider_models))
         .route("/models/discrepancies", post(model_handlers::detect_model_discrepancies))
         .route("/model-pricing/market", get(crate::api::market::market))
         .route("/model-pricing/listing", get(crate::api::market::listing))
-        .route("/api-keys", get(list_api_keys).post(create_api_key))
-        .route("/api-keys/:id", delete(delete_api_key))
         .route("/api-keys/:id/disable", post(disable_api_key))
         .route("/api-keys/:id/enable", post(enable_api_key))
         .route("/api-keys/:id/usage", get(crate::api::usage::key_usage))

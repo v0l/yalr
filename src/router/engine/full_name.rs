@@ -19,11 +19,33 @@ pub(crate) struct FullNameIndex {
     refreshed: Option<Instant>,
 }
 
-fn visible_to(member: &IndexedModel, viewer: Option<i64>) -> bool {
-    match member.status.as_str() {
+pub(crate) fn serves(owner_user_id: Option<i64>, status: &str, viewer: Option<i64>) -> bool {
+    match status {
         "approved" => true,
-        "pending" => member.owner_user_id.is_some() && member.owner_user_id == viewer,
+        "pending" => owner_user_id.is_some() && owner_user_id == viewer,
         _ => false,
+    }
+}
+
+fn visible_to(member: &IndexedModel, viewer: Option<i64>) -> bool {
+    serves(member.owner_user_id, &member.status, viewer)
+}
+
+impl Router {
+    pub(crate) fn set_provider_access(&self, records: &[crate::db::Provider]) {
+        let access = records
+            .iter()
+            .filter(|r| r.owner_user_id.is_some() || r.status != crate::db::APPROVED)
+            .map(|r| (r.slug.clone(), (r.owner_user_id, r.status.clone())))
+            .collect();
+        *self.provider_access.write().unwrap() = access;
+    }
+
+    pub(crate) fn may_serve(&self, slug: &str, viewer: Option<i64>) -> bool {
+        match self.provider_access.read().unwrap().get(slug) {
+            Some((owner, status)) => serves(*owner, status, viewer),
+            None => true,
+        }
     }
 }
 
@@ -34,6 +56,7 @@ pub(crate) fn is_full_name(model: &str) -> bool {
 impl Router {
     pub async fn refresh_full_name_index(&self) {
         let records = self.db.list_providers().await.unwrap_or_default();
+        self.set_provider_access(&records);
         let providers: Vec<(Arc<dyn Provider>, i64, Option<i64>, String)> = {
             let loaded = self.providers.read().await;
             records

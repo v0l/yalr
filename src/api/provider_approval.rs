@@ -7,6 +7,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::api::tenant::Scope;
+use crate::auth::admin::UserExtractor;
 use crate::api::verification_view::{self, VerificationDetail, VerificationSummary};
 use crate::db::{Provider, APPROVED, PENDING, SUSPENDED};
 use crate::state::AppState;
@@ -96,17 +98,23 @@ pub async fn set_reference(
     Ok(Json(view(&state, updated).await))
 }
 
-pub async fn verify(State(state): State<Arc<AppState>>, Path(slug): Path<String>) -> ApiResult<ApprovalView> {
-    let provider = find(&state, &slug).await?;
+pub async fn verify(
+    State(state): State<Arc<AppState>>,
+    user: UserExtractor,
+    Path(slug): Path<String>,
+) -> ApiResult<ApprovalView> {
+    let scope = Scope::from(user);
+    let provider = scope.provider(&state, &slug).await?;
     crate::verify::verify_and_apply(&state.db, &state.config.router, provider.id).await;
-    let fresh = find(&state, &slug).await?;
+    let fresh = scope.provider(&state, &slug).await?;
     Ok(Json(view(&state, fresh).await))
 }
 
 pub async fn verifications(
     State(state): State<Arc<AppState>>,
+    user: UserExtractor,
     Path(slug): Path<String>,
 ) -> ApiResult<Vec<VerificationDetail>> {
-    let provider = find(&state, &slug).await?;
+    let provider = Scope::from(user).provider(&state, &slug).await?;
     Ok(Json(verification_view::history(&state.db, provider.id).await))
 }

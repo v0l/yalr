@@ -237,6 +237,9 @@ pub async fn create_model_pricing(
         }
         other => internal(other),
     })?;
+    if let Some(provider) = provider.as_ref() {
+        crate::verify::mark_changed(&state.db, &state.config.router, provider).await;
+    }
     Ok(Json(response(&state, row).await))
 }
 
@@ -319,5 +322,11 @@ pub async fn delete_pricing_by_id(
     let scope = Scope::from(user);
     let row = visible_row(&scope, &state, id).await?;
     state.db.delete_pricing_row(row.id).await.map_err(internal)?;
+    if let Some(Ok(Some(provider))) = match row.provider_id {
+        Some(id) => Some(state.db.get_provider_by_id(id).await),
+        None => None,
+    } {
+        crate::verify::mark_changed(&state.db, &state.config.router, &provider).await;
+    }
     Ok(Json(Deleted { deleted: true, model_name: None, id: Some(id) }))
 }

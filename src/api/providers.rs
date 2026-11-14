@@ -24,6 +24,11 @@ pub struct ProviderResponse {
     pub owner_user_id: Option<i64>,
     pub owner_username: Option<String>,
     pub has_api_key: bool,
+    pub status: String,
+    pub status_reason: Option<String>,
+    pub status_locked: bool,
+    pub is_reference: bool,
+    pub verifications: Vec<crate::api::verification_view::VerificationSummary>,
     pub created_at: crate::db::Timestamp,
     pub updated_at: crate::db::Timestamp,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -154,6 +159,11 @@ fn oauth_status(p: &Provider) -> Option<OAuthStatus> {
 
 fn response(p: Provider, owner_username: Option<String>, health: Option<ProviderHealthEntry>) -> ProviderResponse {
     ProviderResponse {
+        status: p.status.clone(),
+        status_reason: p.status_reason.clone(),
+        status_locked: p.status_locked,
+        is_reference: p.is_reference,
+        verifications: vec![],
         extra_body: p.extra_body_map(),
         has_api_key: p.api_key.as_deref().is_some_and(|k| !k.is_empty()),
         payment_options: payment_options(p.provider_type),
@@ -197,14 +207,14 @@ pub async fn list_providers(State(state): State<Arc<AppState>>, user: UserExtrac
             owner_names.insert(owner, owner_username(&state, Some(owner)).await);
         }
     }
-    let providers = providers
-        .into_iter()
-        .map(|p| {
-            let name = p.owner_user_id.and_then(|id| owner_names.get(&id).cloned().flatten());
-            let health = health_by_slug.remove(&p.slug);
-            response(p, name, health)
-        })
-        .collect();
+    let mut out = Vec::with_capacity(providers.len());
+    for p in providers {
+        let name = p.owner_user_id.and_then(|id| owner_names.get(&id).cloned().flatten());
+        let health = health_by_slug.remove(&p.slug);
+        let verifications = crate::api::verification_view::latest(&state.db, p.id).await;
+        out.push(ProviderResponse { verifications, ..response(p, name, health) });
+    }
+    let providers = out;
     Ok(Json(ListProvidersResponse { providers }))
 }
 
@@ -326,6 +336,14 @@ pub async fn update_provider(
     };
     reload(&state).await?;
     tracing::info!(provider_slug = slug, "Provider updated");
+    let changed = request.base_url.as_deref().is_some_and(|url| url != provider.base_url)
+        || request.api_key.as_deref().is_some_and(|k| !k.is_empty())
+        || provider_type.is_some_and(|k| k != provider.provider_type);
+    if changed {
+        crate::verify::mark_changed(&state.db, &state.config.router, &updated).await;
+    }
+    let updated = state.db.get_provider_by_id(updated.id).await.map_err(internal)?.unwrap_or(updated);
     let name = owner_username(&state, updated.owner_user_id).await;
-    Ok(Json(response(updated, name, None)))
+    let verifications = crate::api::verification_view::latest(&state.db, updated.id).await;
+    Ok(Json(ProviderResponse { verifications, ..response(updated, name, None) }))
 }

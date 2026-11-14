@@ -25,6 +25,7 @@ pub mod model_pricing;
 pub mod models;
 pub mod oauth;
 pub mod pool_models;
+pub mod provider_approval;
 pub mod provider_payments;
 pub mod provider_stats;
 pub mod providers;
@@ -42,8 +43,11 @@ pub mod tenant;
 pub mod quota;
 #[cfg(test)]
 mod tenant_tests;
+#[cfg(test)]
+mod approval_tenant_tests;
 pub mod usage;
 pub mod users;
+pub mod verification_view;
 pub mod handlers;
 pub mod server;
 pub mod ws;

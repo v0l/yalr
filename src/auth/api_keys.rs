@@ -156,20 +156,6 @@ pub struct CreateApiKeyRequest {
     pub expires_in_days: Option<i64>,
 }
 
-pub async fn delete_api_key(
-    Path(id): Path<i64>,
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<ApiKeyDeleteResponse>, (StatusCode, String)> {
-    state.db.delete_api_key(id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    Ok(Json(ApiKeyDeleteResponse {
-        deleted: true,
-        id,
-    }))
-}
-
 pub async fn disable_api_key(
     Path(id): Path<i64>,
     State(state): State<Arc<AppState>>,
@@ -205,7 +191,7 @@ pub async fn delete_my_api_key(
 ) -> Result<Json<ApiKeyDeleteResponse>, (StatusCode, String)> {
     let internal = |e: sqlx::Error| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
     let owned = state.db.list_api_keys_for_user(authenticated_user.user.id).await.map_err(internal)?;
-    if !owned.iter().any(|k| k.id == id) {
+    if !authenticated_user.user.is_admin && !owned.iter().any(|k| k.id == id) {
         return Err((StatusCode::NOT_FOUND, "API key not found".to_string()));
     }
     state.db.delete_api_key(id).await.map_err(internal)?;

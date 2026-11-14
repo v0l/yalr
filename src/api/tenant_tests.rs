@@ -9,15 +9,15 @@ use crate::db::{Database, NewProvider, Record};
 use crate::metrics::MetricsStore;
 use crate::state::AppState;
 
-struct Tenancy {
+pub(super) struct Tenancy {
     app: axum::Router,
-    state: Arc<AppState>,
-    alice: String,
-    bob: String,
-    admin: String,
+    pub(super) state: Arc<AppState>,
+    pub(super) alice: String,
+    pub(super) bob: String,
+    pub(super) admin: String,
 }
 
-async fn tenancy() -> Tenancy {
+pub(super) async fn tenancy() -> Tenancy {
     let db = Arc::new(Database::test().await);
     let metrics_store = Arc::new(MetricsStore::new(100));
     let router = Arc::new(crate::router::engine::Router::new((*metrics_store).clone(), db.clone()));
@@ -56,7 +56,7 @@ async fn tenancy() -> Tenancy {
 }
 
 impl Tenancy {
-    async fn call(&self, token: &str, method: &str, uri: &str, body: &str) -> (u16, Value) {
+    pub(super) async fn call(&self, token: &str, method: &str, uri: &str, body: &str) -> (u16, Value) {
         let response = self
             .app
             .clone()
@@ -76,11 +76,11 @@ impl Tenancy {
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::String(String::from_utf8_lossy(&bytes).into())))
     }
 
-    async fn get(&self, token: &str, uri: &str) -> (u16, Value) {
+    pub(super) async fn get(&self, token: &str, uri: &str) -> (u16, Value) {
         self.call(token, "GET", uri, "").await
     }
 
-    async fn alice_provider(&self) -> String {
+    pub(super) async fn alice_provider(&self) -> String {
         let (status, body) = self
             .call(
                 &self.alice,
@@ -101,10 +101,10 @@ fn slugs(body: &Value) -> Vec<String> {
 #[tokio::test]
 async fn a_regular_user_reaches_the_dashboard_pages_and_not_the_admin_ones() {
     let t = tenancy().await;
-    for uri in ["/api/providers", "/api/metrics", "/api/metrics/health", "/api/metrics/history", "/api/request-log", "/api/routing-configs", "/api/model-pricing", "/api/payments/balances", "/api/payments/transactions", "/api/payments/invoices"] {
+    for uri in ["/api/providers", "/api/api-keys", "/api/metrics", "/api/metrics/health", "/api/metrics/history", "/api/request-log", "/api/routing-configs", "/api/model-pricing", "/api/payments/balances", "/api/payments/transactions", "/api/payments/invoices"] {
         assert_eq!(t.get(&t.alice, uri).await.0, 200, "{uri}");
     }
-    for uri in ["/api/users", "/api/api-keys", "/api/config", "/api/payments/balances/1"] {
+    for uri in ["/api/users", "/api/config", "/api/payments/balances/1"] {
         assert_eq!(t.get(&t.alice, uri).await.0, 403, "{uri}");
     }
 }
