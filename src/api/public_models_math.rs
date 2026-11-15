@@ -1,7 +1,6 @@
 use serde::Serialize;
 
 use crate::db::{milli_per_unit, ModelPricingRow, RequestSample, SATS};
-use crate::payments::pricing::ResolvedPricing;
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Price {
@@ -32,9 +31,9 @@ fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
-pub fn price_of(row: &ModelPricingRow) -> Price {
+pub fn price_of(row: &ModelPricingRow) -> Option<Price> {
     if row.is_free {
-        return Price { currency: row.currency.clone(), input_per_1m: 0.0, output_per_1m: 0.0 };
+        return Some(Price { currency: row.currency.clone(), input_per_1m: 0.0, output_per_1m: 0.0 });
     }
     let (input, output) = if row.currency == SATS {
         (row.price_per_1m_input_sats, row.price_per_1m_output_sats)
@@ -42,23 +41,14 @@ pub fn price_of(row: &ModelPricingRow) -> Price {
         (row.price_per_1m_input_milli, row.price_per_1m_output_milli)
     };
     let scale = if row.currency == SATS { 1.0 } else { milli_per_unit(&row.currency) as f64 };
-    Price {
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    Some(Price {
         currency: row.currency.clone(),
         input_per_1m: input.unwrap_or(0) as f64 / scale,
         output_per_1m: output.unwrap_or(0) as f64 / scale,
-    }
-}
-
-pub fn price_of_resolved(resolved: &ResolvedPricing) -> Price {
-    if resolved.is_free {
-        return Price { currency: resolved.currency.clone(), input_per_1m: 0.0, output_per_1m: 0.0 };
-    }
-    let scale = if resolved.is_sats() { 1.0 } else { milli_per_unit(&resolved.currency) as f64 };
-    Price {
-        currency: resolved.currency.clone(),
-        input_per_1m: resolved.price_per_1m_input_sats as f64 / scale,
-        output_per_1m: resolved.price_per_1m_output_sats as f64 / scale,
-    }
+    })
 }
 
 pub fn price_ranges<'a>(prices: impl IntoIterator<Item = &'a Price>) -> Vec<ModelPriceRange> {

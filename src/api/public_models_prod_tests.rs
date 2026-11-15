@@ -154,15 +154,17 @@ async fn the_default_list_shows_served_names_with_traffic_and_hides_idle_pass_th
     let classify = model(&list, "classify");
     assert_eq!(classify["kind"], "routed");
     assert_eq!(classify["requests_24h"], 2);
-    assert_eq!(classify["price_ranges"][0]["currency"], "sats");
-    assert_eq!(classify["price_ranges"][0]["min_input"], 500.0);
-    assert_eq!(classify["price_ranges"][0]["max_output"], 900.0);
-    assert_eq!(classify["cheapest_provider"], "openrouter");
+    assert_eq!(classify["price_ranges"].as_array().unwrap().len(), 0);
+    assert!(classify["cheapest_provider"].is_null());
 
     let used = model(&list, "org/used");
     assert_eq!(used["requests_24h"], 1);
-    assert_eq!(used["price_ranges"][0]["min_input"], 500.0);
-    assert_eq!(model(&list, "org/Priced")["context_length"], 65_536);
+    assert_eq!(used["price_ranges"].as_array().unwrap().len(), 0);
+    let priced = model(&list, "org/Priced");
+    assert_eq!(priced["context_length"], 65_536);
+    assert_eq!(priced["price_ranges"][0]["min_input"], 700.0);
+    assert_eq!(priced["price_ranges"][0]["max_output"], 1_100.0);
+    assert!(!list.to_string().contains("500.0") && !list.to_string().contains("900.0"));
 }
 
 #[tokio::test]
@@ -171,7 +173,7 @@ async fn show_all_lists_every_pass_through_model() {
     let (_, all) = t.get("", "/api/public/models?all=true").await;
     assert_eq!(ids(&all), vec!["classify", "org/Priced", "org/idle", "org/used"]);
     assert_eq!(model(&all, "org/idle")["requests_24h"], 0);
-    assert_eq!(model(&all, "org/idle")["price_ranges"][0]["min_input"], 500.0);
+    assert_eq!(model(&all, "org/idle")["price_ranges"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -183,7 +185,7 @@ async fn short_name_traffic_is_credited_to_the_serving_provider() {
     assert_eq!(provider["name"], "openrouter");
     assert_eq!(provider["requests_24h"], 2);
     assert_eq!(provider["ttft_p50_ms"], 100.0);
-    assert_eq!(provider["price"]["input_per_1m"], 500.0);
+    assert!(provider["price"].is_null());
     assert_eq!(detail["fastest_provider"], "openrouter");
 }
 
@@ -209,7 +211,7 @@ async fn an_owner_sees_which_models_need_a_price_or_a_full_repo_id() {
 }
 
 #[tokio::test]
-async fn a_routed_config_with_no_live_backend_still_shows_its_price_and_traffic() {
+async fn a_routed_config_with_no_live_backend_still_shows_traffic_with_no_price() {
     let t = production().await;
     t.state
         .db
@@ -227,5 +229,46 @@ async fn a_routed_config_with_no_live_backend_still_shows_its_price_and_traffic(
     let found = model(&list, "qwen-short");
     assert_eq!(found["requests_24h"], 1);
     assert_eq!(found["provider_count"], 0);
-    assert_eq!(found["price_ranges"][0]["min_input"], 500.0);
+    assert_eq!(found["price_ranges"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn a_config_with_its_own_row_shows_that_price() {
+    let t = production().await;
+    t.state
+        .db
+        .create_routing_config(NewRoutingConfig {
+            name: "code".into(),
+            strategy: "round_robin".into(),
+            health_check_enabled: false,
+            health_check_interval_seconds: 30,
+            health_check_timeout_seconds: 5,
+        })
+        .await
+        .unwrap();
+    t.state
+        .db
+        .create_model_pricing(NewModelPricing {
+            model_name: "code",
+            is_advertised: true,
+            is_free: false,
+            price_per_1m_input_sats: Some(21),
+            price_per_1m_output_sats: Some(34),
+            price_per_1m_cache_read_sats: None,
+            price_per_1m_cache_write_sats: None,
+            price_per_request_sats: None,
+            context_window: None,
+            max_output_tokens: None,
+            owner_user_id: None,
+            provider_id: None,
+            currency: "sats",
+            fiat: FiatPrices::default(),
+        })
+        .await
+        .unwrap();
+    let (_, list) = t.get("", "/api/public/models").await;
+    let code = model(&list, "code");
+    assert_eq!(code["price_ranges"][0]["min_input"], 21.0);
+    assert_eq!(code["price_ranges"][0]["max_output"], 34.0);
+    assert_eq!(model(&list, "classify")["price_ranges"].as_array().unwrap().len(), 0);
 }

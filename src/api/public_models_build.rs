@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::api::public_models::{PublicModel, PublicModelDetail, PublicProvider, Snapshot};
-use crate::api::public_models_math::{latency, price_of, price_of_resolved, price_ranges, uptime_percent, Price};
+use crate::api::public_models_math::{latency, price_of, price_ranges, uptime_percent, Price};
 use crate::db::{Database, ModelPricingRow, Provider, RequestSample, VerificationRow, APPROVED};
 use crate::payments::pricing::PricingResolver;
 use crate::state::AppState;
@@ -133,7 +133,6 @@ struct Draft {
     context_length: Option<i32>,
     max_output_tokens: Option<i32>,
     members: Vec<(i64, Option<Price>)>,
-    explicit_price: bool,
     own_price: Option<Price>,
 }
 
@@ -145,7 +144,7 @@ fn finish(facts: &Facts, draft: Draft) -> PublicModelDetail {
         prices.extend(draft.own_price.clone());
     }
     let requests_24h: i64 = facts.counts.get(&draft.id.to_lowercase()).map_or(0, |by_provider| by_provider.values().sum());
-    let hidden = draft.kind == POOL && requests_24h == 0 && !draft.explicit_price;
+    let hidden = draft.kind == POOL && requests_24h == 0 && prices.is_empty();
     PublicModelDetail {
         model: PublicModel {
             id: draft.id,
@@ -174,20 +173,20 @@ fn modalities(mut list: Vec<String>) -> Vec<String> {
     list
 }
 
-async fn member_price(
-    resolver: Option<&Arc<PricingResolver>>,
-    facts: &Facts,
-    model: &str,
-    id: i64,
-    rows: &[ModelPricingRow],
-) -> Option<Price> {
-    if let (Some(resolver), Some(record)) = (resolver, facts.records.get(&id)) {
-        return Some(price_of_resolved(&resolver.resolve_served(model, Some(&record.name)).await));
+async fn set_prices(state: &AppState, model: &str) -> Vec<ModelPricingRow> {
+    let mut rows = state.db.list_model_pricings_by_name(model).await.unwrap_or_default();
+    if let Some((_, actual)) = model.split_once('/') {
+        let short = state.db.list_model_pricings_by_name(actual).await.unwrap_or_default();
+        rows.extend(short.into_iter().filter(|r| r.provider_id.is_some()));
     }
-    row_for(rows, id).map(price_of)
+    rows
 }
 
-async fn pool_drafts(state: &AppState, facts: &Facts, resolver: Option<&Arc<PricingResolver>>) -> Vec<Draft> {
+fn member_price(rows: &[ModelPricingRow], id: i64) -> Option<Price> {
+    row_for(rows, id).and_then(price_of)
+}
+
+async fn pool_drafts(state: &AppState) -> Vec<Draft> {
     let router = &state.config.router;
     if router.full_name_models().await.is_empty() {
         router.refresh_full_name_index().await;
@@ -199,11 +198,11 @@ async fn pool_drafts(state: &AppState, facts: &Facts, resolver: Option<&Arc<Pric
         if found.is_empty() {
             continue;
         }
-        let rows = state.db.list_model_pricings_by_name(&name).await.unwrap_or_default();
+        let rows = set_prices(state, &name).await;
         let (mut input, mut output, mut limits) = (Vec::new(), Vec::new(), Vec::new());
         let mut members = Vec::new();
         for (slug, id, _) in &found {
-            members.push((*id, member_price(resolver, facts, &name, *id, &rows).await));
+            members.push((*id, member_price(&rows, *id)));
             let Some(provider) = live.iter().find(|p| p.slug() == slug) else { continue };
             if let Some(listed) = provider.listed_modalities(&name).await {
                 input.extend(listed.input_modalities);
@@ -223,7 +222,6 @@ async fn pool_drafts(state: &AppState, facts: &Facts, resolver: Option<&Arc<Pric
             context_length: rows.iter().filter_map(|r| r.context_window).max().or(upstream.context_length.map(|v| v as i32)),
             max_output_tokens: rows.iter().filter_map(|r| r.max_output_tokens).max().or(upstream.max_output_tokens.map(|v| v as i32)),
             members,
-            explicit_price: !rows.is_empty(),
             own_price: None,
         });
     }
@@ -239,13 +237,14 @@ async fn routed_drafts(state: &AppState, facts: &Facts, resolver: Option<&Arc<Pr
                 continue;
             }
         }
+        let rows = set_prices(state, &rc.name).await;
         let mut members = Vec::new();
         for (provider, _) in state.config.router.candidate_backends(&rc.name).await {
             let Some(id) = facts.by_name.get(provider.name()).copied() else { continue };
             if members.iter().any(|(m, _)| *m == id) {
                 continue;
             }
-            members.push((id, member_price(resolver, facts, &rc.name, id, &[]).await));
+            members.push((id, member_price(&rows, id)));
         }
         let platform = state.db.get_model_pricing(&rc.name).await.ok().flatten();
         let upstream = crate::api::limits::routing_limits(state, &rc.name).await;
@@ -259,11 +258,7 @@ async fn routed_drafts(state: &AppState, facts: &Facts, resolver: Option<&Arc<Pr
             context_length: platform.as_ref().and_then(|r| r.context_window).or(upstream.context_length.map(|v| v as i32)),
             max_output_tokens: platform.as_ref().and_then(|r| r.max_output_tokens).or(upstream.max_output_tokens.map(|v| v as i32)),
             members,
-            explicit_price: true,
-            own_price: match resolver {
-                Some(resolver) => Some(price_of_resolved(&resolver.resolve(&rc.name).await)),
-                None => None,
-            },
+            own_price: platform.as_ref().and_then(price_of),
         });
     }
     drafts
@@ -275,7 +270,7 @@ pub async fn build(state: &AppState) -> Snapshot {
     let resolver = state.payments_state.as_ref().map(|p| p.pricing_resolver.clone());
     let mut drafts = routed_drafts(state, &facts, resolver.as_ref()).await;
     let routed: std::collections::HashSet<String> = drafts.iter().map(|d| d.id.to_lowercase()).collect();
-    drafts.extend(pool_drafts(state, &facts, resolver.as_ref()).await.into_iter().filter(|d| !routed.contains(&d.id.to_lowercase())));
+    drafts.extend(pool_drafts(state).await.into_iter().filter(|d| !routed.contains(&d.id.to_lowercase())));
     let mut models: Vec<PublicModelDetail> = drafts.into_iter().map(|d| finish(&facts, d)).collect();
     models.sort_by(|a, b| a.model.id.cmp(&b.model.id));
     Snapshot { models }
