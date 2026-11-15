@@ -236,24 +236,54 @@ mod tests {
         assert!(!shown.contains("nostr_"));
     }
 
+    async fn ws_relay(drop_after_handshake: bool) -> String {
+        use axum::extract::ws::WebSocketUpgrade;
+        use axum::routing::get;
+        let app = axum::Router::new().route(
+            "/",
+            get(move |ws: WebSocketUpgrade| async move {
+                ws.on_upgrade(move |socket| async move {
+                    if drop_after_handshake {
+                        drop(socket);
+                    } else {
+                        let _socket = socket;
+                        tokio::time::sleep(Duration::from_secs(600)).await;
+                    }
+                })
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        url
+    }
+
     #[tokio::test]
     async fn a_silent_relay_does_not_hide_a_profile_on_another() {
-        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let silent_url = format!("ws://{}", silent.local_addr().unwrap());
-        tokio::spawn(async move {
-            let mut held = Vec::new();
-            while let Ok((socket, _)) = silent.accept().await {
-                held.push(socket);
-            }
-        });
+        let silent_url = ws_relay(false).await;
+        let resetting_url = ws_relay(true).await;
         let refused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let refused_url = format!("ws://{}", refused.local_addr().unwrap());
         drop(refused);
         let relay = MockRelay::run().await.unwrap();
         let keys = Keys::generate();
         publish(&relay, &keys, r#"{"display_name":"Kieran"}"#).await;
+        let upstream = relay.url().await.to_string().trim_start_matches("ws://").trim_end_matches('/').to_string();
+        let slow = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let slow_url = format!("ws://{}", slow.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = slow.accept().await {
+                let upstream = upstream.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    if let Ok(mut target) = tokio::net::TcpStream::connect(upstream).await {
+                        let _ = tokio::io::copy_bidirectional(&mut socket, &mut target).await;
+                    }
+                });
+            }
+        });
 
-        let relays = [silent_url, refused_url, relay.url().await.to_string()];
+        let relays = [resetting_url, silent_url, refused_url, slow_url];
         let profile = fetch(&relays, &keys.public_key().to_hex()).await.unwrap();
         assert_eq!(profile.shown_name().as_deref(), Some("Kieran"));
     }
@@ -277,8 +307,10 @@ mod tests {
         assert!(db.claim_profile_refresh(user.id, 24).await.unwrap());
         refresh(&db, &[relay.url().await.to_string()], &user).await;
         assert!(db.nostr_users_needing_profile(24).await.unwrap().is_empty());
-        db.defer_profile_refresh(user.id, 24, -1).await.unwrap();
-        assert_eq!(db.nostr_users_needing_profile(24).await.unwrap().len(), 1);
+        let stamped = db.get_user_by_id(user.id).await.unwrap().unwrap().profile_fetched_at.unwrap();
+        let wait = chrono::Duration::hours(24) - (chrono::Utc::now() - stamped);
+        assert!(wait <= chrono::Duration::minutes(16), "next try in {wait}");
+        assert!(wait > chrono::Duration::minutes(10), "next try in {wait}");
     }
 
     #[tokio::test]
