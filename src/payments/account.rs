@@ -35,6 +35,7 @@ pub struct CurrencyBalance {
 
 #[derive(Serialize)]
 pub struct Account {
+    pub display_name: String,
     pub balance_msat: i64,
     pub lifetime_deposited_msat: i64,
     pub balances: Vec<CurrencyBalance>,
@@ -180,6 +181,7 @@ pub async fn account(
         .collect();
 
     Json(Account {
+        display_name: authenticated.user.shown_name(),
         balance_msat: balance.as_ref().map_or(0, |b| b.balance_msat),
         lifetime_deposited_msat: balance.as_ref().map_or(0, |b| b.lifetime_deposited_msat),
         balances,

@@ -26,6 +26,7 @@ export interface AccountBalance {
 }
 
 export interface AccountData {
+  display_name: string
   balance_msat: number
   lifetime_deposited_msat: number
   balances: AccountBalance[]

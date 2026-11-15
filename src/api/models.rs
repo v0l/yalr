@@ -205,6 +205,10 @@ fn anonymous_viewer() -> crate::db::User {
         is_admin: false,
         created_at: Default::default(),
         updated_at: Default::default(),
+        display_name: None,
+        picture: None,
+        nip05: None,
+        profile_fetched_at: None,
     }
 }
 

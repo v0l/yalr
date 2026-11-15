@@ -45,6 +45,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         yalr::payments::anonymous::spawn_unpaid_pruner(config.db.clone());
     }
 
+    yalr::discovery::profile::spawn_refresher(
+        config.db.clone(),
+        yalr::discovery::relays(config.discovery_config.as_ref()),
+    );
+
     yalr::verify::spawn_scheduler(config.db.clone(), config.router.clone());
 
     let prune_db = config.db.clone();

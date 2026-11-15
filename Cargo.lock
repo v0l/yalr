@@ -2338,6 +2338,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostr-relay-builder"
+version = "0.44.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08ed09e8363503c6f464087b530a1f43cf68be6292bd4928b5ea1141b03dc11c"
+dependencies = [
+ "async-utility",
+ "async-wsocket",
+ "atomic-destructor",
+ "hex",
+ "negentropy",
+ "nostr",
+ "nostr-database",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nostr-relay-pool"
 version = "0.44.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5151,6 +5168,7 @@ dependencies = [
  "indexmap",
  "lightning-invoice",
  "nostr",
+ "nostr-relay-builder",
  "nostr-sdk",
  "payments-rs",
  "rand 0.8.6",

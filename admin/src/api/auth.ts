@@ -4,12 +4,14 @@ import { API_BASE_URL } from './client'
 export interface Session {
   token: string
   username: string
+  displayName?: string
   isAdmin: boolean
 }
 
 interface SessionResponse {
   token: string
   username: string
+  display_name?: string
   is_admin: boolean
 }
 
@@ -25,12 +27,12 @@ declare global {
 }
 
 function toSession(r: SessionResponse): Session {
-  return { token: r.token, username: r.username, isAdmin: r.is_admin }
+  return { token: r.token, username: r.username, displayName: r.display_name, isAdmin: r.is_admin }
 }
 
 export function storeSession(session: Session) {
   localStorage.setItem('token', session.token)
-  localStorage.setItem('user', JSON.stringify({ username: session.username, isAdmin: session.isAdmin }))
+  localStorage.setItem('user', JSON.stringify({ username: session.username, displayName: session.displayName, isAdmin: session.isAdmin }))
 }
 
 async function post(path: string, init: RequestInit): Promise<Session> {

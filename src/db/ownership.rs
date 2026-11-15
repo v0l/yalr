@@ -28,11 +28,7 @@ impl Database {
     }
 
     pub async fn provider_owner_username(&self, owner_user_id: i64) -> Result<Option<String>, sqlx::Error> {
-        sqlx::query_scalar("SELECT COALESCE(username, external_id) FROM users WHERE id = ?")
-            .bind(owner_user_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map(|name: Option<Option<String>>| name.flatten())
+        Ok(self.get_user_by_id(owner_user_id).await?.map(|u| u.shown_name()).filter(|n| !n.is_empty()))
     }
 
     pub async fn create_owned_routing_config(

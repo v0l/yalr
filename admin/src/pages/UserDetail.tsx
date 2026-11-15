@@ -131,7 +131,7 @@ export default function UserDetail() {
           <Button variant="ghost" size="sm" className="shrink-0 text-muted-foreground hover:text-foreground" onClick={() => navigate('/users')}><ArrowLeftIcon className="size-4" /></Button>
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="font-display text-[20px] tracking-[0.04em] truncate">{user.username || 'USER DETAILS'}</h1>
+              <h1 className="font-display text-[20px] tracking-[0.04em] truncate">{user.display_name || user.username || 'USER DETAILS'}</h1>
               <Badge className="font-mono text-[10px] uppercase tracking-wider bg-secondary text-muted-foreground border-border">{user.user_type}</Badge>
               {user.is_admin && <Badge className="font-mono text-[10px] uppercase tracking-wider bg-warning/15 text-warning border-warning/30">ADMIN</Badge>}
             </div>

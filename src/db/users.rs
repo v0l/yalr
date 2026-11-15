@@ -68,6 +68,51 @@ impl Database {
         self.get_user_by_external_id(pubkey, UserType::Nostr).await?.ok_or(sqlx::Error::RowNotFound)
     }
 
+    pub async fn claim_profile_refresh(&self, id: i64, max_age_hours: i64) -> Result<bool, sqlx::Error> {
+        let claimed = sqlx::query(
+            "UPDATE users SET profile_fetched_at = UTC_TIMESTAMP(3) WHERE id = ? AND user_type = ? \
+             AND (profile_fetched_at IS NULL OR profile_fetched_at < UTC_TIMESTAMP(3) - INTERVAL ? HOUR)",
+        )
+        .bind(id)
+        .bind(UserType::Nostr as u16)
+        .bind(max_age_hours)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(claimed == 1)
+    }
+
+    pub async fn nostr_users_needing_profile(&self, max_age_hours: i64) -> Result<Vec<User>, sqlx::Error> {
+        sqlx::query_as::<_, User>(
+            "SELECT * FROM users WHERE user_type = ? AND external_id IS NOT NULL \
+             AND (profile_fetched_at IS NULL OR profile_fetched_at < UTC_TIMESTAMP(3) - INTERVAL ? HOUR)",
+        )
+        .bind(UserType::Nostr as u16)
+        .bind(max_age_hours)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn store_user_profile(
+        &self,
+        id: i64,
+        display_name: Option<&str>,
+        picture: Option<&str>,
+        nip05: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE users SET display_name = ?, picture = ?, nip05 = ?, profile_fetched_at = UTC_TIMESTAMP(3) WHERE id = ?",
+        )
+        .bind(display_name)
+        .bind(picture)
+        .bind(nip05)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        self.invalidate_auth_cache();
+        Ok(())
+    }
+
     pub async fn user_exists(&self, username: &str) -> Result<bool, sqlx::Error> {
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE username = ?)")
             .bind(username)

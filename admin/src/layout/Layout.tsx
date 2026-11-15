@@ -101,11 +101,11 @@ export default function Layout() {
           {/* User info */}
           <div className="flex items-center gap-3 px-3 py-2">
             <div className="flex items-center justify-center w-7 h-7 bg-surface border border-border text-[11px] font-mono font-bold text-brand">
-              {(user.username || 'U')[0].toUpperCase()}
+              {(user.displayName || user.username || 'U')[0].toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-[12px] font-mono font-medium text-foreground truncate">
-                {user.username || 'User'}
+                {user.displayName || user.username || 'User'}
               </div>
               <div className="text-[10px] text-muted-foreground font-mono uppercase tracking-wider">
                 {user.isAdmin ? 'ADMIN' : 'USER'}

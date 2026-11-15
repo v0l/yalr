@@ -272,6 +272,30 @@ pub struct User {
     pub is_admin: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub display_name: Option<String>,
+    pub picture: Option<String>,
+    pub nip05: Option<String>,
+    pub profile_fetched_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl User {
+    pub fn shown_name(&self) -> String {
+        if let Some(name) = self.display_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            return name.to_string();
+        }
+        if self.user_type == UserType::Nostr {
+            if let Some(short) = self.external_id.as_deref().and_then(short_npub) {
+                return short;
+            }
+        }
+        self.username.clone().or_else(|| self.external_id.clone()).unwrap_or_default()
+    }
+}
+
+pub fn short_npub(pubkey_hex: &str) -> Option<String> {
+    use nostr::ToBech32;
+    let npub = nostr::PublicKey::from_hex(pubkey_hex).ok()?.to_bech32().ok()?;
+    Some(format!("{}…{}", &npub[..9], &npub[npub.len() - 4..]))
 }
 
 #[derive(Clone, Debug)]

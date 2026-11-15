@@ -105,7 +105,7 @@ impl Database {
     pub async fn list_all_user_balances(&self, limit: i64) -> Result<Vec<UserBalanceWithUsername>, sqlx::Error> {
         sqlx::query_as::<_, UserBalanceWithUsername>(
             "SELECT ub.id, ub.user_id, ub.balance_msat, ub.lifetime_deposited_msat, ub.created_at, ub.updated_at, \
-             COALESCE(u.username, u.external_id, CONCAT('user-', ub.user_id)) AS username \
+             COALESCE(NULLIF(u.display_name, ''), u.username, u.external_id, CONCAT('user-', ub.user_id)) AS username \
              FROM user_balances ub LEFT JOIN users u ON ub.user_id = u.id \
              ORDER BY ub.balance_msat DESC LIMIT ?",
         )
@@ -117,7 +117,7 @@ impl Database {
     pub async fn list_user_balance_with_username(&self, user_id: i64) -> Result<Vec<UserBalanceWithUsername>, sqlx::Error> {
         sqlx::query_as::<_, UserBalanceWithUsername>(
             "SELECT ub.id, ub.user_id, ub.balance_msat, ub.lifetime_deposited_msat, ub.created_at, ub.updated_at, \
-             COALESCE(u.username, u.external_id, CONCAT('user-', ub.user_id)) AS username \
+             COALESCE(NULLIF(u.display_name, ''), u.username, u.external_id, CONCAT('user-', ub.user_id)) AS username \
              FROM user_balances ub LEFT JOIN users u ON ub.user_id = u.id WHERE ub.user_id = ?",
         )
         .bind(user_id)

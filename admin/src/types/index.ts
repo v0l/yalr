@@ -425,6 +425,9 @@ export interface ProviderListItem {
 export interface User {
   id: number
   username: string | null
+  display_name?: string
+  picture?: string | null
+  nip05?: string | null
   external_id: string | null
   user_type: 'internal' | 'nostr' | 'oauth'
   is_admin: boolean

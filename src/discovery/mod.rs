@@ -1,5 +1,6 @@
 pub mod event;
 pub mod peers;
+pub mod profile;
 
 use std::sync::Arc;
 use std::time::Duration;

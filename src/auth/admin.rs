@@ -131,6 +131,7 @@ pub struct LoginRequest {
 pub struct LoginResponse {
     pub token: String,
     pub username: String,
+    pub display_name: String,
     pub is_admin: bool,
 }
 
@@ -138,6 +139,7 @@ pub struct LoginResponse {
 pub struct AuthStatusResponse {
     pub authenticated: bool,
     pub username: Option<String>,
+    pub display_name: Option<String>,
     pub is_admin: Option<bool>,
 }
 
@@ -183,6 +185,7 @@ pub async fn login(
 
     Ok(Json(LoginResponse {
         token: session_id,
+        display_name: user.shown_name(),
         username: user.username.unwrap(),
         is_admin: user.is_admin,
     }))
@@ -217,8 +220,13 @@ pub async fn auth_status(
 
     if let Some(token) = session_id {
         if let Some(session) = session_store.validate(token).await {
+            let display_name = match state.db.get_user_by_username(&session.username).await {
+                Ok(Some(user)) => Some(user.shown_name()),
+                _ => None,
+            };
             return Json(AuthStatusResponse {
                 authenticated: true,
+                display_name,
                 username: Some(session.username),
                 is_admin: Some(session.is_admin),
             });
@@ -227,6 +235,7 @@ pub async fn auth_status(
 
     Json(AuthStatusResponse {
         authenticated: false,
+        display_name: None,
         username: None,
         is_admin: None,
     })
@@ -323,11 +332,18 @@ async fn nostr_user(
     path: &str,
 ) -> Result<User, StatusCode> {
     let pubkey = verified_pubkey(state, header, method, path)?;
-    state
+    let user = state
         .db
         .get_or_create_user_by_nostr_pubkey(&pubkey)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    crate::auth::admin::refresh_profile(state, &user);
+    Ok(user)
+}
+
+pub fn refresh_profile(state: &Arc<AppState>, user: &User) {
+    let relays = crate::discovery::relays(state.config.discovery_config.as_ref());
+    crate::discovery::profile::refresh_in_background(state.db.clone(), relays, user.clone());
 }
 
 pub async fn auth_middleware(

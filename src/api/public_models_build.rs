@@ -36,7 +36,8 @@ async fn gather(db: &Database, now_ms: i64) -> Facts {
     let mut owners = HashMap::new();
     for owner in records.values().filter_map(|p| p.owner_user_id) {
         if let Ok(Some(user)) = db.get_user_by_id(owner).await {
-            if let Some(name) = user.username {
+            let name = user.shown_name();
+            if !name.is_empty() {
                 owners.insert(owner, name);
             }
         }

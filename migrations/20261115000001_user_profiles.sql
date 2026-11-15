@@ -1,0 +1,5 @@
+ALTER TABLE users
+    ADD COLUMN display_name VARCHAR(100) NULL,
+    ADD COLUMN picture VARCHAR(512) NULL,
+    ADD COLUMN nip05 VARCHAR(255) NULL,
+    ADD COLUMN profile_fetched_at DATETIME(3) NULL;

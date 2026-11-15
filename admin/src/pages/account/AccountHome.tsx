@@ -102,6 +102,7 @@ export default function AccountHome({ accountKey: key, onSignOut }: { accountKey
         <div className="min-w-0">
           <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">API key</p>
           <p className="truncate font-mono text-[13px] text-foreground">{keyHint}</p>
+          {data && <p className="truncate font-mono text-[11px] text-muted-foreground">{data.display_name}</p>}
         </div>
         <Button variant="outline" size="sm" onClick={copyKey} className="h-8 border-border font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
           {copied ? <CheckIcon className="size-3 text-brand" /> : <CopyIcon className="size-3" />} Copy key

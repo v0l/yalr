@@ -141,7 +141,7 @@ export default function Users() {
                 users.map(user => (
                   <tr key={user.id} className="border-b border-border/50 hover:bg-surface transition-colors">
                     <td className="px-4 py-3 font-mono text-[13px] font-medium">
-                      {user.username || <span className="text-muted-foreground">N/A</span>}
+                      {user.display_name || user.username || <span className="text-muted-foreground">N/A</span>}
                     </td>
                     <td className="px-4 py-3 font-mono text-[12px] text-muted-foreground truncate max-w-48" title={user.external_id || ''}>
                       {user.external_id || <span className="text-muted-foreground">N/A</span>}

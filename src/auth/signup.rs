@@ -132,7 +132,7 @@ pub async fn register(
             other => internal(other),
         })?;
     let token = state.session_store.create(&username, false, SESSION_SECS).await;
-    Ok(Json(LoginResponse { token, username, is_admin: user.is_admin }))
+    Ok(Json(LoginResponse { token, display_name: user.shown_name(), username, is_admin: user.is_admin }))
 }
 
 pub async fn nostr_login(
@@ -153,9 +153,10 @@ pub async fn nostr_login(
         return Err(registration_closed());
     }
     let user = state.db.get_or_create_user_by_nostr_pubkey(&pubkey).await.map_err(internal)?;
+    crate::auth::admin::refresh_profile(&state, &user);
     let username = user.username.clone().unwrap_or_default();
     let token = state.session_store.create(&username, user.is_admin, SESSION_SECS).await;
-    Ok(Json(LoginResponse { token, username, is_admin: user.is_admin }))
+    Ok(Json(LoginResponse { token, username, display_name: user.shown_name(), is_admin: user.is_admin }))
 }
 
 #[cfg(test)]

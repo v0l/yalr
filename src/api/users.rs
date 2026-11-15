@@ -12,6 +12,9 @@ use std::collections::HashMap;
 pub struct UserResponse {
     pub id: i64,
     pub username: Option<String>,
+    pub display_name: String,
+    pub picture: Option<String>,
+    pub nip05: Option<String>,
     pub external_id: Option<String>,
     pub user_type: String,
     pub is_admin: bool,
@@ -107,6 +110,9 @@ pub async fn list_users(
             balance_msat: balances.get(&u.id).copied().unwrap_or(0),
             user: UserResponse {
             id: u.id,
+            display_name: u.shown_name(),
+            picture: u.picture,
+            nip05: u.nip05,
             username: u.username,
             external_id: u.external_id,
             user_type: match u.user_type {
@@ -186,6 +192,9 @@ pub async fn create_user(
 
     let user_response = UserResponse {
         id: user.id,
+        display_name: user.shown_name(),
+        picture: user.picture,
+        nip05: user.nip05,
         username: user.username,
         external_id: user.external_id,
         user_type: match user.user_type {
@@ -259,6 +268,9 @@ pub async fn update_user(
 
     let user_response = UserResponse {
         id: updated_user.id,
+        display_name: updated_user.shown_name(),
+        picture: updated_user.picture,
+        nip05: updated_user.nip05,
         username: updated_user.username,
         external_id: updated_user.external_id,
         user_type: match updated_user.user_type {
@@ -307,6 +319,9 @@ pub async fn get_user(
 
     let user_response = UserResponse {
         id: user.id,
+        display_name: user.shown_name(),
+        picture: user.picture,
+        nip05: user.nip05,
         username: user.username,
         external_id: user.external_id,
         user_type: match user.user_type {
