@@ -4,7 +4,8 @@ import { API_BASE_URL } from './client'
 export interface AccountHistoryEntry {
   id: number
   kind: 'deposit' | 'usage' | 'withdrawal' | 'adjustment'
-  amount_msat: number
+  amount_milli: number
+  currency: string
   detail: string | null
   created_at: string
 }
@@ -18,9 +19,16 @@ export interface AccountInvoice {
   paid_at: string | null
 }
 
+export interface AccountBalance {
+  currency: string
+  balance_milli: number
+  lifetime_deposited_milli: number
+}
+
 export interface AccountData {
   balance_msat: number
   lifetime_deposited_msat: number
+  balances: AccountBalance[]
   history: AccountHistoryEntry[]
   invoices: AccountInvoice[]
 }

@@ -9,7 +9,8 @@ import AccountNav from './AccountNav'
 import AccountShell from './AccountShell'
 import AmountPicker from './AmountPicker'
 import PayInvoice from './PayInvoice'
-import { sats, when } from './format'
+import { formatMilli } from '@/lib/money'
+import { when } from './format'
 
 const REFRESH_MS = 30_000
 
@@ -82,19 +83,19 @@ export default function AccountHome({ accountKey: key, onSignOut }: { accountKey
         </Alert>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div className="panel p-4 sm:col-span-2">
-          <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Balance</p>
-          {data ? (
-            <p className="font-mono text-[32px] font-bold leading-none tabular-nums text-brand">{sats(data.balance_msat)}</p>
-          ) : <Skeleton className="h-8 w-48 bg-secondary" />}
-        </div>
-        <div className="panel p-4">
-          <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Total deposited</p>
-          {data ? (
-            <p className="font-mono text-[20px] tabular-nums text-muted-foreground">{sats(data.lifetime_deposited_msat)}</p>
-          ) : <Skeleton className="h-6 w-24 bg-secondary" />}
-        </div>
+      <div className="space-y-4">
+        {data ? data.balances.map(b => (
+          <div key={b.currency} className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div className="panel p-4 sm:col-span-2">
+              <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Balance ({b.currency})</p>
+              <p className="font-mono text-[32px] font-bold leading-none tabular-nums text-brand">{formatMilli(b.balance_milli, b.currency)}</p>
+            </div>
+            <div className="panel p-4">
+              <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Total deposited</p>
+              <p className="font-mono text-[20px] tabular-nums text-muted-foreground">{formatMilli(b.lifetime_deposited_milli, b.currency)}</p>
+            </div>
+          </div>
+        )) : <Skeleton className="h-20 w-full bg-secondary" />}
       </div>
 
       <div className="panel flex items-center justify-between gap-3 p-4">
@@ -154,13 +155,13 @@ export default function AccountHome({ accountKey: key, onSignOut }: { accountKey
                       <td className="whitespace-nowrap px-4 py-2.5 font-mono text-[11px] tabular-nums text-muted-foreground">{when(h.created_at)}</td>
                       <td className="px-4 py-2.5 font-mono text-[12px] text-foreground">
                         <span className="inline-flex items-center gap-1.5">
-                          {h.amount_msat >= 0 ? <ArrowDownLeftIcon className="size-3 text-brand" /> : <ArrowUpRightIcon className="size-3 text-muted-foreground" />}
+                          {h.amount_milli >= 0 ? <ArrowDownLeftIcon className="size-3 text-brand" /> : <ArrowUpRightIcon className="size-3 text-muted-foreground" />}
                           <span className="capitalize">{h.kind}</span>
                           {h.detail && <span className="text-muted-foreground">{h.detail}</span>}
                         </span>
                       </td>
-                      <td className={`whitespace-nowrap px-4 py-2.5 text-right font-mono text-[12px] tabular-nums ${h.amount_msat >= 0 ? 'text-brand' : 'text-foreground'}`}>
-                        {h.amount_msat >= 0 ? '+' : ''}{sats(h.amount_msat)}
+                      <td className={`whitespace-nowrap px-4 py-2.5 text-right font-mono text-[12px] tabular-nums ${h.amount_milli >= 0 ? 'text-brand' : 'text-foreground'}`}>
+                        {h.amount_milli >= 0 ? '+' : ''}{formatMilli(h.amount_milli, h.currency)}
                       </td>
                     </tr>
                   ))}

@@ -20,15 +20,24 @@ pub struct HistoryQuery {
 pub struct HistoryEntry {
     pub id: i64,
     pub kind: &'static str,
-    pub amount_msat: i64,
+    pub amount_milli: i64,
+    pub currency: String,
     pub detail: Option<String>,
     pub created_at: crate::db::Timestamp,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct CurrencyBalance {
+    pub currency: String,
+    pub balance_milli: i64,
+    pub lifetime_deposited_milli: i64,
 }
 
 #[derive(Serialize)]
 pub struct Account {
     pub balance_msat: i64,
     pub lifetime_deposited_msat: i64,
+    pub balances: Vec<CurrencyBalance>,
     pub history: Vec<HistoryEntry>,
     pub invoices: Vec<InvoiceEntry>,
 }
@@ -41,6 +50,10 @@ pub struct InvoiceEntry {
     pub status: String,
     pub created_at: crate::db::Timestamp,
     pub paid_at: Option<crate::db::Timestamp>,
+}
+
+fn row_amount(row: &BalanceTransactionRow) -> i64 {
+    if row.currency == "sats" { row.amount_msat } else { row.amount_milli }
 }
 
 fn kind(tx_type: &str) -> &'static str {
@@ -61,14 +74,15 @@ pub fn fold_history(rows: Vec<BalanceTransactionRow>, models: &HashMap<String, S
         let request = row.reference_id.clone().filter(|r| k == "usage" && r.starts_with("req-"));
         if let Some(rid) = request {
             if let Some(&i) = by_request.get(&rid) {
-                out[i].amount_msat += row.amount_msat;
+                out[i].amount_milli += row_amount(&row);
                 continue;
             }
             by_request.insert(rid.clone(), out.len());
             out.push(HistoryEntry {
                 id: row.id,
                 kind: k,
-                amount_msat: row.amount_msat,
+                amount_milli: row_amount(&row),
+                currency: row.currency.clone(),
                 detail: models.get(&rid).cloned(),
                 created_at: row.created_at,
             });
@@ -84,18 +98,37 @@ pub fn fold_history(rows: Vec<BalanceTransactionRow>, models: &HashMap<String, S
         out.push(HistoryEntry {
             id: row.id,
             kind: k,
-            amount_msat: row.amount_msat,
+            amount_milli: row_amount(&row),
+            currency: row.currency.clone(),
             detail,
             created_at: row.created_at,
         });
     }
-    out.retain(|e| e.amount_msat != 0);
+    out.retain(|e| e.amount_milli != 0);
     out.reverse();
     out
 }
 
 fn error(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
+}
+
+async fn all_balances(
+    state: &AppState,
+    user_id: i64,
+    sats: Option<&crate::db::UserBalanceRow>,
+) -> Result<Vec<CurrencyBalance>, sqlx::Error> {
+    let mut out = vec![CurrencyBalance {
+        currency: "sats".into(),
+        balance_milli: sats.map_or(0, |b| b.balance_msat),
+        lifetime_deposited_milli: sats.map_or(0, |b| b.lifetime_deposited_msat),
+    }];
+    for (currency, balance_milli, lifetime_deposited_milli) in state.db.list_currency_balances(user_id).await? {
+        if currency != "sats" {
+            out.push(CurrencyBalance { currency, balance_milli, lifetime_deposited_milli });
+        }
+    }
+    Ok(out)
 }
 
 pub async fn account(
@@ -114,6 +147,10 @@ pub async fn account(
         Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to read balance"),
     };
     let _ = payments;
+    let balances = match all_balances(&state, user_id, balance.as_ref()).await {
+        Ok(b) => b,
+        Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to read balance"),
+    };
     let rows = match state.db.get_user_transactions(user_id, limit * 2).await {
         Ok(r) => r,
         Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to read history"),
@@ -145,6 +182,7 @@ pub async fn account(
     Json(Account {
         balance_msat: balance.as_ref().map_or(0, |b| b.balance_msat),
         lifetime_deposited_msat: balance.as_ref().map_or(0, |b| b.lifetime_deposited_msat),
+        balances,
         history,
         invoices,
     })
@@ -179,8 +217,8 @@ mod tests {
         let models = HashMap::from([("req-a".to_string(), "qwen".to_string())]);
         let h = fold_history(rows, &models);
         assert_eq!(h.len(), 2);
-        assert_eq!((h[0].kind, h[0].amount_msat, h[0].detail.as_deref()), ("usage", -1000, Some("qwen")));
-        assert_eq!((h[1].kind, h[1].amount_msat), ("deposit", 100_000));
+        assert_eq!((h[0].kind, h[0].amount_milli, h[0].detail.as_deref()), ("usage", -1000, Some("qwen")));
+        assert_eq!((h[1].kind, h[1].amount_milli), ("deposit", 100_000));
     }
 
     #[test]

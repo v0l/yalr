@@ -286,7 +286,7 @@ async fn account_endpoint_shows_balance_history_and_invoices() {
     assert_eq!(body["balance_msat"], 99_000);
     assert_eq!(body["lifetime_deposited_msat"], 100_000);
     assert_eq!(body["history"][0]["kind"], "usage");
-    assert_eq!(body["history"][0]["amount_msat"], -1000);
+    assert_eq!(body["history"][0]["amount_milli"], -1000);
     assert_eq!(body["history"][0]["detail"], "qwen");
     assert_eq!(body["history"][1]["kind"], "deposit");
     assert_eq!(body["invoices"][0]["status"], "paid");
@@ -294,6 +294,25 @@ async fn account_endpoint_shows_balance_history_and_invoices() {
 
     let (code, _) = get(&app, "/v1/account", None).await;
     assert_eq!(code, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn account_endpoint_reports_every_currency_balance() {
+    let (state, app) = app().await;
+    let secret = state.db.server_secret().await.unwrap();
+    let public_id = random_hex();
+    let user_id = create_account(&state.db, &secret, &public_id).await.unwrap();
+    let key = derive_api_key(&secret, &public_id);
+    state.db.credit_currency(user_id, "usd", 250_000, "deposit", "usd-dep", 250_000).await.unwrap();
+    state.db.credit_currency(user_id, "usd", -50_000, "usage", "req-usd", 0).await.unwrap();
+
+    let (code, body) = get(&app, "/v1/account", Some(&key)).await;
+    assert_eq!(code, StatusCode::OK);
+    let usd = body["balances"].as_array().unwrap().iter().find(|b| b["currency"] == "usd").unwrap();
+    assert_eq!(usd["balance_milli"], 200_000);
+    assert_eq!(usd["lifetime_deposited_milli"], 250_000);
+    assert_eq!(body["history"][0]["currency"], "usd");
+    assert_eq!(body["history"][0]["amount_milli"], -50_000);
 }
 
 #[tokio::test]
