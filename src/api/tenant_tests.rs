@@ -42,6 +42,7 @@ pub(super) async fn tenancy() -> Tenancy {
         model_cache: Default::default(),
         modality_cache: Default::default(),
         limits_cache: Default::default(),
+        public_cache: Default::default(),
     });
     for (name, admin) in [("alice", false), ("bob", false), ("root", true)] {
         state.db.add_test_user(name, admin).await;

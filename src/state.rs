@@ -20,4 +20,5 @@ pub struct AppState {
     /// Cached input modalities per provider/model, for the models list.
     pub modality_cache: crate::api::model_cache::ModalityCache,
     pub limits_cache: crate::api::model_cache::LimitsCache,
+    pub public_cache: crate::api::public_models::PublicCache,
 }

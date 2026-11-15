@@ -550,6 +550,10 @@ impl Router {
         );
 
         let count = all_providers.len();
+        let provider_ids: Arc<HashMap<String, i64>> = Arc::new(
+            self.db.list_providers().await.unwrap_or_default().into_iter().map(|p| (p.name, p.id)).collect(),
+        );
+        let history_db = self.db.clone();
         let router = HealthCheckRouter {
             metrics_store: self.metrics_store.clone(),
         };
@@ -572,6 +576,8 @@ impl Router {
                                 let provider_clone = provider.clone();
                                 let router_clone = router.clone();
                                 let timeout_duration = timeout;
+                                let provider_ids = provider_ids.clone();
+                                let history_db = history_db.clone();
 
                                 tokio::spawn(async move {
                                     // Fetch and emit balance snapshot with timeout
@@ -612,6 +618,12 @@ impl Router {
 
                                     // Health check with timeout
                                     let result = tokio::time::timeout(timeout_duration, provider_clone.health_check()).await;
+                                    if let Some(id) = provider_ids.get(&provider_name) {
+                                        let healthy = matches!(result, Ok(Ok(true)));
+                                        let _ = history_db
+                                            .record_health_check(*id, healthy, chrono::Utc::now().timestamp_millis())
+                                            .await;
+                                    }
                                     match result {
                                         Ok(Ok(true)) => {
                                             let was_down = !router_clone.metrics_store.is_provider_available(&provider_name).await;

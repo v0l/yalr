@@ -79,6 +79,7 @@ async fn serve_router(upstream: &str) -> (String, String) {
         model_cache: Default::default(),
         modality_cache: Default::default(),
         limits_cache: Default::default(),
+        public_cache: Default::default(),
     });
     state
         .db

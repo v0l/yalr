@@ -141,6 +141,7 @@ async fn harness(providers: Vec<Arc<Scripted>>) -> Harness {
         model_cache: Default::default(),
         modality_cache: Default::default(),
         limits_cache: Default::default(),
+        public_cache: Default::default(),
     });
     let user = db.add_test_user("buyer", false).await;
     db.create_api_key(NewApiKey {

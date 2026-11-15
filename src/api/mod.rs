@@ -28,6 +28,10 @@ pub mod pool_models;
 pub mod provider_approval;
 pub mod provider_payments;
 pub mod provider_stats;
+pub mod public_models;
+mod public_models_math;
+#[cfg(test)]
+mod public_models_tests;
 pub mod providers;
 pub mod request_log;
 pub mod responses;

@@ -21,6 +21,8 @@ fn public() -> Router<Arc<AppState>> {
         .route("/auth/register", post(crate::auth::signup::register))
         .route("/auth/nostr", post(crate::auth::signup::nostr_login))
         .route("/setup/status", get(check_setup_complete))
+        .route("/public/models", get(crate::api::public_models::list))
+        .route("/public/models/*name", get(crate::api::public_models::detail))
 }
 
 fn tenant(state: Arc<AppState>) -> Router<Arc<AppState>> {

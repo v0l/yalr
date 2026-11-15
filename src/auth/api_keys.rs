@@ -230,6 +230,7 @@ mod my_key_tests {
             model_cache: Default::default(),
             modality_cache: Default::default(),
             limits_cache: Default::default(),
+        public_cache: Default::default(),
         });
         let alice = db.add_test_user("alice", false).await;
         let bob = db.add_test_user("bob", false).await;

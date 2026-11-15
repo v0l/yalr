@@ -168,6 +168,7 @@ mod tests {
             model_cache: Default::default(),
             modality_cache: Default::default(),
             limits_cache: Default::default(),
+        public_cache: Default::default(),
         });
         for (name, key, admin) in [("boss", ADMIN_KEY, true), ("worker", PLAIN_KEY, false)] {
             let user = db.add_test_user(name, admin).await;

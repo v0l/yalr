@@ -198,6 +198,7 @@ mod tests {
             model_cache: Default::default(),
             modality_cache: Default::default(),
             limits_cache: Default::default(),
+        public_cache: Default::default(),
         });
         let app = crate::api::server::create_test_app(state.clone()).await;
         (state, app)

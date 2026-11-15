@@ -47,6 +47,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     yalr::verify::spawn_scheduler(config.db.clone(), config.router.clone());
 
+    let prune_db = config.db.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            tick.tick().await;
+            let cutoff = chrono::Utc::now().timestamp_millis() - 8 * 86_400_000;
+            let _ = prune_db.prune_health_checks(cutoff).await;
+        }
+    });
+
     let addr = format!("{}:{}", config.host, config.port);
 
     tracing::info!(addr = %addr, "Starting YALR");
