@@ -14,7 +14,7 @@ use event::{is_public_url, Listing};
 
 pub(crate) const DEFAULT_RELAYS: [&str; 3] = [
     "wss://relay.damus.io",
-    "wss://relay.nostr.band",
+    "wss://purplepag.es",
     "wss://nos.lol",
 ];
 const REFRESH: Duration = Duration::from_secs(24 * 60 * 60);

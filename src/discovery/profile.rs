@@ -1,15 +1,19 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use nostr::{Filter, Kind, PublicKey};
+use nostr::nips::nip65::{self, RelayMetadata};
+use nostr::{Event, Filter, Kind, PublicKey};
 use nostr_sdk::Client;
 use serde::Deserialize;
 
 use crate::db::{Database, User};
 
-const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
+const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_OUTBOX_RELAYS: usize = 4;
 const MAX_AGE_HOURS: i64 = 24;
-const SWEEP: Duration = Duration::from_secs(60 * 60);
+const SWEEP: Duration = Duration::from_secs(5 * 60);
 const MAX_NAME_CHARS: usize = 100;
 
 #[derive(Debug, Default, Deserialize, PartialEq)]
@@ -48,28 +52,95 @@ impl Profile {
     }
 }
 
+async fn query_relay(relay: String, filter: Filter) -> Vec<Event> {
+    let client = Client::default();
+    if client.add_relay(relay.as_str()).await.is_err() {
+        return Vec::new();
+    }
+    if client.try_connect_relay(relay.as_str(), CONNECT_TIMEOUT).await.is_err() {
+        client.shutdown().await;
+        return Vec::new();
+    }
+    let events = client
+        .fetch_events_from([relay.as_str()], filter, FETCH_TIMEOUT)
+        .await
+        .map(|e| e.into_iter().collect())
+        .unwrap_or_default();
+    client.shutdown().await;
+    events
+}
+
+async fn query_relays(relays: &[String], filter: &Filter) -> Vec<Event> {
+    futures::future::join_all(relays.iter().map(|r| query_relay(r.clone(), filter.clone())))
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+fn newest_of_kind(events: &[Event], kind: Kind) -> Option<&Event> {
+    events.iter().filter(|e| e.kind == kind).max_by_key(|e| e.created_at)
+}
+
+fn write_relays(list: &Event, already: &[String]) -> Vec<String> {
+    nip65::extract_relay_list(list)
+        .filter(|(_, meta)| !matches!(meta, Some(RelayMetadata::Read)))
+        .map(|(url, _)| url.to_string())
+        .filter(|url| !already.iter().any(|r| r.trim_end_matches('/') == url.trim_end_matches('/')))
+        .take(MAX_OUTBOX_RELAYS)
+        .collect()
+}
+
 pub async fn fetch(relays: &[String], pubkey_hex: &str) -> Option<Profile> {
     let author = PublicKey::from_hex(pubkey_hex).ok()?;
-    let client = Client::default();
-    for relay in relays {
-        let _ = client.add_relay(relay.as_str()).await;
+    let filter = Filter::new().kinds([Kind::Metadata, Kind::RelayList]).author(author);
+    let mut events = query_relays(relays, &filter).await;
+    if let Some(list) = newest_of_kind(&events, Kind::RelayList) {
+        let outbox = write_relays(list, relays);
+        if !outbox.is_empty() {
+            let filter = Filter::new().kind(Kind::Metadata).author(author);
+            events.extend(query_relays(&outbox, &filter).await);
+        }
     }
-    client.connect().await;
-    let filter = Filter::new().kind(Kind::Metadata).author(author).limit(1);
-    let events = client.fetch_events(filter, FETCH_TIMEOUT).await;
-    client.shutdown().await;
-    let newest = events.ok()?.into_iter().max_by_key(|e| e.created_at)?;
-    Profile::parse(&newest.content)
+    Profile::parse(&newest_of_kind(&events, Kind::Metadata)?.content)
+}
+
+fn retry_delay_minutes(failures: u32) -> i64 {
+    if failures <= 1 {
+        15
+    } else {
+        60
+    }
+}
+
+fn failures() -> &'static Mutex<HashMap<i64, u32>> {
+    static FAILURES: OnceLock<Mutex<HashMap<i64, u32>>> = OnceLock::new();
+    FAILURES.get_or_init(Default::default)
+}
+
+fn note_failure(user_id: i64) -> u32 {
+    let mut map = failures().lock().unwrap();
+    let count = map.entry(user_id).or_insert(0);
+    *count += 1;
+    *count
+}
+
+fn clear_failures(user_id: i64) {
+    failures().lock().unwrap().remove(&user_id);
 }
 
 pub async fn refresh(db: &Database, relays: &[String], user: &User) {
     let Some(pubkey) = user.external_id.as_deref() else { return };
-    let profile = fetch(relays, pubkey).await;
-    let result = match &profile {
-        Some(p) => db.store_user_profile(user.id, p.shown_name().as_deref(), p.picture().as_deref(), p.nip05().as_deref()).await,
-        None => db.store_user_profile(user.id, user.display_name.as_deref(), user.picture.as_deref(), user.nip05.as_deref()).await,
+    let Some(p) = fetch(relays, pubkey).await else {
+        let minutes = retry_delay_minutes(note_failure(user.id));
+        tracing::warn!(user_id = user.id, retry_minutes = minutes, "Nostr profile not found");
+        if let Err(e) = db.defer_profile_refresh(user.id, MAX_AGE_HOURS, minutes).await {
+            tracing::warn!(user_id = user.id, error = %e, "Could not defer Nostr profile refresh");
+        }
+        return;
     };
-    if let Err(e) = result {
+    clear_failures(user.id);
+    if let Err(e) = db.store_user_profile(user.id, p.shown_name().as_deref(), p.picture().as_deref(), p.nip05().as_deref()).await {
         tracing::warn!(user_id = user.id, error = %e, "Could not store Nostr profile");
     }
 }
@@ -163,6 +234,51 @@ mod tests {
         let shown = stored.shown_name();
         assert!(shown.starts_with("npub1") && shown.contains('…'), "{shown}");
         assert!(!shown.contains("nostr_"));
+    }
+
+    #[tokio::test]
+    async fn a_silent_relay_does_not_hide_a_profile_on_another() {
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let silent_url = format!("ws://{}", silent.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = silent.accept().await {
+                held.push(socket);
+            }
+        });
+        let refused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let refused_url = format!("ws://{}", refused.local_addr().unwrap());
+        drop(refused);
+        let relay = MockRelay::run().await.unwrap();
+        let keys = Keys::generate();
+        publish(&relay, &keys, r#"{"display_name":"Kieran"}"#).await;
+
+        let relays = [silent_url, refused_url, relay.url().await.to_string()];
+        let profile = fetch(&relays, &keys.public_key().to_hex()).await.unwrap();
+        assert_eq!(profile.shown_name().as_deref(), Some("Kieran"));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_relays_return_the_profile() {
+        let relays: Vec<String> = crate::discovery::DEFAULT_RELAYS.iter().map(|r| r.to_string()).collect();
+        let hex = "63fe6318dc58583cfe16810f86dd09e18bfd76aabc24a0081ce2856f330504ed";
+        let profile = fetch(&relays, hex).await.unwrap();
+        println!("live name: {:?}", profile.shown_name());
+        assert_eq!(profile.shown_name().as_deref(), Some("Kieran"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_fetch_retries_in_minutes_not_a_day() {
+        let relay = MockRelay::run().await.unwrap();
+        let keys = Keys::generate();
+        let db = Database::test().await;
+        let user = db.get_or_create_user_by_nostr_pubkey(&keys.public_key().to_hex()).await.unwrap();
+        assert!(db.claim_profile_refresh(user.id, 24).await.unwrap());
+        refresh(&db, &[relay.url().await.to_string()], &user).await;
+        assert!(db.nostr_users_needing_profile(24).await.unwrap().is_empty());
+        db.defer_profile_refresh(user.id, 24, -1).await.unwrap();
+        assert_eq!(db.nostr_users_needing_profile(24).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

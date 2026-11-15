@@ -82,6 +82,18 @@ impl Database {
         Ok(claimed == 1)
     }
 
+    pub async fn defer_profile_refresh(&self, id: i64, max_age_hours: i64, retry_minutes: i64) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE users SET profile_fetched_at = UTC_TIMESTAMP(3) - INTERVAL ? MINUTE + INTERVAL ? MINUTE WHERE id = ?",
+        )
+        .bind(max_age_hours * 60)
+        .bind(retry_minutes)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn nostr_users_needing_profile(&self, max_age_hours: i64) -> Result<Vec<User>, sqlx::Error> {
         sqlx::query_as::<_, User>(
             "SELECT * FROM users WHERE user_type = ? AND external_id IS NOT NULL \
