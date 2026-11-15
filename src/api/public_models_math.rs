@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use crate::db::{milli_per_unit, ModelPricingRow, RequestSample, SATS};
+use crate::payments::pricing::ResolvedPricing;
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Price {
@@ -45,6 +46,18 @@ pub fn price_of(row: &ModelPricingRow) -> Price {
         currency: row.currency.clone(),
         input_per_1m: input.unwrap_or(0) as f64 / scale,
         output_per_1m: output.unwrap_or(0) as f64 / scale,
+    }
+}
+
+pub fn price_of_resolved(resolved: &ResolvedPricing) -> Price {
+    if resolved.is_free {
+        return Price { currency: resolved.currency.clone(), input_per_1m: 0.0, output_per_1m: 0.0 };
+    }
+    let scale = if resolved.is_sats() { 1.0 } else { milli_per_unit(&resolved.currency) as f64 };
+    Price {
+        currency: resolved.currency.clone(),
+        input_per_1m: resolved.price_per_1m_input_sats as f64 / scale,
+        output_per_1m: resolved.price_per_1m_output_sats as f64 / scale,
     }
 }
 
@@ -122,6 +135,7 @@ mod tests {
     fn sample(status: &str, ttft: Option<i64>, total: Option<i64>, tokens: Option<i64>) -> RequestSample {
         RequestSample {
             model: "m".into(),
+            provider: None,
             status: status.into(),
             started_at_ms: 0,
             first_event_ms: ttft,

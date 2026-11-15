@@ -24,10 +24,12 @@ export default function Models() {
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: 'id', desc: false })
+  const [showAll, setShowAll] = useState(false)
 
   useEffect(() => {
-    publicApi.models().then(setModels).catch(e => setError(e instanceof Error ? e.message : 'Failed to load'))
-  }, [])
+    setModels(null)
+    publicApi.models(showAll).then(setModels).catch(e => setError(e instanceof Error ? e.message : 'Failed to load'))
+  }, [showAll])
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -64,6 +66,10 @@ export default function Models() {
           placeholder="Search models or modalities"
           className="h-9 max-w-sm border-border bg-surface font-mono text-[13px]"
         />
+        <label className="flex items-center gap-2 font-mono text-[12px] text-muted-foreground">
+          <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} />
+          Show all pass-through models, including unpriced ones with no traffic
+        </label>
         {error && <div className="panel p-3 font-mono text-[12px] text-destructive">{error}</div>}
         <div className="panel overflow-x-auto">
           <table className="w-full font-mono text-[12px] tabular-nums">

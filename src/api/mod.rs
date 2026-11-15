@@ -29,9 +29,13 @@ pub mod provider_approval;
 pub mod provider_payments;
 pub mod provider_stats;
 pub mod public_models;
+mod public_models_build;
+pub mod listing_status;
 mod public_models_math;
 #[cfg(test)]
 mod public_models_tests;
+#[cfg(test)]
+mod public_models_prod_tests;
 pub mod providers;
 pub mod request_log;
 pub mod responses;

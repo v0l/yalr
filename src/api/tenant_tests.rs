@@ -18,7 +18,24 @@ pub(super) struct Tenancy {
 }
 
 pub(super) async fn tenancy() -> Tenancy {
+    build_tenancy(None).await
+}
+
+pub(super) async fn tenancy_with_payments(defaults: crate::config::DefaultPricingConfig) -> Tenancy {
+    build_tenancy(Some(defaults)).await
+}
+
+async fn build_tenancy(defaults: Option<crate::config::DefaultPricingConfig>) -> Tenancy {
     let db = Arc::new(Database::test().await);
+    let payments_state = defaults.map(|d| {
+        Arc::new(crate::payments::PaymentsState {
+            config: Default::default(),
+            balance_service: Arc::new(crate::payments::balance::BalanceService::new(db.clone())),
+            lightning_service: None,
+            pricing_resolver: Arc::new(crate::payments::pricing::PricingResolver::new(db.clone(), d)),
+            settlement_listener: None,
+        })
+    });
     let metrics_store = Arc::new(MetricsStore::new(100));
     let router = Arc::new(crate::router::engine::Router::new((*metrics_store).clone(), db.clone()));
     let sessions = Arc::new(crate::auth::admin::SessionStore::new());
@@ -37,7 +54,7 @@ pub(super) async fn tenancy() -> Tenancy {
         metrics_store,
         session_store: sessions.clone(),
         db,
-        payments_state: None,
+        payments_state,
         oauth_pending: Default::default(),
         model_cache: Default::default(),
         modality_cache: Default::default(),

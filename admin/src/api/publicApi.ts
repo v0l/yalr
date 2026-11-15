@@ -16,6 +16,7 @@ export interface PublicPriceRange {
 
 export interface PublicModel {
   id: string
+  kind: 'routed' | 'pool'
   input_modalities: string[]
   output_modalities: string[]
   context_length: number | null
@@ -53,6 +54,6 @@ async function get<T>(path: string): Promise<T> {
 }
 
 export const publicApi = {
-  models: () => get<{ models: PublicModel[] }>('/api/public/models').then(r => r.models),
+  models: (all = false) => get<{ models: PublicModel[] }>(`/api/public/models${all ? '?all=true' : ''}`).then(r => r.models),
   model: (id: string) => get<PublicModelDetail>(`/api/public/models/${id.split('/').map(encodeURIComponent).join('/')}`),
 }

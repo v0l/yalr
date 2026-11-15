@@ -32,6 +32,7 @@ fn tenant(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/providers", get(providers::list_providers).post(providers::create_provider))
         .route("/providers/:slug", put(providers::update_provider).delete(providers::delete_provider))
         .route("/providers/:slug/models", get(model_handlers::list_provider_models))
+        .route("/providers/:slug/listing", get(crate::api::listing_status::provider_listing))
         .route("/providers/:slug/stats", get(provider_stats::stats))
         .route("/providers/:slug/check", post(provider_stats::check))
         .route("/providers/:slug/verify", post(crate::api::provider_approval::verify))

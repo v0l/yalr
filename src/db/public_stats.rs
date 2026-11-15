@@ -13,6 +13,7 @@ pub struct HealthUptime {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct RequestSample {
     pub model: String,
+    pub provider: Option<String>,
     pub status: String,
     pub started_at_ms: i64,
     pub first_event_ms: Option<i64>,
@@ -56,18 +57,12 @@ impl Database {
         .await
     }
 
-    pub async fn provider_request_samples(
-        &self,
-        provider_name: &str,
-        since_ms: i64,
-        limit: i64,
-    ) -> Result<Vec<RequestSample>, sqlx::Error> {
+    pub async fn request_samples_since(&self, since_ms: i64, limit: i64) -> Result<Vec<RequestSample>, sqlx::Error> {
         sqlx::query_as(
-            "SELECT model, status, started_at_ms, first_event_ms, total_ms, completion_tokens
-             FROM request_log WHERE provider = ? AND started_at_ms >= ?
+            "SELECT model, provider, status, started_at_ms, first_event_ms, total_ms, completion_tokens
+             FROM request_log WHERE started_at_ms >= ?
              ORDER BY started_at_ms DESC LIMIT ?",
         )
-        .bind(provider_name)
         .bind(since_ms)
         .bind(limit)
         .fetch_all(&self.pool)
