@@ -333,9 +333,9 @@ impl Router {
         let mut id_to_slug: HashMap<i64, String> = HashMap::new();
         let owned_ids: std::collections::HashSet<i64> =
             provider_records.iter().filter(|r| r.owner_user_id.is_some()).map(|r| r.id).collect();
-        let provider_owner: HashMap<i64, i64> = provider_records
+        let provider_owner: HashMap<i64, (i64, bool)> = provider_records
             .iter()
-            .filter_map(|r| r.owner_user_id.map(|owner| (r.id, owner)))
+            .filter_map(|r| r.owner_user_id.map(|owner| (r.id, (owner, r.status == crate::db::APPROVED))))
             .collect();
 
         for record in &provider_records {
@@ -381,8 +381,9 @@ impl Router {
                     }
                     continue;
                 }
-                if let Some(owner) = rcp.provider_id.and_then(|id| provider_owner.get(&id)) {
-                    if rc.owner_user_id != Some(*owner) {
+                if let Some((owner, approved)) = rcp.provider_id.and_then(|id| provider_owner.get(&id)) {
+                    let system_pool = rc.owner_user_id.is_none() && *approved;
+                    if rc.owner_user_id != Some(*owner) && !system_pool {
                         continue;
                     }
                 }

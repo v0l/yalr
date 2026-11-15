@@ -264,7 +264,12 @@ pub async fn create_routing_config_provider(
         (Some(provider_id), None) => {
             let provider = scope.provider_by_id(&state, provider_id).await?;
             if provider.owner_user_id.is_some() && provider.owner_user_id != parent.owner_user_id {
-                return Err(forbidden("A user's provider can only be assigned to that user's own routing configs"));
+                if !(scope.is_admin() && parent.owner_user_id.is_none()) {
+                    return Err(forbidden("A user's provider can only be assigned to that user's own routing configs"));
+                }
+                if provider.status != crate::db::APPROVED {
+                    return Err(bad_request("Only approved user providers can join a system routing config"));
+                }
             }
             state
                 .db

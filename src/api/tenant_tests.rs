@@ -213,10 +213,14 @@ async fn routing_configs_are_owned_and_take_only_the_owners_providers() {
     let (_, shared) = t.call(&t.admin, "POST", "/api/routing-configs", platform_config).await;
     let shared_id = shared["id"].as_i64().unwrap();
     let foreign = format!(r#"{{"routing_config_id":{shared_id},"provider_id":{},"weight":1,"is_active":true}}"#, alice_provider.id);
-    assert_eq!(t.call(&t.admin, "POST", "/api/routing-configs/providers", &foreign).await.0, 403);
+    assert_eq!(t.call(&t.admin, "POST", "/api/routing-configs/providers", &foreign).await.0, 400);
+    t.state.db.set_provider_status(alice_provider.id, "approved", None, false).await.unwrap();
+    assert_eq!(t.call(&t.admin, "POST", "/api/routing-configs/providers", &foreign).await.0, 200);
+    assert_eq!(t.call(&t.bob, "POST", "/api/routing-configs/providers", &foreign).await.0, 404);
 
     let (_, candidates) = (0, t.state.config.router.candidate_backends("alice/fast").await);
     assert_eq!(candidates.len(), 1);
+    assert_eq!(t.state.config.router.candidate_backends("shared").await.len(), 1);
 }
 
 #[tokio::test]
