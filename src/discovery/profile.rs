@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use futures::StreamExt;
 use nostr::nips::nip65::{self, RelayMetadata};
 use nostr::{Event, Filter, Kind, PublicKey};
 use nostr_sdk::Client;
@@ -12,6 +13,7 @@ use crate::db::{Database, User};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_OUTBOX_RELAYS: usize = 4;
+const LATE_RELAY_GRACE: Duration = Duration::from_millis(1500);
 const MAX_AGE_HOURS: i64 = 24;
 const SWEEP: Duration = Duration::from_secs(5 * 60);
 const MAX_NAME_CHARS: usize = 100;
@@ -71,11 +73,25 @@ async fn query_relay(relay: String, filter: Filter) -> Vec<Event> {
 }
 
 async fn query_relays(relays: &[String], filter: &Filter) -> Vec<Event> {
-    futures::future::join_all(relays.iter().map(|r| query_relay(r.clone(), filter.clone())))
-        .await
-        .into_iter()
-        .flatten()
-        .collect()
+    let mut pending: futures::stream::FuturesUnordered<_> =
+        relays.iter().map(|r| query_relay(r.clone(), filter.clone())).collect();
+    let mut events = Vec::new();
+    let mut deadline = None;
+    loop {
+        let next = match deadline {
+            Some(at) => match tokio::time::timeout_at(at, pending.next()).await {
+                Ok(next) => next,
+                Err(_) => break,
+            },
+            None => pending.next().await,
+        };
+        let Some(found) = next else { break };
+        if !found.is_empty() && deadline.is_none() {
+            deadline = Some(tokio::time::Instant::now() + LATE_RELAY_GRACE);
+        }
+        events.extend(found);
+    }
+    events
 }
 
 fn newest_of_kind(events: &[Event], kind: Kind) -> Option<&Event> {
@@ -284,7 +300,9 @@ mod tests {
         });
 
         let relays = [resetting_url, silent_url, refused_url, slow_url];
+        let started = std::time::Instant::now();
         let profile = fetch(&relays, &keys.public_key().to_hex()).await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
         assert_eq!(profile.shown_name().as_deref(), Some("Kieran"));
     }
 
@@ -309,7 +327,7 @@ mod tests {
         assert!(db.nostr_users_needing_profile(24).await.unwrap().is_empty());
         let stamped = db.get_user_by_id(user.id).await.unwrap().unwrap().profile_fetched_at.unwrap();
         let wait = chrono::Duration::hours(24) - (chrono::Utc::now() - stamped);
-        assert!(wait <= chrono::Duration::minutes(16), "next try in {wait}");
+        assert!(wait <= chrono::Duration::minutes(61), "next try in {wait}");
         assert!(wait > chrono::Duration::minutes(10), "next try in {wait}");
     }
 
