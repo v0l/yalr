@@ -16,6 +16,8 @@ import Account from './pages/Account'
 import ProviderDetail from './pages/ProviderDetail'
 import Approvals from './pages/Approvals'
 import Register from './pages/Register'
+import Models from './pages/Models'
+import ModelDetail from './pages/ModelDetail'
 import { currentRole } from './lib/role'
 import { api } from './api/client'
 import { API_BASE_URL } from './api/client'
@@ -77,6 +79,8 @@ export default function App() {
         <Route path="/setup" element={<Setup />} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/models" element={<Models />} />
+        <Route path="/models/*" element={<ModelDetail />} />
         <Route path="/account/*" element={<Account />} />
         <Route path="/" element={
           <SetupCheckRoute>

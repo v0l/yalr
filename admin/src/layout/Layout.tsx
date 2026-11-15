@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils'
 import {
   LayoutDashboardIcon, SlidersIcon, ActivityIcon,
   UsersIcon, CreditCardIcon, MessageSquareIcon, SunIcon, MoonIcon,
-  LogOutIcon, ChevronRightIcon, ScrollTextIcon, ShieldCheckIcon
+  LogOutIcon, ChevronRightIcon, ScrollTextIcon, ShieldCheckIcon, StoreIcon
 } from 'lucide-react'
 
 const navigation = [
@@ -17,6 +17,7 @@ const navigation = [
   { name: 'Approvals', path: '/approvals', icon: ShieldCheckIcon, adminOnly: true },
   { name: 'Payments', path: '/payments', icon: CreditCardIcon, adminOnly: false },
   { name: 'Chat', path: '/chat', icon: MessageSquareIcon, adminOnly: false },
+  { name: 'Models', path: '/models', icon: StoreIcon, adminOnly: false },
 ]
 
 export default function Layout() {
