@@ -11,6 +11,13 @@ pub struct HealthUptime {
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
+pub struct RequestCount {
+    pub model: String,
+    pub provider: Option<String>,
+    pub requests: i64,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct RequestSample {
     pub model: String,
     pub provider: Option<String>,
@@ -53,6 +60,16 @@ impl Database {
         .bind(since_24h_ms)
         .bind(since_24h_ms)
         .bind(since_7d_ms)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn request_counts_since(&self, since_ms: i64) -> Result<Vec<RequestCount>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT model, provider, CAST(COUNT(*) AS SIGNED) AS requests
+             FROM request_log WHERE started_at_ms >= ? GROUP BY model, provider",
+        )
+        .bind(since_ms)
         .fetch_all(&self.pool)
         .await
     }

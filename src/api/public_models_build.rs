@@ -19,6 +19,7 @@ struct Facts {
     owners: HashMap<i64, String>,
     uptime: HashMap<i64, crate::db::HealthUptime>,
     samples: HashMap<String, HashMap<String, Vec<RequestSample>>>,
+    counts: HashMap<String, HashMap<String, i64>>,
     verifications: HashMap<i64, Vec<VerificationRow>>,
 }
 
@@ -51,11 +52,15 @@ async fn gather(db: &Database, now_ms: i64) -> Facts {
     for s in db.request_samples_since(now_ms - 24 * HOUR_MS, SAMPLE_LIMIT).await.unwrap_or_default() {
         samples.entry(s.model.to_lowercase()).or_default().entry(s.provider.clone().unwrap_or_default()).or_default().push(s);
     }
+    let mut counts: HashMap<String, HashMap<String, i64>> = HashMap::new();
+    for c in db.request_counts_since(now_ms - 24 * HOUR_MS).await.unwrap_or_default() {
+        *counts.entry(c.model.to_lowercase()).or_default().entry(c.provider.unwrap_or_default()).or_default() += c.requests;
+    }
     let mut verifications = HashMap::new();
     for id in records.keys() {
         verifications.insert(*id, db.latest_verifications(*id).await.unwrap_or_default());
     }
-    Facts { records, by_name, owners, uptime, samples, verifications }
+    Facts { records, by_name, owners, uptime, samples, counts, verifications }
 }
 
 fn verification_of(provider: &Provider, model: &str, rows: &[VerificationRow]) -> &'static str {
@@ -110,7 +115,7 @@ fn provider_view(facts: &Facts, model: &str, id: i64, price: Option<Price>) -> O
         verification: verification_of(record, model, facts.verifications.get(&id).map_or(&[], Vec::as_slice)),
         uptime_24h: health.and_then(|h| uptime_percent(h.checks_24h, h.healthy_24h)),
         uptime_7d: health.and_then(|h| uptime_percent(h.checks_7d, h.healthy_7d)),
-        requests_24h: measured.requests,
+        requests_24h: facts.counts.get(&model.to_lowercase()).and_then(|m| m.get(&record.name)).copied().unwrap_or(measured.requests),
         error_rate: measured.error_rate,
         ttft_p50_ms: measured.ttft_p50_ms,
         ttft_p95_ms: measured.ttft_p95_ms,
@@ -129,16 +134,17 @@ struct Draft {
     max_output_tokens: Option<i32>,
     members: Vec<(i64, Option<Price>)>,
     explicit_price: bool,
+    own_price: Option<Price>,
 }
 
 fn finish(facts: &Facts, draft: Draft) -> PublicModelDetail {
     let providers: Vec<PublicProvider> =
         draft.members.iter().filter_map(|(id, price)| provider_view(facts, &draft.id, *id, price.clone())).collect();
-    let prices: Vec<Price> = providers.iter().filter_map(|p| p.price.clone()).collect();
-    let requests_24h: i64 = facts
-        .samples
-        .get(&draft.id.to_lowercase())
-        .map_or(0, |by_provider| by_provider.values().map(|v| v.len() as i64).sum());
+    let mut prices: Vec<Price> = providers.iter().filter_map(|p| p.price.clone()).collect();
+    if prices.is_empty() {
+        prices.extend(draft.own_price.clone());
+    }
+    let requests_24h: i64 = facts.counts.get(&draft.id.to_lowercase()).map_or(0, |by_provider| by_provider.values().sum());
     let hidden = draft.kind == POOL && requests_24h == 0 && !draft.explicit_price;
     PublicModelDetail {
         model: PublicModel {
@@ -218,6 +224,7 @@ async fn pool_drafts(state: &AppState, facts: &Facts, resolver: Option<&Arc<Pric
             max_output_tokens: rows.iter().filter_map(|r| r.max_output_tokens).max().or(upstream.max_output_tokens.map(|v| v as i32)),
             members,
             explicit_price: !rows.is_empty(),
+            own_price: None,
         });
     }
     drafts
@@ -253,6 +260,10 @@ async fn routed_drafts(state: &AppState, facts: &Facts, resolver: Option<&Arc<Pr
             max_output_tokens: platform.as_ref().and_then(|r| r.max_output_tokens).or(upstream.max_output_tokens.map(|v| v as i32)),
             members,
             explicit_price: true,
+            own_price: match resolver {
+                Some(resolver) => Some(price_of_resolved(&resolver.resolve(&rc.name).await)),
+                None => None,
+            },
         });
     }
     drafts

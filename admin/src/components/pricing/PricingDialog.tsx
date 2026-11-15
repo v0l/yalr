@@ -59,6 +59,7 @@ export default function PricingDialog({
   providers,
   prices,
   listing,
+  prefill,
   onSaved,
   onError,
 }: {
@@ -69,6 +70,7 @@ export default function PricingDialog({
   providers: Provider[]
   prices: ModelPricingEntry[]
   listing: ListingStatus | null
+  prefill?: { provider_slug: string; model_name: string } | null
   onSaved: (message: string) => void
   onError: (message: string) => void
 }) {
@@ -98,7 +100,7 @@ export default function PricingDialog({
         max_output_tokens: editing.max_output_tokens?.toString() ?? '',
       })
     } else {
-      setForm({ provider_slug: isAdmin ? PLATFORM : providers[0]?.slug ?? '', model_name: '', currency: isAdmin ? 'sats' : 'usd', is_advertised: true, is_free: false, prices: blankPrices(), context_window: '', max_output_tokens: '' })
+      setForm({ provider_slug: prefill?.provider_slug ?? (isAdmin ? PLATFORM : providers[0]?.slug ?? ''), model_name: prefill?.model_name ?? '', currency: isAdmin ? 'sats' : 'usd', is_advertised: true, is_free: false, prices: blankPrices(), context_window: '', max_output_tokens: '' })
     }
   }, [open, editing])
 

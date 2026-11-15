@@ -207,3 +207,25 @@ async fn an_owner_sees_which_models_need_a_price_or_a_full_repo_id() {
     let (_, public) = t.get("", "/api/public/models?all=true").await;
     assert!(!ids(&public).contains(&"orca/Unpriced-27B") && !ids(&public).contains(&"qwen3.8-27b"));
 }
+
+#[tokio::test]
+async fn a_routed_config_with_no_live_backend_still_shows_its_price_and_traffic() {
+    let t = production().await;
+    t.state
+        .db
+        .create_routing_config(NewRoutingConfig {
+            name: "qwen-short".into(),
+            strategy: "round_robin".into(),
+            health_check_enabled: false,
+            health_check_interval_seconds: 30,
+            health_check_timeout_seconds: 5,
+        })
+        .await
+        .unwrap();
+    t.state.db.insert_request_logs(&[request("q1", "qwen-short", "gone-provider", 100, 1_000, 10)]).await.unwrap();
+    let (_, list) = t.get("", "/api/public/models").await;
+    let found = model(&list, "qwen-short");
+    assert_eq!(found["requests_24h"], 1);
+    assert_eq!(found["provider_count"], 0);
+    assert_eq!(found["price_ranges"][0]["min_input"], 500.0);
+}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { BalanceAdjustDialog } from '@/components/BalanceAdjustDialog'
 import type { BalanceAdjustKind } from '../types'
 import { formatMilli, formatPrice } from '@/lib/money'
@@ -71,7 +71,10 @@ function invoiceStatusBadge(status: string) {
 /* ═══════════════════════════════════════════════════════════════ */
 
 export default function Payments() {
-  const [activeTab, setActiveTab] = useState<TabId>('balances')
+  const [params, setParams] = useSearchParams()
+  const tabParam = params.get('tab')
+  const [activeTab, setActiveTab] = useState<TabId>(tabs.some(t => t.id === tabParam) ? (tabParam as TabId) : 'balances')
+  const [prefill, setPrefill] = useState<{ provider_slug: string; model_name: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
@@ -97,6 +100,16 @@ export default function Payments() {
     if (isAdmin) marketApi.listing().then(setListing).catch(() => undefined)
   }, [])
 
+  useEffect(() => {
+    const model = params.get('model')
+    const provider = params.get('provider')
+    if (!model || !provider) return
+    setPrefill({ provider_slug: provider, model_name: model })
+    setEditingPrice(null)
+    setPricingDialog(true)
+    setParams({}, { replace: true })
+  }, [])
+
   async function loadAll() {
     setLoading(true); setError(null)
     try {
@@ -111,7 +124,7 @@ export default function Payments() {
   }
 
   function openCreatePricing() {
-    setEditingPrice(null); setPricingDialog(true)
+    setEditingPrice(null); setPrefill(null); setPricingDialog(true)
   }
 
   function openEditPricing(entry: ModelPricingEntry) {
@@ -367,6 +380,7 @@ export default function Payments() {
         providers={providers}
         prices={modelPricings}
         listing={listing}
+        prefill={prefill}
         onSaved={m => { setSuccessMessage(m); loadAll() }}
         onError={setError}
       />
