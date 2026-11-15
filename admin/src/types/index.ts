@@ -420,6 +420,8 @@ export interface ProviderListItem {
   slug: string
   base_url: string
   owner_user_id?: number | null
+  owner_username?: string | null
+  status?: import('./verification').ProviderStatus
 }
 
 export interface User {

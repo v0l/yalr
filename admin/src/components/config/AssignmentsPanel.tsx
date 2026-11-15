@@ -10,6 +10,8 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import AssignmentRow, { type AssignmentPatch } from './AssignmentRow'
 import ModelPicker from '@/components/ModelPicker'
 import { useModelCache } from './modelCache'
+import { assignableProviders, providerOptionLabel } from '@/lib/assignableProviders'
+import { currentRole } from '@/lib/role'
 
 interface AssignmentsPanelProps {
   config: RoutingConfigFull
@@ -90,6 +92,7 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
     finally { setSavingNew(false) }
   }
 
+  const assignable = assignableProviders(providers, config.owner_user_id, currentRole().isAdmin)
   const colLabel = isPriority ? 'Priority / Weight' : 'Weight'
 
   return (
@@ -207,7 +210,7 @@ export default function AssignmentsPanel(props: AssignmentsPanelProps) {
               >
                 <SelectTrigger className="h-7 w-44 font-mono text-[12px] bg-surface border-border text-foreground"><SelectValue placeholder="select…" /></SelectTrigger>
                 <SelectContent className="bg-card border-border">
-                  <SelectGroup>{providers.filter(p => (p.owner_user_id ?? null) === null || p.owner_user_id === config.owner_user_id).map(p => <SelectItem key={p.id} value={String(p.id)} className="font-mono text-[12px] text-foreground">{p.name} ({p.slug})</SelectItem>)}</SelectGroup>
+                  <SelectGroup>{assignable.map(p => <SelectItem key={p.id} value={String(p.id)} className="font-mono text-[12px] text-foreground">{providerOptionLabel(p)}</SelectItem>)}</SelectGroup>
                 </SelectContent>
               </Select>
             </div>
