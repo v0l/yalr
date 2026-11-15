@@ -175,3 +175,36 @@ async fn eur_works_like_any_other_currency() {
     assert_eq!(balance(&f, f.owner, "eur").await, 5000);
     assert_eq!(balance(&f, f.owner, "usd").await, 0);
 }
+
+#[tokio::test]
+async fn a_system_config_routed_to_a_user_provider_bills_the_config_price_and_credits_the_owner() {
+    let f = fixture("usd", 100_000).await;
+    f.db.create_model_pricing(NewModelPricing {
+        model_name: "classify",
+        is_advertised: true,
+        is_free: false,
+        price_per_1m_input_sats: Some(10_000),
+        price_per_1m_output_sats: Some(10_000),
+        price_per_1m_cache_read_sats: None,
+        price_per_1m_cache_write_sats: None,
+        price_per_request_sats: Some(0),
+        context_window: None,
+        max_output_tokens: None,
+        owner_user_id: None,
+        provider_id: None,
+        currency: "sats",
+        fiat: FiatPrices::default(),
+    })
+    .await
+    .unwrap();
+    fund(&f, "sats", 5_000_000).await;
+    let admission = f.engine.admit(f.consumer, "classify").await.unwrap();
+    let billed = f
+        .engine
+        .finalize_served(&admission, TokenUsage::plain(1000, 1000), Some("owner/p"))
+        .await
+        .unwrap();
+    assert_eq!(billed, 20_000);
+    assert_eq!(balance(&f, f.consumer, "sats").await, 5_000_000 - 20_000);
+    assert_eq!(balance(&f, f.owner, "sats").await, 18_000);
+}
