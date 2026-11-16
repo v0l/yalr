@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { publicApi, type PublicModelDetail, type PublicProvider } from '@/api/publicApi'
 import PublicLayout from '@/layout/PublicLayout'
-import { formatMs, formatPercent, formatTokens, priceLine } from '@/lib/publicFormat'
+import { badgesFor, formatMs, formatPercent, formatTokens, priceLine } from '@/lib/publicFormat'
 
 function VerifiedBadge({ status }: { status: PublicProvider['verification'] }) {
   const style = status === 'unverified'
@@ -74,11 +74,12 @@ export default function ModelDetail() {
                 </thead>
                 <tbody>
                   {model.providers.map(p => (
-                    <tr key={p.name} className="border-b border-border/50 hover:bg-surface">
+                    <tr key={p.key} className="border-b border-border/50 hover:bg-surface">
                       <td className="px-3 py-2 text-foreground">
-                        {p.name}
-                        {p.name === model.cheapest_provider && <span className="ml-2 text-[10px] uppercase text-brand">cheapest</span>}
-                        {p.name === model.fastest_provider && <span className="ml-2 text-[10px] uppercase text-brand">fastest</span>}
+                        {p.provider}
+                        {badgesFor(p, model).cheapest && <span className="ml-2 text-[10px] uppercase text-brand">cheapest</span>}
+                        {badgesFor(p, model).fastest && <span className="ml-2 text-[10px] uppercase text-brand">fastest</span>}
+                        {p.owner && <div className="text-[10px] text-muted-foreground">by {p.owner}</div>}
                         <div className="text-[10px] text-muted-foreground">listed {new Date(p.listed_since).toLocaleDateString()}</div>
                       </td>
                       <td className="whitespace-nowrap px-3 py-2">{priceLine(p.price)}</td>

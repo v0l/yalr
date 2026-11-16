@@ -100,7 +100,7 @@ fn cheapest(providers: &[PublicProvider]) -> Option<String> {
         .iter()
         .filter_map(|p| p.price.as_ref().filter(|pr| pr.currency == currency).map(|pr| (p, pr)))
         .min_by(|a, b| (a.1.input_per_1m + a.1.output_per_1m).total_cmp(&(b.1.input_per_1m + b.1.output_per_1m)))
-        .map(|(p, _)| p.name.clone())
+        .map(|(p, _)| p.key.clone())
 }
 
 fn fastest(providers: &[PublicProvider]) -> Option<String> {
@@ -108,12 +108,12 @@ fn fastest(providers: &[PublicProvider]) -> Option<String> {
         .iter()
         .filter_map(|p| p.tokens_per_second_p50.map(|t| (p, t)))
         .max_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(p, _)| p.name.clone())
+        .map(|(p, _)| p.key.clone())
 }
 
 fn provider_view(facts: &Facts, model: &str, id: i64, price: Option<Price>) -> Option<PublicProvider> {
     let record = facts.records.get(&id)?;
-    let name = record.owner_user_id.and_then(|o| facts.owners.get(&o).cloned()).unwrap_or_else(|| record.name.clone());
+    let owner = record.owner_user_id.and_then(|o| facts.owners.get(&o).cloned());
     let own: Vec<&RequestSample> = facts
         .samples
         .get(&model.to_lowercase())
@@ -123,7 +123,9 @@ fn provider_view(facts: &Facts, model: &str, id: i64, price: Option<Price>) -> O
     let measured = latency(&own);
     let health = facts.uptime.get(&id);
     Some(PublicProvider {
-        name,
+        key: record.slug.clone(),
+        provider: record.name.clone(),
+        owner,
         price,
         verification: verification_of(record, model, facts.verifications.get(&id).map_or(&[], Vec::as_slice)),
         uptime_24h: health.and_then(|h| uptime_percent(h.checks_24h, h.healthy_24h)),

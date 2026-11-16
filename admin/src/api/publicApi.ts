@@ -29,7 +29,9 @@ export interface PublicModel {
 }
 
 export interface PublicProvider {
-  name: string
+  key: string
+  provider: string
+  owner: string | null
   price: PublicPrice | null
   verification: 'verified' | 'reference' | 'unverified'
   uptime_24h: number | null

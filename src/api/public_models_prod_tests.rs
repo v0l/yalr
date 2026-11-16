@@ -187,7 +187,9 @@ async fn short_name_traffic_is_credited_to_the_serving_provider() {
     let (status, detail) = t.get("", "/api/public/models/classify").await;
     assert_eq!(status, 200, "{detail}");
     let provider = &detail["providers"][0];
-    assert_eq!(provider["name"], "openrouter");
+    assert_eq!(provider["provider"], "openrouter");
+    assert_eq!(provider["key"], "openrouter");
+    assert!(provider["owner"].is_null());
     assert_eq!(provider["requests_24h"], 2);
     assert_eq!(provider["ttft_p50_ms"], 100.0);
     assert!(provider["price"].is_null());

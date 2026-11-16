@@ -48,8 +48,12 @@ struct Seed {
 }
 
 async fn add(t: &super::tenant_tests::Tenancy, seed: Seed) -> i64 {
+    let owner = t.state.db.add_test_user(seed.owner, false).await;
+    add_for(t, &owner, seed).await
+}
+
+async fn add_for(t: &super::tenant_tests::Tenancy, owner: &crate::db::User, seed: Seed) -> i64 {
     let db = &t.state.db;
-    let owner = db.add_test_user(seed.owner, false).await;
     let new = NewProvider {
         name: seed.name,
         slug: seed.name,
@@ -123,8 +127,8 @@ async fn market() -> (super::tenant_tests::Tenancy, i64) {
     (t, fast)
 }
 
-fn provider<'a>(body: &'a Value, name: &str) -> &'a Value {
-    body["providers"].as_array().unwrap().iter().find(|p| p["name"] == name).unwrap_or_else(|| panic!("{name} missing in {body}"))
+fn provider<'a>(body: &'a Value, owner: &str) -> &'a Value {
+    body["providers"].as_array().unwrap().iter().find(|p| p["owner"] == owner).unwrap_or_else(|| panic!("{owner} missing in {body}"))
 }
 
 #[tokio::test]
@@ -140,7 +144,7 @@ async fn public_models_need_no_login_and_list_only_approved_providers() {
 
     let (status, detail) = t.get("", &format!("/api/public/models/{MODEL}")).await;
     assert_eq!(status, 200, "{detail}");
-    let names: Vec<&str> = detail["providers"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    let names: Vec<&str> = detail["providers"].as_array().unwrap().iter().map(|p| p["owner"].as_str().unwrap()).collect();
     assert_eq!(names.len(), 2);
     assert!(names.contains(&"fastco") && names.contains(&"satco"), "{names:?}");
     assert_eq!(t.get("", "/api/public/models/qwen/nothing").await.0, 404);
@@ -177,7 +181,7 @@ async fn uptime_and_latency_come_from_seeded_rows() {
     assert_eq!(sat["uptime_24h"], Value::Null);
     assert_eq!(sat["requests_24h"], 1);
     assert_eq!(detail["requests_24h"], 4);
-    assert_eq!(detail["fastest_provider"], "fastco");
+    assert_eq!(detail["fastest_provider"], "fast-p");
 }
 
 #[tokio::test]
@@ -248,4 +252,33 @@ async fn requests_routed_through_a_config_count_for_the_upstream_model() {
     let (_, detail) = t.get("", &format!("/api/public/models/{MODEL}")).await;
     assert_eq!(detail["requests_24h"], 5);
     assert_eq!(provider(&detail, "fastco")["requests_24h"], 4);
+}
+
+#[tokio::test]
+async fn one_owner_with_two_providers_gets_distinct_cheapest_and_fastest_keys() {
+    let t = tenancy().await;
+    let owner = t.state.db.add_test_user("multico", false).await;
+    add_for(&t, &owner, Seed { owner: "multico", name: "ripper", status: "approved", currency: "sats", input: 800, output: 900 }).await;
+    add_for(&t, &owner, Seed { owner: "multico", name: "spark", status: "approved", currency: "sats", input: 500, output: 600 }).await;
+    t.state
+        .db
+        .insert_request_logs(&[request("m1", "ripper", "ok", 100, 1_100, 1_000), request("m2", "spark", "ok", 100, 1_100, 100)])
+        .await
+        .unwrap();
+    t.state.config.router.refresh_full_name_index().await;
+    let (status, detail) = t.get("", &format!("/api/public/models/{MODEL}")).await;
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!(detail["cheapest_provider"], "spark");
+    assert_eq!(detail["fastest_provider"], "ripper");
+    let rows = detail["providers"].as_array().unwrap();
+    let mut keys: Vec<(&str, &str, &str)> =
+        rows.iter().map(|p| (p["key"].as_str().unwrap(), p["provider"].as_str().unwrap(), p["owner"].as_str().unwrap())).collect();
+    keys.sort();
+    assert_eq!(keys, vec![("ripper", "ripper", "multico"), ("spark", "spark", "multico")]);
+    assert!(rows.iter().all(|p| p.get("id").is_none()));
+    for body in [detail.to_string()] {
+        for forbidden in ["private-host", "base_url", "sk-private", "api_key", "owner_user_id"] {
+            assert!(!body.contains(forbidden), "{forbidden} leaked in {body}");
+        }
+    }
 }

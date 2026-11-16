@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { formatTokens } from './publicFormat'
+import { badgesFor, formatTokens } from './publicFormat'
 
 test('formatTokens renders millions as M', () => {
   expect(formatTokens(1000000)).toBe('1M')
@@ -17,4 +17,12 @@ test('formatTokens keeps K below a million', () => {
 test('formatTokens handles small and missing values', () => {
   expect(formatTokens(999)).toBe('999')
   expect(formatTokens(null)).toBe('-')
+})
+
+test('badgesFor marks only the provider whose key matches', () => {
+  const rows = [{ key: 'ripper' }, { key: 'spark' }]
+  const model = { cheapest_provider: 'spark', fastest_provider: 'ripper' }
+  expect(badgesFor(rows[0], model)).toEqual({ cheapest: false, fastest: true })
+  expect(badgesFor(rows[1], model)).toEqual({ cheapest: true, fastest: false })
+  expect(badgesFor(rows[1], { cheapest_provider: null, fastest_provider: null })).toEqual({ cheapest: false, fastest: false })
 })
