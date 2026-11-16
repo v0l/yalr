@@ -2031,6 +2031,7 @@ impl Clone for RouterError {
 
 mod full_name;
 mod prefer;
+#[cfg(test)]
 mod prefer_tests;
 #[cfg(test)]
 mod full_name_tests;

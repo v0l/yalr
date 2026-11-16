@@ -10,6 +10,7 @@ export interface Provider {
   status_reason?: string | null
   status_locked?: boolean
   is_reference?: boolean
+  max_concurrency?: number | null
   verifications?: import('./verification').VerificationSummary[]
   created_at: string
   updated_at: string
@@ -53,6 +54,7 @@ export interface ProviderFormData {
   client_version?: string
   extra_body?: string
   owner_user_id?: number | null
+  max_concurrency?: string
 }
 
 export interface PaymentOption {
@@ -256,6 +258,7 @@ export interface ProviderUpdateRequest {
   client_version?: string
   extra_body?: Record<string, unknown>
   owner_user_id?: number | null
+  max_concurrency?: number | null
 }
 
 export interface ModelSyncReport {

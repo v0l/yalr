@@ -273,6 +273,30 @@ See [AGENTS.md](AGENTS.md) for full design philosophy, theme system rules, and i
 - `POST /v1/audio/speech` - Text to speech, audio streamed back
 - `POST /v1/systemone` - Decision models (Jev), also at `POST /api/alpha/decisions`
 
+### Routing preferences
+
+Full-name pools (`vendor/model`, served by several providers at different prices and speeds) can be
+ordered by `balanced` (the default, spreads load), `cheapest` or `fastest`. Highest precedence first:
+
+1. The request: OpenRouter style `"provider": {"sort": "price"}` (`cheapest`), `"throughput"`
+   (`fastest`, highest recent output tokens per second, TTFT p50 as tie-break) or `"latency"` (lowest
+   TTFT p50), or a model suffix: `vendor/model:floor` (cheapest), `vendor/model:nitro` (fastest).
+2. A per-model override in the user's settings.
+3. The user's default preference.
+4. `balanced`.
+
+`GET /api/account/routing` and `PUT /api/account/routing` read and set the default and the per-model
+overrides (`{"default": "cheapest", "models": [{"model": "vendor/model", "preference": "fastest"}]}`);
+the admin UI has the same under Routing.
+
+Preferences only order healthy providers. Degraded, cooling and unavailable ones stay behind. A
+provider with fewer than 5 recent samples is ranked as the pool median for speed, and equal prices
+fall back to balanced. Under `cheapest` or `fastest` a sticky session keeps its provider only when it
+is at the best price or within 10% of the best speed. A provider owner can set `max_concurrency` on a
+provider: at that many requests in flight it is skipped for the next one. Admin routing configs
+(`code`, `classify` and so on) keep their own strategy and ignore user preferences. Each request is
+billed at the serving provider's price.
+
 ### Quota and cost reporting
 
 `GET /v1/quota` works for any API key. It lists the quota windows (`5h`, `7d`, ...) of the

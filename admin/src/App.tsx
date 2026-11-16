@@ -18,6 +18,7 @@ import Approvals from './pages/Approvals'
 import Register from './pages/Register'
 import Models from './pages/Models'
 import ModelDetail from './pages/ModelDetail'
+import RoutingSettings from './pages/RoutingSettings'
 import { currentRole } from './lib/role'
 import { api } from './api/client'
 import { API_BASE_URL } from './api/client'
@@ -96,6 +97,7 @@ export default function App() {
           <Route path="users/:id" element={<AdminRoute><UserDetail /></AdminRoute>} />
           <Route path="payments" element={<Payments />} />
           <Route path="chat" element={<Chat />} />
+          <Route path="routing" element={<RoutingSettings />} />
           <Route path="providers/:slug" element={<ProviderDetail />} />
           <Route path="approvals" element={<AdminRoute><Approvals /></AdminRoute>} />
           <Route path="request-log" element={<RequestLog />} />

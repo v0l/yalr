@@ -16,6 +16,7 @@ const navigation = [
   { name: 'Users', path: '/users', icon: UsersIcon, adminOnly: true },
   { name: 'Approvals', path: '/approvals', icon: ShieldCheckIcon, adminOnly: true },
   { name: 'Payments', path: '/payments', icon: CreditCardIcon, adminOnly: false },
+  { name: 'Routing', path: '/routing', icon: SlidersIcon, adminOnly: false },
   { name: 'Chat', path: '/chat', icon: MessageSquareIcon, adminOnly: false },
   { name: 'Models', path: '/models', icon: StoreIcon, adminOnly: false },
 ]

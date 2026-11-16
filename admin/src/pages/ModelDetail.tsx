@@ -21,6 +21,12 @@ function Stat({ label, value }: { label: string; value: string }) {
   )
 }
 
+function lowestTtft(providers: PublicProvider[]): string | null {
+  const measured = providers.filter(p => p.ttft_p50_ms != null)
+  if (measured.length === 0) return null
+  return measured.reduce((a, b) => (b.ttft_p50_ms as number) < (a.ttft_p50_ms as number) ? b : a).name
+}
+
 export default function ModelDetail() {
   const { '*': name = '' } = useParams()
   const [model, setModel] = useState<PublicModelDetail | null>(null)
@@ -62,6 +68,16 @@ export default function ModelDetail() {
               <Stat label="Providers" value={String(model.provider_count)} />
               <Stat label="Requests 24h" value={model.requests_24h.toLocaleString()} />
             </div>
+
+            {model.kind === 'pool' && (
+              <div className="panel space-y-1 p-4 font-mono text-[12px]">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Routing preferences pick</p>
+                <p>balanced <span className="text-muted-foreground">spreads load across healthy providers</span></p>
+                <p>cheapest (:floor) <span className="text-brand">{model.cheapest_provider ?? '-'}</span></p>
+                <p>fastest (:nitro) <span className="text-brand">{model.fastest_provider ?? '-'}</span></p>
+                <p>latency (provider.sort) <span className="text-brand">{lowestTtft(model.providers) ?? '-'}</span></p>
+              </div>
+            )}
 
             <div className="panel overflow-x-auto">
               <table className="w-full font-mono text-[12px] tabular-nums">

@@ -144,6 +144,17 @@ export function ProviderFormDialog({
               </p>
             </div>
           )}
+          {editingProvider && (
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="p-max-concurrency" className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+                Max concurrency<span className="font-normal text-muted-foreground tracking-normal"> (blank is unlimited)</span>
+              </Label>
+              <Input id="p-max-concurrency" type="number" min={1} value={form.max_concurrency ?? ''} onChange={e => setForm({ ...form, max_concurrency: e.target.value })} className="font-mono bg-surface border-border text-foreground" />
+              <p className="font-mono text-[10px] text-muted-foreground">
+                Requests in flight before cheapest and fastest routing move on to the next provider.
+              </p>
+            </div>
+          )}
           <ExtraBodyField
             id="p-extra-body"
             value={form.extra_body ?? ''}

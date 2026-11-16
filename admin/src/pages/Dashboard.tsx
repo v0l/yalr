@@ -164,7 +164,7 @@ export default function Dashboard() {
   function openEdit(provider: Provider) {
     setEditingProvider(provider)
     setOwnerLabel(provider.owner_username ?? null)
-    setForm({ name: provider.name, slug: provider.slug, base_url: provider.base_url, api_key: '', provider_type: provider.provider_type, client_version: provider.client_version ?? '', extra_body: formatExtraBody(provider.extra_body), owner_user_id: provider.owner_user_id ?? null })
+    setForm({ name: provider.name, slug: provider.slug, base_url: provider.base_url, api_key: '', provider_type: provider.provider_type, client_version: provider.client_version ?? '', extra_body: formatExtraBody(provider.extra_body), owner_user_id: provider.owner_user_id ?? null, max_concurrency: provider.max_concurrency == null ? '' : String(provider.max_concurrency) })
     setFormError(null)
     setFormDialogOpen(true)
   }
@@ -183,10 +183,12 @@ export default function Dashboard() {
         if (form.provider_type !== editingProvider.provider_type) d.provider_type = form.provider_type
         if (editingProvider.default_client_version && form.client_version !== (editingProvider.client_version ?? '')) d.client_version = form.client_version ?? ''
         if ((form.owner_user_id ?? null) !== (editingProvider.owner_user_id ?? null)) d.owner_user_id = form.owner_user_id ?? null
+        const limit = (form.max_concurrency ?? '').trim() === '' ? null : Number(form.max_concurrency)
+        if (limit !== (editingProvider.max_concurrency ?? null)) d.max_concurrency = limit
         await api.updateProvider(editingProvider.slug, { ...d, extra_body: parsedBody.value })
         setSuccessMessage('PROVIDER UPDATED')
       } else {
-        const { extra_body: _text, owner_user_id: _owner, ...rest } = form
+        const { extra_body: _text, owner_user_id: _owner, max_concurrency: _limit, ...rest } = form
         await api.createProvider({ ...rest, ...(Object.keys(parsedBody.value).length ? { extra_body: parsedBody.value } : {}) })
         setSuccessMessage('PROVIDER CREATED')
       }
