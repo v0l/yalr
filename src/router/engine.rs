@@ -275,6 +275,8 @@ pub struct Router {
     provider_bodies: std::sync::RwLock<HashMap<String, crate::db::ExtraBody>>,
     full_names: RwLock<full_name::FullNameIndex>,
     provider_access: std::sync::RwLock<HashMap<String, (Option<i64>, String)>>,
+    provider_limits: std::sync::RwLock<HashMap<String, u32>>,
+    speeds: RwLock<prefer::SpeedBoard>,
 }
 
 impl Router {
@@ -295,6 +297,8 @@ impl Router {
             provider_bodies: std::sync::RwLock::new(HashMap::new()),
             full_names: RwLock::new(Default::default()),
             provider_access: std::sync::RwLock::new(HashMap::new()),
+            provider_limits: std::sync::RwLock::new(HashMap::new()),
+            speeds: RwLock::new(Default::default()),
         }
     }
 
@@ -867,6 +871,16 @@ impl Router {
         session: Option<&SessionKey>,
         viewer: Option<i64>,
     ) -> Result<Vec<Candidate>, RouterError> {
+        self.collect_routed_preferring(model, session, viewer, None).await
+    }
+
+    pub(crate) async fn collect_routed_preferring(
+        &self,
+        model: &str,
+        session: Option<&SessionKey>,
+        viewer: Option<i64>,
+        requested: Option<crate::router::preference::Preference>,
+    ) -> Result<Vec<Candidate>, RouterError> {
         if let Some((slug_prefix, actual_model)) = model.split_once('/') {
             let exact = self.providers.read().await.get(slug_prefix).cloned();
             if let Some(provider) = exact {
@@ -876,7 +890,7 @@ impl Router {
                 return Ok(vec![self.untracked_candidate(provider, actual_model.to_string())]);
             }
             if !self.routing_tables.read().await.contains_key(model) {
-                let pooled = self.rank_full_name(model, session, viewer).await?;
+                let pooled = self.rank_full_name(model, session, viewer, requested).await?;
                 if !pooled.is_empty() {
                     return Ok(pooled);
                 }
@@ -1084,7 +1098,9 @@ impl Router {
         let original_model = request.model.clone();
         let session = session_key(user.as_ref(), &original_model, request.session_id());
 
-        let candidates = self.collect_routed(&request.model, session.as_ref(), user.as_ref().and_then(|u| u.id)).await?;
+        let candidates = self
+            .collect_routed_preferring(&request.model, session.as_ref(), user.as_ref().and_then(|u| u.id), request.preference())
+            .await?;
         if candidates.is_empty() {
             return Err(RouterError::NoAvailableProvider);
         }
@@ -1317,7 +1333,9 @@ impl Router {
         );
 
         let session = session_key(user.as_ref(), &original_model, request.session_id());
-        let candidates = self.collect_routed(&request.model, session.as_ref(), user.as_ref().and_then(|u| u.id)).await?;
+        let candidates = self
+            .collect_routed_preferring(&request.model, session.as_ref(), user.as_ref().and_then(|u| u.id), request.preference())
+            .await?;
         if candidates.is_empty() {
             return Err(RouterError::NoAvailableProvider);
         }
@@ -2012,6 +2030,8 @@ impl Clone for RouterError {
 }
 
 mod full_name;
+mod prefer;
+mod prefer_tests;
 #[cfg(test)]
 mod full_name_tests;
 

@@ -6,15 +6,15 @@ use crate::request_log::Trace;
 use async_trait::async_trait;
 use std::sync::atomic::AtomicBool;
 
-struct Listed {
-    name: String,
+pub(super) struct Listed {
+    pub(super) name: String,
     models: Vec<String>,
     calls: AtomicUsize,
-    failing: AtomicBool,
+    pub(super) failing: AtomicBool,
 }
 
 impl Listed {
-    fn new(name: &str, models: &[&str]) -> Arc<Self> {
+    pub(super) fn new(name: &str, models: &[&str]) -> Arc<Self> {
         Arc::new(Self {
             name: name.to_string(),
             models: models.iter().map(|m| m.to_string()).collect(),
@@ -23,7 +23,7 @@ impl Listed {
         })
     }
 
-    fn calls(&self) -> usize {
+    pub(super) fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
 }
@@ -65,27 +65,27 @@ impl Provider for Listed {
     }
 }
 
-fn chat(model: &str, trace: &Trace) -> ChatRequest {
+pub(super) fn chat(model: &str, trace: &Trace) -> ChatRequest {
     let request: ChatRequest =
         serde_json::from_str(&format!(r#"{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]}}"#))
             .unwrap();
     request.with_trace(trace.clone())
 }
 
-struct World {
-    router: Router,
-    db: Arc<Database>,
-    metrics: MetricsStore,
+pub(super) struct World {
+    pub(super) router: Router,
+    pub(super) db: Arc<Database>,
+    pub(super) metrics: MetricsStore,
 }
 
-async fn world() -> World {
+pub(super) async fn world() -> World {
     let db = Arc::new(Database::test().await);
     let metrics = MetricsStore::new(100);
     let router = Router::new(metrics.clone(), db.clone());
     World { router, db, metrics }
 }
 
-async fn add_owned(w: &World, owner: Option<i64>, backend: &Arc<Listed>, model: &str, price_milli: Option<i64>) -> i64 {
+pub(super) async fn add_owned(w: &World, owner: Option<i64>, backend: &Arc<Listed>, model: &str, price_milli: Option<i64>) -> i64 {
     let new = NewProvider {
         name: &backend.name,
         slug: &backend.name,

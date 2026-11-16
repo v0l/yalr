@@ -34,6 +34,7 @@ pub struct ChatRequest {
     body_defaults: Map<String, Value>,
     trace: Option<crate::request_log::Trace>,
     session_header: Option<String>,
+    preference: Option<crate::router::preference::Preference>,
 }
 
 /// Fields pulled out before the typed parse because their client shapes are
@@ -67,6 +68,16 @@ impl ChatRequest {
             })
             .unwrap_or_default();
 
+        let mut preference = None;
+        if let Some(model) = value.get("model").and_then(Value::as_str) {
+            let (bare, suffix) = crate::router::preference::split_model_suffix(model);
+            if suffix.is_some() {
+                preference = suffix;
+                let bare = bare.to_string();
+                value["model"] = Value::String(bare);
+            }
+        }
+
         let inner = ChatCompletionRequest::deserialize(&value)?;
 
         // Fields the typed parse consumed are re-serialized faithfully; every
@@ -83,6 +94,18 @@ impl ChatRequest {
             }
         }
 
+        if let Some(provider) = extra_fields.get_mut("provider") {
+            if let Some(sort) = crate::router::preference::Preference::from_provider_field(Some(&*provider)) {
+                preference = Some(sort);
+                if let Some(object) = provider.as_object_mut() {
+                    object.remove("sort");
+                }
+            }
+            if provider.as_object().is_some_and(|o| o.is_empty()) {
+                extra_fields.remove("provider");
+            }
+        }
+
         Ok(Self {
             inner,
             assistant_extras,
@@ -90,6 +113,7 @@ impl ChatRequest {
             body_defaults: Map::new(),
             trace: None,
             session_header: None,
+            preference,
         })
     }
 
@@ -97,6 +121,10 @@ impl ChatRequest {
     /// the upstream wire.
     pub fn extra_fields(&self) -> &Map<String, Value> {
         &self.extra_fields
+    }
+
+    pub fn preference(&self) -> Option<crate::router::preference::Preference> {
+        self.preference
     }
 
     pub fn input_modalities(&self) -> Vec<crate::router::Modality> {
@@ -164,6 +192,7 @@ impl From<ChatCompletionRequest> for ChatRequest {
             body_defaults: Map::new(),
             trace: None,
             session_header: None,
+            preference: None,
         }
     }
 }
@@ -225,6 +254,31 @@ impl ChatRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nitro_suffix_is_stripped_and_read_as_fastest() {
+        let request = ChatRequest::from_value(serde_json::json!({"model": "acme/m-1:nitro", "messages": []})).unwrap();
+        assert_eq!(request.model, "acme/m-1");
+        assert_eq!(request.preference(), Some(crate::router::preference::Preference::Fastest));
+    }
+
+    #[test]
+    fn provider_sort_is_read_and_kept_off_the_wire_and_beats_the_suffix() {
+        let request = ChatRequest::from_value(serde_json::json!({
+            "model": "acme/m-1:nitro", "messages": [], "provider": {"sort": "price", "order": ["x"]}
+        }))
+        .unwrap();
+        assert_eq!(request.preference(), Some(crate::router::preference::Preference::Cheapest));
+        let provider = request.extra_fields().get("provider").unwrap();
+        assert!(provider.get("sort").is_none());
+        assert!(provider.get("order").is_some());
+    }
+
+    #[test]
+    fn a_plain_request_has_no_preference() {
+        let request = ChatRequest::from_value(serde_json::json!({"model": "acme/m-1", "messages": []})).unwrap();
+        assert_eq!(request.preference(), None);
+    }
 
     fn assistant_count(request: &ChatRequest) -> usize {
         request

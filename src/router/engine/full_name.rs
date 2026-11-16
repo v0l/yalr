@@ -39,6 +39,11 @@ impl Router {
             .map(|r| (r.slug.clone(), (r.owner_user_id, r.status.clone())))
             .collect();
         *self.provider_access.write().unwrap() = access;
+        let limits = records
+            .iter()
+            .filter_map(|r| r.max_concurrency.filter(|l| *l > 0).map(|l| (r.slug.clone(), l as u32)))
+            .collect();
+        *self.provider_limits.write().unwrap() = limits;
     }
 
     pub(crate) fn may_serve(&self, slug: &str, viewer: Option<i64>) -> bool {
@@ -131,6 +136,7 @@ impl Router {
         model: &str,
         session: Option<&SessionKey>,
         viewer: Option<i64>,
+        requested: Option<crate::router::preference::Preference>,
     ) -> Result<Vec<Candidate>, RouterError> {
         let members = self.pool_members(model, viewer).await;
         if members.is_empty() {
@@ -138,6 +144,8 @@ impl Router {
         }
         let key = model.to_lowercase();
         let counter = self.full_names.write().await.counters.entry(key.clone()).or_default().clone();
+        let members_by_name: HashMap<String, i64> =
+            members.iter().map(|(m, p)| (p.name().to_string(), m.provider_id)).collect();
         let entries = members
             .into_iter()
             .map(|(m, provider)| ProviderEntry {
@@ -151,7 +159,11 @@ impl Router {
         tables.insert(key.clone(), RoutingTable::with_counter(entries, counter));
         let ranked = self.rank_table(&tables, &key, model, "", 1).await?;
         let mut candidates = ranked.candidates;
-        self.sticky.move_pinned_first(session, &mut candidates, |c| c.provider.name());
+        if ranked.tier == Tier::Healthy {
+            self.apply_preference(model, &members_by_name, viewer, requested, session, &mut candidates).await;
+        } else {
+            self.sticky.move_pinned_first(session, &mut candidates, |c| c.provider.name());
+        }
         Ok(candidates)
     }
 

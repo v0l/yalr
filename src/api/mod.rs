@@ -32,7 +32,7 @@ pub mod provider_stats;
 pub mod public_models;
 mod public_models_build;
 pub mod listing_status;
-mod public_models_math;
+pub(crate) mod public_models_math;
 #[cfg(test)]
 mod public_models_tests;
 #[cfg(test)]
