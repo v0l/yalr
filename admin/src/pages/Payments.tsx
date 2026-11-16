@@ -10,6 +10,7 @@ import CardPaymentsTab from '@/components/fiat/CardPaymentsTab'
 import { fiatApi, type FiatConfig } from '@/api/fiat'
 import { TopupBalanceDialog } from '@/components/TopupBalanceDialog'
 import ApiKeysPanel from '@/components/ApiKeysPanel'
+import WithdrawPanel from '@/components/payouts/WithdrawPanel'
 import { Button } from '@/components/ui/button'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
@@ -22,13 +23,14 @@ import { ScaleIcon, PlusIcon, TrashIcon, PencilIcon, CoinsIcon, ReceiptIcon, Zap
 
 /* ── Tab types ─────────────────────────────────────────────────── */
 
-type TabId = 'balances' | 'pricing' | 'transactions' | 'invoices' | 'card'
+type TabId = 'balances' | 'pricing' | 'transactions' | 'invoices' | 'card' | 'withdraw'
 const allTabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: 'balances', label: 'Balances', icon: <CoinsIcon className="size-3.5" /> },
   { id: 'pricing', label: 'Pricing', icon: <DollarSignIcon className="size-3.5" /> },
   { id: 'transactions', label: 'Transactions', icon: <ReceiptIcon className="size-3.5" /> },
   { id: 'invoices', label: 'Invoices', icon: <ZapIcon className="size-3.5" /> },
   { id: 'card', label: 'Card', icon: <CoinsIcon className="size-3.5" /> },
+  { id: 'withdraw', label: 'Withdraw', icon: <CoinsIcon className="size-3.5" /> },
 ]
 
 /* ── Helpers ──────────────────────────────────────────────────── */
@@ -306,6 +308,8 @@ export default function Payments() {
           </div>
         </div>
       )}
+
+      {activeTab === 'withdraw' && <WithdrawPanel />}
 
       {/* ══ Transactions ═══════════════════════════════════════════ */}
       {activeTab === 'transactions' && (

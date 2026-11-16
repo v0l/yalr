@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
 import { tenantApi } from '@/api/tenantApi'
 import type { Provider } from '@/types'
+import PayoutsQueue from '@/components/payouts/PayoutsQueue'
 import { StatusBadge, VerificationHistory, VerificationLine } from '@/components/VerificationView'
 
 export default function Approvals() {
@@ -90,6 +91,8 @@ export default function Approvals() {
           </div>
         ))}
       </div>
+
+      <PayoutsQueue />
     </div>
   )
 }
