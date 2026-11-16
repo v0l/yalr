@@ -2,7 +2,7 @@ use crate::db::Database;
 use crate::metrics::{MetricsStore, MetricsUser};
 use crate::providers::{create_provider_from_record, ChatRequest, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
 use crate::router::errors::{keep_useful, FailureLog};
-use crate::router::failover_note::{failover_note, turn_hashes, FailedAttempt};
+use crate::router::failover_note::{failover_note, response_hashes, turn_hashes, FailedAttempt};
 use crate::router::transient::{RetryRounds, TransientRetry};
 use crate::router::input_filter;
 use crate::router::sticky::{SessionKey, StickySessions};
@@ -1884,6 +1884,13 @@ impl Router {
         transformed
     }
 
+    #[cfg(test)]
+    pub(crate) fn pin_session_for_test(&self, key: &SessionKey, provider: &str, items: &[String], prompt_tokens: u32) {
+        let hashes = crate::router::failover_note::response_hashes_of(items);
+        self.sticky.pin_turn(key, provider, hashes);
+        self.sticky.record_prompt_tokens(key, provider, prompt_tokens);
+    }
+
     pub async fn responses(
         &self,
         request: &CreateResponse,
@@ -1902,6 +1909,9 @@ impl Router {
 
         let mut last_error: Option<RouterError> = None;
         let mut failures = FailureLog::default();
+        let previous = session.as_ref().and_then(|k| self.sticky.last_served(k));
+        let hashes = response_hashes(request);
+        let mut failed: Vec<FailedAttempt> = Vec::new();
         let mut rounds = RetryRounds::new(self.transient_retry, self.metrics_store.emitter().clone());
         let mut candidates = candidates;
 
@@ -1960,8 +1970,16 @@ impl Router {
                 Ok(response) => {
                     guard.decrement();
                     rounds.served(&provider_name);
+                    if let Some(trace) = trace {
+                        if let Some(note) = failover_note(&self.metrics_store, previous.as_ref(), &provider_name, &hashes, &failed).await {
+                            trace.set_failover(note);
+                        }
+                    }
                     if let Some(key) = &session {
-                        self.sticky.pin(key, &provider_name);
+                        self.sticky.pin_turn(key, &provider_name, hashes.clone());
+                        if let Some(usage) = response.usage.as_ref() {
+                            self.sticky.record_prompt_tokens(key, &provider_name, usage.input_tokens);
+                        }
                     }
 
                     let latency_ms = total_latency.as_millis() as u32;
@@ -2005,6 +2023,7 @@ impl Router {
                     last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
                     failures.push(&provider_name, &e);
+                    failed.push(FailedAttempt::new(&provider_name, &e));
                     rounds.fail(retained, &original_model, &e, &user);
 
                     if e.is_transient() {

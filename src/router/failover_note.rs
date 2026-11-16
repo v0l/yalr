@@ -20,6 +20,24 @@ pub(crate) fn turn_hashes(request: &ChatRequest) -> Vec<String> {
     serde_json::to_value(&**request).map(|body| fingerprint(&body).message_hashes).unwrap_or_default()
 }
 
+pub(crate) fn response_hashes(request: &async_openai::types::responses::CreateResponse) -> Vec<String> {
+    let Ok(mut body) = serde_json::to_value(request) else {
+        return Vec::new();
+    };
+    let items = match body.get_mut("input").map(serde_json::Value::take) {
+        Some(serde_json::Value::Array(items)) => items,
+        Some(other) if !other.is_null() => vec![other],
+        _ => Vec::new(),
+    };
+    fingerprint(&serde_json::json!({ "messages": items })).message_hashes
+}
+
+#[cfg(test)]
+pub(crate) fn response_hashes_of(items: &[String]) -> Vec<String> {
+    let items: Vec<serde_json::Value> = items.iter().map(|i| serde_json::Value::String(i.clone())).collect();
+    fingerprint(&serde_json::json!({ "messages": items })).message_hashes
+}
+
 async fn is_unhealthy(metrics: &MetricsStore, provider: &str) -> bool {
     let snapshot = metrics.routing_snapshot(&[provider]).await;
     snapshot

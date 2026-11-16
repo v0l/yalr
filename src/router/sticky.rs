@@ -202,6 +202,7 @@ mod tests {
             calls: AtomicUsize,
             failing: AtomicBool,
             client_error: AtomicBool,
+            stream_error: AtomicBool,
         }
 
         fn response() -> ChatResponse {
@@ -216,7 +217,8 @@ mod tests {
         fn chunk() -> crate::StreamingChunk {
             serde_json::from_str(
                 r#"{"id":"c","object":"chat.completion.chunk","created":1,"model":"m",
-                "choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#,
+                "choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":11000,"completion_tokens":5,"total_tokens":11005}}"#,
             )
             .unwrap()
         }
@@ -248,6 +250,11 @@ mod tests {
             ) -> Result<futures::stream::BoxStream<'static, Result<crate::StreamingChunk, ProviderError>>, ProviderError>
             {
                 self.calls.fetch_add(1, Ordering::SeqCst);
+                if self.stream_error.load(Ordering::SeqCst) {
+                    return Ok(Box::pin(futures::stream::once(async {
+                        Err(ProviderError::ServerError { message: "reset".into(), status_code: Some(502) })
+                    })));
+                }
                 Ok(Box::pin(futures::stream::once(async { Ok(chunk()) })))
             }
             async fn health_check(&self) -> Result<bool, ProviderError> {
@@ -258,7 +265,7 @@ mod tests {
         async fn pool(names: &[&str]) -> (Router, Vec<Arc<Backend>>) {
             let backends: Vec<Arc<Backend>> = names
                 .iter()
-                .map(|n| Arc::new(Backend { name: n.to_string(), calls: AtomicUsize::new(0), failing: AtomicBool::new(false), client_error: AtomicBool::new(false) }))
+                .map(|n| Arc::new(Backend { name: n.to_string(), calls: AtomicUsize::new(0), failing: AtomicBool::new(false), client_error: AtomicBool::new(false), stream_error: AtomicBool::new(false) }))
                 .collect();
             let db = Arc::new(Database::test().await);
             let router = Router::new(MetricsStore::new(100), db);
@@ -392,6 +399,24 @@ mod tests {
             let attempts = request.trace().unwrap().attempts();
             assert!(attempts[0].error.is_some() && attempts[1].error.is_none());
             assert!(request.trace().unwrap().usage().is_none());
+        }
+
+        #[tokio::test]
+        async fn a_stream_that_dies_on_the_pinned_provider_fails_over_with_usage_only_from_the_server() {
+            let (router, backends) = pool(&["a", "b"]).await;
+            let (pinned, other) = pinned_and_other(&router, &backends).await;
+            backends[pinned].stream_error.store(true, Ordering::SeqCst);
+            let request = traced();
+            let mut stream = router.chat_completions_stream(&request, user(1)).await.unwrap();
+            while let Some(chunk) = stream.next().await {
+                chunk.unwrap();
+            }
+            let trace = request.trace().unwrap();
+            assert_eq!(trace.provider().as_deref(), Some(backends[other].name.as_str()));
+            assert_eq!(trace.usage().map(|u| u.prompt_tokens), Some(11_000));
+            assert_eq!(trace.failover().map(|n| n.provider), Some(backends[pinned].name.clone()));
+            let attempts = trace.attempts();
+            assert_eq!((attempts[0].provider.as_str(), attempts[0].error.is_some()), (backends[pinned].name.as_str(), true));
         }
 
         #[tokio::test]

@@ -399,3 +399,78 @@ async fn chat_rows_carry_their_cost() {
     let cost = token_cost_msat(2000, 100);
     assert_eq!((row.cost_msat, h.spent_msat().await), (Some(cost), cost));
 }
+
+#[tokio::test]
+async fn a_responses_failover_bills_the_cached_prefix_and_charges_the_failed_provider() {
+    use crate::db::{NewModelPricing, NewProvider};
+    let h = harness("resp").await;
+    let owner = h.state.db.add_test_user("a-owner", false).await;
+    let failed = h
+        .state
+        .db
+        .create_owned_provider(
+            owner.id,
+            NewProvider { name: "down", slug: "down", base_url: "http://127.0.0.1:9/v1", api_key: None, provider_type: None },
+        )
+        .await
+        .unwrap();
+    h.state
+        .db
+        .create_model_pricing(NewModelPricing {
+            model_name: "resp",
+            is_advertised: true,
+            is_free: false,
+            price_per_1m_input_sats: Some(1000),
+            price_per_1m_output_sats: Some(0),
+            price_per_1m_cache_read_sats: Some(100),
+            price_per_1m_cache_write_sats: None,
+            price_per_request_sats: Some(0),
+            context_window: None,
+            max_output_tokens: None,
+            owner_user_id: Some(owner.id),
+            provider_id: Some(failed.id),
+            currency: "sats",
+            fiat: Default::default(),
+        })
+        .await
+        .unwrap();
+    h.state
+        .db
+        .execute_raw("UPDATE model_pricing SET price_per_1m_cache_read_sats = 100, price_per_request_sats = 0 WHERE provider_id IS NULL")
+        .await
+        .unwrap();
+    let down: Arc<dyn crate::providers::Provider> =
+        Arc::new(OpenAiProvider::new("down", Some("down"), "http://127.0.0.1:9/v1", Some("k")));
+    let up: Arc<dyn crate::providers::Provider> = Arc::new(OpenAiProvider::new(
+        "up",
+        Some("up"),
+        &format!("{}/v1", h.upstream.uri()),
+        Some("k"),
+    ));
+    let router = &h.state.config.router;
+    router.add_provider(down.clone()).await;
+    router.register_route("resp", vec![down.clone(), up.clone()]).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "resp_1", "object": "response", "created_at": 0, "model": "resp", "status": "completed",
+            "output": [], "usage": {"input_tokens": 11000, "output_tokens": 0, "total_tokens": 11000,
+            "input_tokens_details": {"cached_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}}
+        })))
+        .mount(&h.upstream)
+        .await;
+    let key = crate::router::sticky::SessionKey::new(Some(h.user_id), "resp", Some("conv")).unwrap();
+    router.pin_session_for_test(&key, "down", &["first".to_string()], 10_000);
+    let request = r#"{"model":"resp","input":"first","prompt_cache_key":"conv"}"#;
+    let (status, body) = h.json("/v1/responses", request).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let row = h.logged("/v1/responses").await;
+    assert_eq!(row.provider.as_deref(), Some("up"));
+    assert_eq!(row.failover_note.as_deref(), Some("failover: prefill billed as cached (10000 tokens)"));
+    let cold = 11_000 * 1000 / 1000;
+    let discounted = (1_000 * 1000 + 10_000 * 100) / 1000;
+    assert_eq!(h.spent_msat().await, discounted);
+    assert!(discounted < cold);
+    let owner_balance = h.state.payments_state.as_ref().unwrap().balance_service.get_balance(owner.id).await.unwrap();
+    assert_eq!(owner_balance, -(cold - discounted));
+}
