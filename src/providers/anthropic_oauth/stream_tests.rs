@@ -28,6 +28,7 @@ async fn provider(base_url: &str) -> AnthropicOAuthProvider {
         status_reason: None,
         status_locked: false,
         is_reference: false,
+        max_concurrency: None,
         created_at: Default::default(),
         updated_at: Default::default(),
     };

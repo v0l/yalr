@@ -8,6 +8,7 @@ mod failover;
 mod input_filter;
 pub mod image;
 pub mod model_info;
+pub mod preference;
 pub mod sticky;
 pub mod strategies;
 pub mod transient;

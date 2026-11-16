@@ -24,6 +24,7 @@ mod public_stats;
 mod providers;
 mod request_log;
 mod routing;
+mod routing_preferences;
 pub mod testing;
 mod types;
 mod usage;
@@ -42,6 +43,7 @@ pub use provider_stats::{ProviderEarning, ProviderModelTraffic, ProviderTraffic}
 pub use public_stats::{HealthUptime, RequestCount, RequestSample};
 pub use currency::{fee_for, milli_per_unit, normalize_currency, Settled, Settlement, SATS};
 pub use types::*;
+pub use routing_preferences::RoutingPreferences;
 pub use users::UserChanges;
 pub use verifications::{NewVerification, VerificationRow};
 pub use usage::{ApiKeyUsage, HourUsage, ModelUsage, UsageReport, UsageScope};

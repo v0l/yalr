@@ -107,6 +107,8 @@ pub struct Provider {
     pub status_locked: bool,
     #[sqlx(default)]
     pub is_reference: bool,
+    #[sqlx(default)]
+    pub max_concurrency: Option<i32>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
