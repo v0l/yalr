@@ -149,6 +149,7 @@ async fn a_cooling_cheap_provider_is_not_chosen_over_a_healthy_one() {
                 error_message: "429".to_string(),
                 retry_after_ms: Some(60_000),
                 status_code: Some(429),
+                ..Default::default()
             }),
             user: None,
         })
