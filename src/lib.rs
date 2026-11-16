@@ -10,6 +10,7 @@ pub mod metrics;
 pub mod metrics_agg;
 pub mod oauth;
 pub mod payments;
+pub mod payouts;
 pub mod providers;
 pub mod request_log;
 pub mod router;

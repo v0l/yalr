@@ -280,3 +280,11 @@ mod tests {
         );
     }
 }
+
+#[async_trait::async_trait]
+impl crate::payouts::lightning::InvoicePayer for LightningService {
+    async fn pay(&self, bolt11: &str) -> Result<crate::payouts::lightning::Paid, String> {
+        let paid = LightningService::pay_invoice(self, bolt11, None).await.map_err(|e| e.to_string())?;
+        Ok(crate::payouts::lightning::Paid { payment_hash: paid.payment_hash, fee_msat: paid.fee_msat })
+    }
+}

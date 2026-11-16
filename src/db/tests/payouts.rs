@@ -10,6 +10,7 @@ fn rules() -> PayoutRules {
         approval_threshold: 50_000,
         fee_ppm: 0,
         fee_flat: 0,
+        granularity: 1,
     }
 }
 
@@ -31,7 +32,7 @@ async fn approved_first(db: &Database, user: i64, currency: &str) {
     earn(db, user, currency, 10_000, 30).await;
     let p = db.request_payout(new(user, currency, 1_000, LIGHTNING), &rules()).await.unwrap();
     db.approve_payout(p.id).await.unwrap();
-    db.mark_payout_sent(p.id, &format!("h{}", p.id)).await.unwrap();
+    db.mark_payout_sent(p.id, &format!("h{}", p.id), None).await.unwrap();
     db.complete_payout(p.id).await.unwrap();
 }
 
@@ -99,7 +100,7 @@ async fn failure_returns_the_hold_once() {
     let before = db.get_currency_balance(u.id, "eur").await.unwrap();
     let p = db.request_payout(new(u.id, "eur", 2_000, REVOLUT_LINK), &rules()).await.unwrap();
     assert_eq!(db.get_currency_balance(u.id, "eur").await.unwrap(), before - 2_000);
-    db.mark_payout_sent(p.id, "link1").await.unwrap();
+    db.mark_payout_sent(p.id, "link1", None).await.unwrap();
     db.fail_payout(p.id, "expired").await.unwrap();
     assert_eq!(db.get_currency_balance(u.id, "eur").await.unwrap(), before);
     assert_eq!(db.fail_payout(p.id, "again").await.unwrap_err(), PayoutError::WrongState);
@@ -114,7 +115,7 @@ async fn completion_finalises_and_cannot_be_failed_afterwards() {
     let u = db.add_test_user("u", false).await;
     approved_first(&db, u.id, "eur").await;
     let p = db.request_payout(new(u.id, "eur", 2_000, REVOLUT_LINK), &rules()).await.unwrap();
-    db.mark_payout_sent(p.id, "link2").await.unwrap();
+    db.mark_payout_sent(p.id, "link2", None).await.unwrap();
     let after_hold = db.get_currency_balance(u.id, "eur").await.unwrap();
     db.complete_payout(p.id).await.unwrap();
     assert_eq!(db.complete_payout(p.id).await.unwrap_err(), PayoutError::WrongState);
@@ -129,7 +130,7 @@ async fn racing_completions_and_failures_apply_one_outcome() {
     let u = db.add_test_user("u", false).await;
     approved_first(&db, u.id, "eur").await;
     let p = db.request_payout(new(u.id, "eur", 2_000, REVOLUT_LINK), &rules()).await.unwrap();
-    db.mark_payout_sent(p.id, "link3").await.unwrap();
+    db.mark_payout_sent(p.id, "link3", None).await.unwrap();
     let before = db.get_currency_balance(u.id, "eur").await.unwrap();
     let (a, b, c) = tokio::join!(db.complete_payout(p.id), db.fail_payout(p.id, "x"), db.complete_payout(p.id));
     let wins = [a.is_ok(), b.is_ok(), c.is_ok()].into_iter().filter(|ok| *ok).count();

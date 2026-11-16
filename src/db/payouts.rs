@@ -41,6 +41,7 @@ pub struct PayoutRules {
     pub approval_threshold: i64,
     pub fee_ppm: i64,
     pub fee_flat: i64,
+    pub granularity: i64,
 }
 
 pub struct NewPayout<'a> {
@@ -197,7 +198,9 @@ fn reference(id: i64) -> String {
 
 impl PayoutRules {
     pub fn fee_for(&self, amount: i64) -> i64 {
-        (super::fee_for(amount, self.fee_ppm) + self.fee_flat).min(amount)
+        let raw = super::fee_for(amount, self.fee_ppm) + self.fee_flat;
+        let step = self.granularity.max(1);
+        ((raw + step - 1) / step * step).min(amount)
     }
 }
 
@@ -263,16 +266,26 @@ impl Database {
         Ok(row)
     }
 
-    pub async fn mark_payout_sent(&self, id: i64, external_id: &str) -> Result<PayoutRow, PayoutError> {
+    pub async fn mark_payout_sent(
+        &self,
+        id: i64,
+        external_id: &str,
+        destination: Option<&str>,
+    ) -> Result<PayoutRow, PayoutError> {
         let mut tx = self.pool.begin().await?;
         let row = transition(&mut tx, id, &[HELD], SENT, None).await?;
-        sqlx::query("UPDATE payouts SET external_id = ? WHERE id = ?")
+        sqlx::query("UPDATE payouts SET external_id = ?, destination = COALESCE(?, destination) WHERE id = ?")
             .bind(external_id)
+            .bind(destination)
             .bind(id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(PayoutRow { external_id: Some(external_id.to_string()), ..row })
+        Ok(PayoutRow {
+            external_id: Some(external_id.to_string()),
+            destination: destination.map_or(row.destination, str::to_string),
+            ..row
+        })
     }
 
     pub async fn complete_payout(&self, id: i64) -> Result<PayoutRow, PayoutError> {
@@ -285,6 +298,14 @@ impl Database {
 
     pub async fn fail_payout(&self, id: i64, reason: &str) -> Result<PayoutRow, PayoutError> {
         self.release_payout(id, FAILED, Some(reason)).await
+    }
+
+    pub async fn fail_unsent_payout(&self, id: i64, reason: &str) -> Result<PayoutRow, PayoutError> {
+        let mut tx = self.pool.begin().await?;
+        let row = transition(&mut tx, id, &[HELD], FAILED, Some(reason)).await?;
+        release(&mut tx, &row).await?;
+        tx.commit().await?;
+        Ok(row)
     }
 
     pub async fn cancel_payout(&self, id: i64) -> Result<PayoutRow, PayoutError> {

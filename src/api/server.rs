@@ -135,6 +135,10 @@ pub async fn run_with_shutdown<F>(
         public_cache: Default::default(),
     });
 
+    if crate::payouts::settings::get().enabled {
+        crate::payouts::service::PayoutService::from_state(&state).spawn_worker();
+    }
+
     if let Some(discovery) = config.discovery_config.clone() {
         crate::discovery::spawn(discovery, state.db.clone());
     }
