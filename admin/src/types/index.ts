@@ -109,6 +109,20 @@ export interface ProviderMetricsSummary {
   health?: ProviderHealthEntry
 }
 
+export interface HealthReason {
+  cause: string
+  fault_ratio: number
+  attempts: number
+  provider_faults: number
+  unknown_faults: number
+  request_faults: number
+  capped_faults: number
+  consecutive_provider_faults: number
+  probe_passes: number
+  probe_passes_needed: number
+  recent_faults: { ago_ms: number; attribution: 'provider' | 'request' | 'unknown'; message: string }[]
+}
+
 export interface ProviderHealthEntry {
   provider: string
   health_state: string
@@ -120,6 +134,7 @@ export interface ProviderHealthEntry {
   available: boolean
   last_failure_ago_ms: number | null
   rate_limited: boolean
+  reason?: HealthReason
   balance?: CurrencyAmount
   /** Most-consumed quota window ("first to stop"), for compact display. */
   quota?: QuotaSnapshot

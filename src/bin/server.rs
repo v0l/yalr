@@ -16,7 +16,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     tracing_subscriber::fmt::init();
 
-    let metrics_store = std::sync::Arc::new(metrics::MetricsStore::new(10000));
+    let metrics_store = std::sync::Arc::new(metrics::MetricsStore::with_health_config(
+        10000,
+        Some(metrics::HealthConfig {
+            thresholds: config::Config::load_file().router.health,
+            ..Default::default()
+        }),
+    ));
     let emitter = metrics_store.emitter().clone();
     
     let config = config::AppConfig::load(metrics_store.clone()).await.expect("Failed to load config");

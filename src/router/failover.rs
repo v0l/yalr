@@ -144,7 +144,7 @@ impl Router {
                 match &result {
                     Ok(_) => trace.end_attempt(None),
                     Err(ProviderError::Unsupported(_)) => {}
-                    Err(e) => trace.end_attempt(Some(e.to_string())),
+                    Err(e) => trace.end_failed_attempt(&e),
                 }
             }
 

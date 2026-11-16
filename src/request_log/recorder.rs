@@ -104,6 +104,7 @@ pub fn build(inbound: Inbound, trace: &Trace, outcome: Outcome, started_at_ms: i
         attempts: attempts.len() as i64,
         attempt_log: serde_json::to_string(&attempts).unwrap_or_default(),
         status: outcome.status.clone(),
+        failure_attribution: if outcome.status == "ok" { None } else { trace.failure_attribution().map(|a| a.as_str().to_string()) },
         error: outcome.error.clone(),
         finish_reason: outcome.finish_reason.clone(),
         headers_ms: upstream.headers_ms,

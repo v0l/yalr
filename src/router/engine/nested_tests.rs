@@ -178,6 +178,7 @@ async fn a_child_whose_providers_are_all_unhealthy_is_skipped_while_a_direct_pro
                     error_message: "down".into(),
                     retry_after_ms: None,
                     status_code: None,
+                    ..Default::default()
                 }),
                 user: None,
             })

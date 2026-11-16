@@ -236,7 +236,7 @@ impl HealthCheckRouter {
             provider: provider_name.to_string(),
             model: String::new(),
             timestamp_ms: now,
-            event: crate::metrics::MetricsEvent::Success,
+            event: crate::metrics::MetricsEvent::Probe { passed: true },
             user: None,
         }).await;
     }
@@ -250,12 +250,20 @@ impl HealthCheckRouter {
             provider: provider_name.to_string(),
             model: String::new(),
             timestamp_ms: now,
+            event: crate::metrics::MetricsEvent::Probe { passed: false },
+            user: None,
+        }).await;
+        self.metrics_store.record(crate::metrics::ProviderMetrics {
+            provider: provider_name.to_string(),
+            model: String::new(),
+            timestamp_ms: now,
             event: crate::metrics::MetricsEvent::Failure(crate::metrics::FailureDetails {
                 error_type,
                 error_code: None,
                 error_message: message.to_string(),
                 retry_after_ms: None,
                 status_code: None,
+                ..Default::default()
             }),
             user: None,
         }).await;
@@ -1108,7 +1116,8 @@ impl Router {
         let mut last_error: Option<RouterError> = None;
         let mut failures = FailureLog::default();
         let needed = request.input_modalities();
-        let mut rounds = RetryRounds::new(self.transient_retry, self.metrics_store.emitter().clone());
+        let mut rounds = RetryRounds::new(self.transient_retry, self.metrics_store.emitter().clone())
+            .with_request_bytes(serde_json::to_vec(&request.messages).map_or(0, |v| v.len()));
         let mut candidates = candidates;
 
         loop {
@@ -1273,7 +1282,7 @@ impl Router {
                 Err(e) => {
                     guard.decrement();
                     if let Some(trace) = actual_request.trace() {
-                        trace.end_attempt(Some(e.to_string()));
+                        trace.end_failed_attempt(&e);
                     }
 
                     last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
@@ -1343,7 +1352,8 @@ impl Router {
         let sticky = self.sticky.clone();
         let metrics_store = self.metrics_store.clone();
         let max_retries = self.max_retries;
-        let mut rounds = RetryRounds::new(self.transient_retry, self.metrics_store.emitter().clone());
+        let mut rounds = RetryRounds::new(self.transient_retry, self.metrics_store.emitter().clone())
+            .with_request_bytes(serde_json::to_vec(&request.messages).map_or(0, |v| v.len()));
         let mut candidates = candidates;
         let request = request.clone();
         let needed = request.input_modalities();
@@ -1563,7 +1573,7 @@ impl Router {
                                             "Transient stream error before any data, failing over to another provider"
                                         );
                                         if let Some(trace) = actual_request.trace() {
-                                            trace.end_attempt(Some(e.to_string()));
+                                            trace.end_failed_attempt(&e);
                                         }
                                         failures.push(&provider_name, &e);
                                         rounds.fail(retained.clone(), &original_model, &e, &user);
@@ -1585,7 +1595,12 @@ impl Router {
                                         break; // Continue to next provider in the outer loop
                                     }
 
-                                    metrics_store.emitter().emit_provider_error(&provider_name, &original_model, &e, user.clone());
+                                    let attribution = if matches!(e, ProviderError::Timeout) {
+                                        crate::providers::attribution::FailureAttribution::Request
+                                    } else {
+                                        e.attribution()
+                                    };
+                                    metrics_store.emitter().emit_attributed_error(&provider_name, &original_model, &e, attribution, user.clone());
                                     // Either we already sent data (can't retry) or error is non-transient
                                     if !e.is_transient() {
                                         tracing::warn!(
@@ -1606,7 +1621,7 @@ impl Router {
                                         );
                                     }
                                     if let Some(trace) = actual_request.trace() {
-                                        trace.end_attempt(Some(e.to_string()));
+                                        trace.end_failed_attempt(&e);
                                     }
                                     yield Err(RouterError::ProviderError(e));
                                     guard.decrement();
@@ -1649,7 +1664,7 @@ impl Router {
                                 user.clone(),
                             );
                             if let Some(trace) = actual_request.trace() {
-                                trace.end_attempt(Some(empty_err.to_string()));
+                                trace.end_failed_attempt(&empty_err);
                             }
                             last_error = Some(RouterError::ProviderError(empty_err));
                             // Only (empty) chunks were yielded, no content — so
@@ -1737,7 +1752,7 @@ impl Router {
                     Err(e) => {
                         guard.decrement();
                         if let Some(trace) = actual_request.trace() {
-                            trace.end_attempt(Some(e.to_string()));
+                            trace.end_failed_attempt(&e);
                         }
 
                         last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
@@ -2148,6 +2163,7 @@ mod tests {
                     error_message: "test failure".to_string(),
                     retry_after_ms: None,
                     status_code: None,
+                    ..Default::default()
                 }),
                 user: None,
             }).await;
@@ -2200,6 +2216,7 @@ mod tests {
                 error_message: "429".to_string(),
                 retry_after_ms: Some(60_000),
                 status_code: Some(429),
+                ..Default::default()
             }),
             user: None,
         }).await;
@@ -2224,6 +2241,7 @@ mod tests {
                 error_message: "429".to_string(),
                 retry_after_ms: Some(5_000),
                 status_code: Some(429),
+                ..Default::default()
             }),
             user: None,
         }).await;
@@ -2361,6 +2379,7 @@ mod tests {
                     error_message: "test failure".to_string(),
                     retry_after_ms: None,
                     status_code: None,
+                    ..Default::default()
                 }),
                 user: None,
             }).await;
@@ -2378,6 +2397,7 @@ mod tests {
                     error_message: "test failure".to_string(),
                     retry_after_ms: None,
                     status_code: None,
+                    ..Default::default()
                 }),
                 user: None,
             }).await;
@@ -2616,6 +2636,7 @@ mod tests {
                     error_message: "down".to_string(),
                     retry_after_ms: None,
                     status_code: None,
+                    ..Default::default()
                 }),
                 user: None,
             }).await;

@@ -270,6 +270,7 @@ mod tests {
                         error_message: "down".into(),
                         retry_after_ms: None,
                         status_code: None,
+                        ..Default::default()
                     }),
                     user: None,
                 }).await;

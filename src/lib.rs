@@ -8,6 +8,8 @@ pub mod list_price;
 pub mod quota_report;
 pub mod metrics;
 pub mod metrics_agg;
+#[cfg(test)]
+mod metrics_health_tests;
 pub mod oauth;
 pub mod payments;
 pub mod payouts;

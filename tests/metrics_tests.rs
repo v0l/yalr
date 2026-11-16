@@ -48,6 +48,7 @@ async fn test_metrics_emitter_failure() {
         error_message: "test error".to_string(),
         retry_after_ms: None,
         status_code: None,
+        ..Default::default()
     }));
     store.record(event).await;
     
@@ -112,6 +113,7 @@ async fn test_metrics_success_rate() {
         error_message: "error".to_string(),
         retry_after_ms: None,
         status_code: None,
+        ..Default::default()
     }))).await;
     store.record(create_test_event("provider1", "model1", MetricsEvent::Success)).await;
     
@@ -132,6 +134,7 @@ async fn test_metrics_provider_aggregation() {
         error_message: "error".to_string(),
         retry_after_ms: None,
         status_code: None,
+        ..Default::default()
     }))).await;
     
     let summary = store.get_provider_summary("provider1").await;

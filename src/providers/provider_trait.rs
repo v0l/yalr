@@ -6,6 +6,7 @@ use futures::stream::BoxStream;
 use serde::{Serialize, Deserialize};
 
 use crate::metrics::ErrorType;
+use crate::providers::attribution::{self, FailureAttribution};
 use crate::router::ModelRuntimeInfo;
 use crate::providers::StreamingChunk;
 use crate::providers::ChatRequest;
@@ -376,6 +377,64 @@ impl ProviderError {
                 ..
             }
         ) && !matches!(self.status_code(), Some(401 | 402 | 403 | 408 | 429))
+    }
+
+    fn failure_text(&self) -> String {
+        match self {
+            ProviderError::ServerError { message, .. } => message.clone(),
+            ProviderError::OpenAIError(e) => with_causes(e),
+            ProviderError::Other(e) => with_causes(e.as_ref()),
+            other => other.to_string(),
+        }
+    }
+
+    pub fn is_connection_failure(&self) -> bool {
+        match self {
+            ProviderError::OpenAIError(async_openai::error::OpenAIError::Reqwest(e)) if e.is_connect() => true,
+            ProviderError::OpenAIError(_) | ProviderError::Other(_) => {
+                attribution::is_connection_failure_text(&self.failure_text())
+            }
+            _ => false,
+        }
+    }
+
+    pub fn attribution(&self) -> FailureAttribution {
+        let from_text = |text: &str| {
+            if attribution::is_connection_failure_text(text) {
+                FailureAttribution::Provider
+            } else if attribution::request_error_class(text).is_some() {
+                FailureAttribution::Request
+            } else {
+                FailureAttribution::Unknown
+            }
+        };
+        match self {
+            ProviderError::RateLimit { .. } | ProviderError::Authentication(_) => FailureAttribution::Provider,
+            ProviderError::Unsupported(_) => FailureAttribution::Request,
+            ProviderError::NotFound(_) | ProviderError::Timeout => FailureAttribution::Unknown,
+            ProviderError::ServerError { message, status_code } => match status_code {
+                Some(401 | 402 | 403 | 429) => FailureAttribution::Provider,
+                Some(408) => FailureAttribution::Unknown,
+                Some(400..=499) => FailureAttribution::Request,
+                Some(code) => {
+                    if attribution::request_error_class(message).is_some() {
+                        FailureAttribution::Request
+                    } else if matches!(code, 502..=504) {
+                        FailureAttribution::Provider
+                    } else {
+                        FailureAttribution::Unknown
+                    }
+                }
+                None => from_text(message),
+            },
+            ProviderError::OpenAIError(_) | ProviderError::Other(_) => from_text(&self.failure_text()),
+        }
+    }
+
+    pub fn failure_class(&self) -> String {
+        attribution::request_error_class(&self.failure_text())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{:?}:{:?}", self.error_type(), self.status_code()))
     }
 
     pub fn is_retryable_transient(&self) -> bool {

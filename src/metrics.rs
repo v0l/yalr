@@ -11,17 +11,22 @@ use crate::router::ModelRuntimeInfo;
 use crate::providers::CurrencyAmount;
 use crate::providers::provider_trait::QuotaSnapshot;
 use crate::metrics_agg::ProviderAgg;
+pub use crate::metrics_agg::{HealthReason, HealthThresholds};
+use crate::providers::attribution::FailureAttribution;
 pub use crate::metrics_agg::RoutingHealth;
 
 /// Shared per-provider incremental aggregate map (hot-path O(1) reads).
 type AggMap = Arc<std::sync::RwLock<std::collections::HashMap<String, ProviderAgg>>>;
 
 /// Apply an event to the shared aggregate map. Cheap, O(1) amortized.
-fn apply_aggregate(aggregates: &AggMap, provider: &str, event: &MetricsEvent, ts_ms: u64) {
-    // Only failures / balance / quota affect routing aggregates.
+fn apply_aggregate(aggregates: &AggMap, provider: &str, event: &MetricsEvent, user: Option<&MetricsUser>, ts_ms: u64) {
     if !matches!(
         event,
-        MetricsEvent::Failure(_) | MetricsEvent::Balance(_) | MetricsEvent::Quota(_)
+        MetricsEvent::Failure(_)
+            | MetricsEvent::Success
+            | MetricsEvent::Probe { .. }
+            | MetricsEvent::Balance(_)
+            | MetricsEvent::Quota(_)
     ) {
         return;
     }
@@ -29,7 +34,7 @@ fn apply_aggregate(aggregates: &AggMap, provider: &str, event: &MetricsEvent, ts
     let mut map = aggregates.write().unwrap();
     map.entry(provider.to_string())
         .or_default()
-        .apply(event, ts_ms, now);
+        .apply(event, user, ts_ms, now);
 }
 
 /// User context for metrics tracking
@@ -96,6 +101,8 @@ pub enum MetricsEvent {
     Success,
     /// Request failed with error details
     Failure(FailureDetails),
+    /// Result of a background health probe
+    Probe { passed: bool },
     /// Provider load event (in-flight requests)
     ProviderLoad {
         in_flight: u32,
@@ -108,22 +115,25 @@ pub enum MetricsEvent {
 }
 
 /// Error details for failure events
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct FailureDetails {
     pub error_type: ErrorType,
     pub error_code: Option<String>,
     pub error_message: String,
     pub retry_after_ms: Option<u64>,
     pub status_code: Option<u16>,
+    pub attribution: FailureAttribution,
+    pub connection: bool,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
 pub enum ErrorType {
     RateLimit,
     ServerError,
     Timeout,
     Authentication,
     NotFound,
+    #[default]
     Other,
 }
 
@@ -223,7 +233,7 @@ impl MetricsEmitter {
         );
 
         // Update O(1) routing aggregates (failures / balance / quota only).
-        apply_aggregate(&self.aggregates, &provider, &event, metrics.timestamp_ms);
+        apply_aggregate(&self.aggregates, &provider, &event, metrics.user.as_ref(), metrics.timestamp_ms);
 
         let _ = self.sender.send(metrics.clone());
 
@@ -315,6 +325,8 @@ impl MetricsEmitter {
             error_message: error_message.to_string(),
             retry_after_ms,
             status_code,
+            attribution: FailureAttribution::Provider,
+            connection: false,
         };
         self.emit(
             provider.to_string(),
@@ -331,19 +343,50 @@ impl MetricsEmitter {
         error: &crate::ProviderError,
         user: Option<MetricsUser>,
     ) {
-        if error.is_client_error() {
-            return;
+        self.emit_attributed_error(provider, model, error, error.attribution(), user);
+    }
+
+    pub fn emit_attributed_error(
+        &self,
+        provider: &str,
+        model: &str,
+        error: &crate::ProviderError,
+        attribution: FailureAttribution,
+        user: Option<MetricsUser>,
+    ) {
+        let details = FailureDetails {
+            error_type: error.error_type(),
+            error_code: None,
+            error_message: error.to_string(),
+            retry_after_ms: error.retry_after_ms(),
+            status_code: error.status_code(),
+            attribution,
+            connection: error.is_connection_failure(),
+        };
+        self.emit(provider.to_string(), model.to_string(), MetricsEvent::Failure(details), user);
+    }
+
+    pub fn prefill_rate(&self, provider: &str) -> Option<f64> {
+        let events = self.store.lock().unwrap();
+        let mut rates: Vec<f64> = events
+            .iter()
+            .rev()
+            .filter(|e| e.provider == provider)
+            .filter_map(|e| match e.event {
+                MetricsEvent::InputTokensPerSecond(v) if v > 0.0 => Some(v as f64),
+                _ => None,
+            })
+            .take(20)
+            .collect();
+        if rates.is_empty() {
+            return None;
         }
-        self.emit_failure_with_details(
-            provider,
-            model,
-            error.error_type(),
-            None,
-            &error.to_string(),
-            error.retry_after_ms(),
-            error.status_code(),
-            user,
-        );
+        rates.sort_by(|a, b| a.total_cmp(b));
+        Some(rates[rates.len() / 2])
+    }
+
+    pub fn emit_probe(&self, provider: &str, passed: bool) {
+        self.emit(provider.to_string(), String::new(), MetricsEvent::Probe { passed }, None);
     }
 
     pub fn emit_rate_limit(
@@ -651,7 +694,7 @@ impl MetricsStore {
         let model = event.model.clone();
 
         // Update O(1) routing aggregates (failures / balance / quota only).
-        apply_aggregate(&self.aggregates, &provider, &event.event, event.timestamp_ms);
+        apply_aggregate(&self.aggregates, &provider, &event.event, event.user.as_ref(), event.timestamp_ms);
 
         let total = {
             let mut events = self.events.lock().unwrap();
@@ -1035,8 +1078,14 @@ impl MetricsStore {
         let now = now_ms();
         let map = self.aggregates.read().unwrap();
         map.get(provider)
-            .map(|a| a.health(now))
+            .map(|a| a.health(now, &self.health_config.thresholds))
             .unwrap_or(HealthState::Healthy)
+    }
+
+    pub async fn health_reason(&self, provider: &str) -> Option<HealthReason> {
+        let now = now_ms();
+        let map = self.aggregates.read().unwrap();
+        map.get(provider).map(|a| a.explain(now, &self.health_config.thresholds))
     }
 
     /// Check if a provider is available for routing (anything but Unhealthy).
@@ -1058,7 +1107,7 @@ impl MetricsStore {
             .map(|name| {
                 let rh = map
                     .get(*name)
-                    .map(|a| a.routing_health(now))
+                    .map(|a| a.routing_health(now, &self.health_config.thresholds))
                     .unwrap_or_else(RoutingHealth::unknown);
                 ((*name).to_string(), rh)
             })
@@ -1202,6 +1251,7 @@ mod tests {
                 error_message: "429".to_string(),
                 retry_after_ms: Some(60_000),
                 status_code: Some(429),
+                ..Default::default()
             }),
             user: None,
         }).await;
@@ -1266,6 +1316,7 @@ mod tests {
             error_message: "test".to_string(),
             retry_after_ms: None,
             status_code: None,
+            ..Default::default()
         })
     }
 
@@ -1298,11 +1349,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_health_state_degraded_after_two_failures() {
+    async fn test_health_state_degraded_after_five_failures() {
         let store = create_test_metrics_store();
         let provider_name = "test-provider";
 
-        for _ in 0..2 {
+        for _ in 0..5 {
             store
                 .record(create_metrics_event(provider_name, create_failure_event(), 0))
                 .await;
@@ -1312,11 +1363,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_health_state_unhealthy_after_five_failures() {
+    async fn test_health_state_unhealthy_after_ten_failures() {
         let store = create_test_metrics_store();
         let provider_name = "test-provider";
 
-        for _ in 0..5 {
+        for _ in 0..10 {
             store
                 .record(create_metrics_event(provider_name, create_failure_event(), 0))
                 .await;
@@ -1412,8 +1463,8 @@ mod tests {
         let store = create_test_metrics_store();
         let provider_name = "test-provider";
 
-        // Record 5 failures at timestamp 0 (now)
-        for _ in 0..5 {
+        // Record 10 failures at timestamp 0 (now)
+        for _ in 0..10 {
             store
                 .record(create_metrics_event(provider_name, create_failure_event(), 0))
                 .await;
@@ -1552,6 +1603,7 @@ mod tests {
                     error_message: "old".to_string(),
                     retry_after_ms: None,
                     status_code: None,
+                    ..Default::default()
                 }),
                 301000,
             ))
@@ -1565,7 +1617,7 @@ mod tests {
         let store = create_test_metrics_store();
         let provider_name = "test-provider";
 
-        for _ in 0..5 {
+        for _ in 0..10 {
             store
                 .record(create_metrics_event(provider_name, create_failure_event(), 0))
                 .await;
@@ -1612,6 +1664,7 @@ pub struct HealthConfig {
     pub recovery_window: Duration,
     pub base_backoff: Duration,
     pub max_backoff: Duration,
+    pub thresholds: HealthThresholds,
 }
 
 impl Default for HealthConfig {
@@ -1621,6 +1674,7 @@ impl Default for HealthConfig {
             recovery_window: Duration::from_secs(60),
             base_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(60),
+            thresholds: HealthThresholds::default(),
         }
     }
 }

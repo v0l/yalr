@@ -1,3 +1,4 @@
+use crate::providers::attribution::FailureAttribution;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -8,6 +9,9 @@ pub struct Attempt {
     pub upstream_url: Option<String>,
     pub upstream_status: Option<u16>,
     pub error: Option<String>,
+    pub attribution: Option<FailureAttribution>,
+    #[serde(skip)]
+    pub class: Option<String>,
     pub at_ms: i64,
 }
 
@@ -132,14 +136,39 @@ impl Trace {
         });
     }
 
+    pub fn end_failed_attempt(&self, error: &crate::ProviderError) {
+        self.finish_attempt(Some(error.to_string()), Some((error.attribution(), error.failure_class())));
+    }
+
     pub fn end_attempt(&self, error: Option<String>) {
+        self.finish_attempt(error, None);
+    }
+
+    pub fn failure_attribution(&self) -> Option<FailureAttribution> {
+        let attempts = self.attempts();
+        let failed: Vec<&Attempt> = attempts.iter().filter(|a| a.attribution.is_some()).collect();
+        let last = failed.last()?;
+        let agreed = failed.iter().any(|a| a.provider != last.provider && a.class == last.class);
+        if agreed {
+            return Some(FailureAttribution::Request);
+        }
+        last.attribution
+    }
+
+    fn finish_attempt(&self, error: Option<String>, classified: Option<(FailureAttribution, String)>) {
         let at = self.elapsed_ms();
+        let (attribution, class) = match classified {
+            Some((a, c)) => (Some(a), Some(c)),
+            None => (None, None),
+        };
         self.with(|inner| {
             let attempt = Attempt {
                 provider: inner.provider.clone().unwrap_or_default(),
                 upstream_url: inner.upstream.url.clone(),
                 upstream_status: inner.upstream.status,
                 error,
+                attribution,
+                class,
                 at_ms: at,
             };
             inner.attempts.push(attempt);

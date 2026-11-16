@@ -73,6 +73,14 @@ export function ProviderCard({ provider, onEdit, onDelete, onTopup, onGenerateKe
             {provider.provider_type.toUpperCase()}
           </Badge>
           <HealthBadge state={state} />
+          {state !== 'healthy' && h?.reason && (
+            <span
+              className="text-[10px] text-muted-foreground tabular-nums"
+              title={h.reason.recent_faults.map(f => `${f.attribution}: ${f.message}`).join('\n')}
+            >
+              {h.reason.cause.replace('_', ' ')} · {Math.round(h.reason.fault_ratio * 100)}% of {h.reason.attempts} · {h.reason.probe_passes}/{h.reason.probe_passes_needed} probes
+            </span>
+          )}
           {provider.status && provider.status !== 'approved' && <StatusBadge status={provider.status} />}
           {provider.is_reference && (
             <Badge variant="outline" className="font-mono text-[10px] tracking-wider bg-brand/15 text-brand border-brand/30 px-1.5 py-0 h-5">REFERENCE</Badge>

@@ -31,6 +31,8 @@ pub struct RouterSettings {
     pub transient_retry_rounds: u32,
     #[serde(default = "default_transient_retry_budget_ms")]
     pub transient_retry_budget_ms: u64,
+    #[serde(default)]
+    pub health: crate::metrics::HealthThresholds,
 }
 
 fn default_transient_retry_rounds() -> u32 {
@@ -46,6 +48,7 @@ impl Default for RouterSettings {
         Self {
             transient_retry_rounds: default_transient_retry_rounds(),
             transient_retry_budget_ms: default_transient_retry_budget_ms(),
+            health: Default::default(),
         }
     }
 }

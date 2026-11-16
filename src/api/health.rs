@@ -44,6 +44,8 @@ pub struct ProviderHealthEntry {
     pub available: bool,
     pub last_failure_ago_ms: Option<u64>,
     pub rate_limited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<crate::metrics::HealthReason>,
     /// Current balance for this provider, if it supports balance tracking.
     /// Serialized as `{"currency": "msats"|"sats"|"usd_micro", "amount": N}`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -130,6 +132,7 @@ pub async fn build_provider_health_entry(
         available,
         last_failure_ago_ms,
         rate_limited,
+        reason: state.metrics_store.health_reason(name).await,
         balance: state.metrics_store.get_balance(name).await,
         quota: quotas
             .as_deref()

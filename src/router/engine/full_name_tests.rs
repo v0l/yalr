@@ -201,6 +201,7 @@ async fn an_unhealthy_user_provider_is_skipped() {
                 error_message: "429".to_string(),
                 retry_after_ms: Some(60_000),
                 status_code: Some(429),
+                ..Default::default()
             }),
             user: None,
         })

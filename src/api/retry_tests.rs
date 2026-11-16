@@ -311,3 +311,42 @@ async fn a_request_that_finally_fails_records_its_first_round_failure() {
     assert_eq!(chat(&h.state).await.0, 503);
     assert_eq!(h.metrics.get_recent_failures("max").await, 1);
 }
+
+fn failing(message: &str) -> ProviderError {
+    ProviderError::ServerError { message: message.into(), status_code: Some(500) }
+}
+
+async fn provider_faults(h: &Harness, name: &str) -> u32 {
+    h.metrics.health_reason(name).await.map_or(0, |r| r.provider_faults)
+}
+
+#[tokio::test]
+async fn a_request_that_fails_the_same_way_on_two_providers_charges_neither() {
+    let a = Scripted::new("a", vec![Err(failing("backend exploded"))]);
+    let b = Scripted::new("b", vec![Err(failing("backend exploded"))]);
+    let h = harness(vec![a.clone(), b.clone()]).await;
+    assert_eq!(chat(&h.state).await.0, 500);
+    assert_eq!((provider_faults(&h, "a").await, provider_faults(&h, "b").await), (0, 0));
+    assert_eq!(h.metrics.get_recent_failures("a").await, 0);
+    assert_eq!(h.metrics.get_recent_failures("b").await, 0);
+}
+
+#[tokio::test]
+async fn a_context_length_error_on_both_providers_charges_neither() {
+    let message = "This model's maximum context length is 8192 tokens";
+    let a = Scripted::new("a", vec![Err(failing(message))]);
+    let b = Scripted::new("b", vec![Err(failing(message))]);
+    let h = harness(vec![a.clone(), b.clone()]).await;
+    assert_ne!(chat(&h.state).await.0, 200);
+    assert_eq!((provider_faults(&h, "a").await, provider_faults(&h, "b").await), (0, 0));
+}
+
+#[tokio::test]
+async fn a_failure_that_the_next_provider_serves_is_charged_to_the_first() {
+    let a = Scripted::new("a", vec![Err(failing("backend exploded"))]);
+    let b = Scripted::new("b", vec![Ok(())]);
+    let h = harness(vec![a.clone(), b.clone()]).await;
+    assert_eq!(chat(&h.state).await.0, 200);
+    assert_eq!(provider_faults(&h, "a").await, 1);
+    assert_eq!(provider_faults(&h, "b").await, 0);
+}
