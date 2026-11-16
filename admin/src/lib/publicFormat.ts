@@ -25,7 +25,10 @@ export function priceLine(price: PublicPrice | null): string {
 
 export function formatTokens(value: number | null): string {
   if (!value) return '-'
-  return value >= 1000 ? `${Math.round(value / 1000)}K` : String(value)
+  if (value < 1000) return String(value)
+  const thousands = Math.round(value / 1000)
+  if (thousands < 1000) return `${thousands}K`
+  return `${parseFloat((value / 1000000).toFixed(2))}M`
 }
 
 export function formatPercent(value: number | null): string {
