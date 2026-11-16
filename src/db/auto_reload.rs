@@ -2,6 +2,7 @@ use super::fiat_orders::{FiatOrder, KIND_AUTO_RELOAD};
 use super::{Database, Timestamp};
 
 pub const MAX_CONSECUTIVE_FAILURES: i32 = 2;
+const MILLI_PER_MINOR: i64 = 1_000;
 
 const COLUMNS: &str = "id, user_id, currency, enabled, threshold_milli, amount_milli, monthly_cap_milli, payment_method_id, \
     consecutive_failures, last_attempt_at, last_failure_at, disabled_reason";
@@ -130,10 +131,14 @@ impl Database {
         .bind(KIND_AUTO_RELOAD)
         .fetch_one(&mut *tx)
         .await?;
+        let wanted = settings.amount_milli.max(settings.threshold_milli - balance);
+        let wanted = (wanted + MILLI_PER_MINOR - 1) / MILLI_PER_MINOR * MILLI_PER_MINOR;
+        let room = (settings.monthly_cap_milli - spent) / MILLI_PER_MINOR * MILLI_PER_MINOR;
+        let charge = wanted.min(room);
         if balance >= settings.threshold_milli
             || in_flight > 0
             || cooling > 0
-            || spent + settings.amount_milli > settings.monthly_cap_milli
+            || charge < settings.amount_milli
         {
             tx.rollback().await?;
             return Ok(None);
@@ -146,7 +151,7 @@ impl Database {
         .bind(user_id)
         .bind(KIND_AUTO_RELOAD)
         .bind(currency)
-        .bind(settings.amount_milli)
+        .bind(charge)
         .execute(&mut *tx)
         .await?;
         sqlx::query("UPDATE auto_reload_settings SET last_attempt_at = UTC_TIMESTAMP(3) WHERE id = ?")
@@ -291,6 +296,55 @@ mod tests {
         f.db.complete_fiat_order("rev_second").await.unwrap();
         f.db.execute_raw("UPDATE user_currency_balances SET balance_milli = 0").await.unwrap();
         assert!(f.db.claim_auto_reload(f.user, "eur", 0).await.unwrap().is_none());
+    }
+
+    async fn configure(f: &Fixture, monthly_cap_milli: i64) {
+        let pm = f.db.list_payment_methods(f.user).await.unwrap()[0].id;
+        f.db.save_auto_reload(AutoReloadSettings {
+            user_id: f.user,
+            currency: "eur",
+            enabled: true,
+            threshold_milli: 5_000_000,
+            amount_milli: 1_500_000,
+            monthly_cap_milli,
+            payment_method_id: pm,
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn one_trigger_makes_one_charge_sized_to_reach_the_threshold() {
+        let f = fixture(1000).await;
+        configure(&f, 100_000_000).await;
+        f.db.credit_currency(f.user, "eur", 1_000_000, "admin_credit", "c", 0).await.unwrap();
+
+        let (order, _) = f.db.claim_auto_reload(f.user, "eur", 0).await.unwrap().unwrap();
+        assert_eq!(order.amount_milli, 4_000_000);
+        assert!(f.db.claim_auto_reload(f.user, "eur", 0).await.unwrap().is_none());
+
+        f.db.set_fiat_order_external(order.id, "rev_sized").await.unwrap();
+        f.db.complete_fiat_order("rev_sized").await.unwrap();
+        assert_eq!(f.db.get_currency_balance(f.user, "eur").await.unwrap(), 5_000_000);
+        assert!(f.db.auto_reloads_below_threshold().await.unwrap().is_empty());
+        assert!(f.db.claim_auto_reload(f.user, "eur", 0).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn the_reload_amount_is_the_floor_when_the_shortfall_is_smaller() {
+        let f = fixture(1000).await;
+        configure(&f, 100_000_000).await;
+        f.db.credit_currency(f.user, "eur", 4_800_000, "admin_credit", "c", 0).await.unwrap();
+        let (order, _) = f.db.claim_auto_reload(f.user, "eur", 0).await.unwrap().unwrap();
+        assert_eq!(order.amount_milli, 1_500_000);
+    }
+
+    #[tokio::test]
+    async fn the_sized_charge_is_trimmed_to_the_remaining_monthly_cap() {
+        let f = fixture(1000).await;
+        configure(&f, 3_000_000).await;
+        let (order, _) = f.db.claim_auto_reload(f.user, "eur", 0).await.unwrap().unwrap();
+        assert_eq!(order.amount_milli, 3_000_000);
     }
 
     #[tokio::test]

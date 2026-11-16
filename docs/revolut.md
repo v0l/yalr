@@ -77,7 +77,7 @@ All under `/api`, tenant scoped unless noted.
 
 Per user and currency: threshold, reload amount (within min and max), monthly cap, card. A
 background task (every 30 s) finds enabled settings whose balance is under the threshold and
-claims one off-session charge under a row lock: at most one pending auto-reload per user and
+claims one off-session charge under a row lock, sized `max(reload amount, threshold - balance)` and trimmed to the remaining monthly cap so a single trigger reaches the threshold: at most one pending auto-reload per user and
 currency, none inside the failure cooldown, none that would pass the monthly cap. The charge
 uses `create_off_session_order`-style order plus `pay_order` with `initiator: merchant` and is
 credited by the same path as a normal top-up. Two consecutive failures disable it and the
