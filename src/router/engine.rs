@@ -276,7 +276,7 @@ pub struct Router {
     full_names: RwLock<full_name::FullNameIndex>,
     provider_access: std::sync::RwLock<HashMap<String, (Option<i64>, String)>>,
     provider_limits: std::sync::RwLock<HashMap<String, u32>>,
-    speeds: RwLock<prefer::SpeedBoard>,
+    speeds: Arc<RwLock<prefer::SpeedBoard>>,
 }
 
 impl Router {
@@ -298,7 +298,7 @@ impl Router {
             full_names: RwLock::new(Default::default()),
             provider_access: std::sync::RwLock::new(HashMap::new()),
             provider_limits: std::sync::RwLock::new(HashMap::new()),
-            speeds: RwLock::new(Default::default()),
+            speeds: Arc::new(RwLock::new(Default::default())),
         }
     }
 

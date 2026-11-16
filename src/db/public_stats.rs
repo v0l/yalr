@@ -30,7 +30,31 @@ pub struct RequestSample {
     pub completion_tokens: Option<i64>,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SpeedRollup {
+    pub provider: String,
+    pub model: String,
+    pub tokens_per_second: Option<f64>,
+    pub ttft_ms: Option<f64>,
+}
+
 impl Database {
+    pub async fn speed_rollup(&self, since_ms: i64, min_samples: i64) -> Result<Vec<SpeedRollup>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT provider, model,
+                    CAST(SUM(completion_tokens) * 1000 / NULLIF(SUM(total_ms - COALESCE(first_event_ms, 0)), 0) AS DOUBLE) AS tokens_per_second,
+                    CAST(AVG(first_event_ms) AS DOUBLE) AS ttft_ms
+             FROM request_log
+             WHERE started_at_ms >= ? AND status = 'ok' AND provider IS NOT NULL
+               AND completion_tokens > 0 AND total_ms > COALESCE(first_event_ms, 0)
+             GROUP BY provider, model HAVING COUNT(*) >= ?",
+        )
+        .bind(since_ms)
+        .bind(min_samples)
+        .fetch_all(&self.pool)
+        .await
+    }
+
     pub async fn record_health_check(&self, provider_id: i64, healthy: bool, at_ms: i64) -> Result<(), sqlx::Error> {
         sqlx::query("INSERT INTO provider_health_checks (provider_id, checked_at_ms, healthy) VALUES (?, ?, ?)")
             .bind(provider_id)

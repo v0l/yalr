@@ -1,15 +1,22 @@
 use super::*;
-use crate::api::public_models_math::{latency, price_of};
+use crate::api::public_models_math::price_of;
 use crate::router::preference::{reorder, resolve, Preference, Stat, MIN_SPEED_SAMPLES};
 
 const SPEED_TTL: Duration = Duration::from_secs(60);
+const PRICE_TTL: Duration = Duration::from_secs(30);
 const SPEED_WINDOW_MS: i64 = 24 * 3_600_000;
-const SAMPLE_LIMIT: i64 = 50_000;
+
+type Speeds = HashMap<(String, String), (Option<f64>, Option<f64>)>;
 
 #[derive(Default)]
 pub(crate) struct SpeedBoard {
     refreshed: Option<Instant>,
-    by_route: HashMap<(String, String), (Option<f64>, Option<f64>)>,
+    by_route: Speeds,
+    prices: HashMap<String, (Instant, HashMap<i64, f64>)>,
+    pub(crate) refreshing: bool,
+    pub(crate) refreshes: usize,
+    #[cfg(test)]
+    pub(crate) delay: Duration,
 }
 
 impl SpeedBoard {
@@ -19,29 +26,52 @@ impl SpeedBoard {
 }
 
 impl Router {
-    async fn refresh_speeds(&self) {
-        if !self.speeds.read().await.stale() {
-            return;
+    fn schedule_speed_refresh(&self) {
+        {
+            let mut board = match self.speeds.try_write() {
+                Ok(board) => board,
+                Err(_) => return,
+            };
+            if !board.stale() || board.refreshing {
+                return;
+            }
+            board.refreshing = true;
+            board.refreshes += 1;
         }
-        let now = chrono::Utc::now().timestamp_millis();
-        let samples = self.db.request_samples_since(now - SPEED_WINDOW_MS, SAMPLE_LIMIT).await.unwrap_or_default();
-        let mut grouped: HashMap<(String, String), Vec<&crate::db::RequestSample>> = HashMap::new();
-        for s in &samples {
-            let Some(provider) = s.provider.clone() else { continue };
-            grouped.entry((provider, s.model.to_lowercase())).or_default().push(s);
-        }
-        let by_route = grouped
-            .into_iter()
-            .filter(|(_, rows)| rows.len() as i64 >= MIN_SPEED_SAMPLES)
-            .map(|(key, rows)| {
-                let l = latency(&rows);
-                (key, (l.tokens_per_second_p50, l.ttft_p50_ms))
-            })
-            .collect();
-        *self.speeds.write().await = SpeedBoard { refreshed: Some(Instant::now()), by_route };
+        let speeds = self.speeds.clone();
+        let db = self.db.clone();
+        tokio::spawn(async move {
+            #[cfg(test)]
+            {
+                let delay = speeds.read().await.delay;
+                tokio::time::sleep(delay).await;
+            }
+            let since = chrono::Utc::now().timestamp_millis() - SPEED_WINDOW_MS;
+            let rows = db.speed_rollup(since, MIN_SPEED_SAMPLES).await.unwrap_or_default();
+            let by_route = rows
+                .into_iter()
+                .map(|r| ((r.provider, r.model.to_lowercase()), (r.tokens_per_second, r.ttft_ms)))
+                .collect();
+            let mut board = speeds.write().await;
+            board.by_route = by_route;
+            board.refreshed = Some(Instant::now());
+            board.refreshing = false;
+        });
     }
 
     async fn pool_prices(&self, model: &str, ids: &HashMap<String, i64>) -> HashMap<i64, f64> {
+        let key = model.to_lowercase();
+        if let Some((at, cached)) = self.speeds.read().await.prices.get(&key) {
+            if at.elapsed() < PRICE_TTL {
+                return cached.clone();
+            }
+        }
+        let fresh = self.load_pool_prices(model, ids).await;
+        self.speeds.write().await.prices.insert(key, (Instant::now(), fresh.clone()));
+        fresh
+    }
+
+    async fn load_pool_prices(&self, model: &str, ids: &HashMap<String, i64>) -> HashMap<i64, f64> {
         let rows = self.db.list_model_pricings_by_name(model).await.unwrap_or_default();
         let fallback = rows.iter().find(|r| r.provider_id.is_none());
         let priced: Vec<(i64, crate::api::public_models_math::Price)> = ids
@@ -101,7 +131,7 @@ impl Router {
             Preference::Balanced => (HashMap::new(), None),
             Preference::Cheapest => (self.pool_prices(model, ids).await, None),
             Preference::Fastest | Preference::Latency => {
-                self.refresh_speeds().await;
+                self.schedule_speed_refresh();
                 (HashMap::new(), Some(()))
             }
         };

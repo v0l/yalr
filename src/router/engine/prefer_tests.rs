@@ -2,7 +2,7 @@ use super::full_name_tests::{add_owned, chat, world, Listed, World};
 use super::*;
 use crate::db::{Record, RoutingPreferences};
 use crate::request_log::Trace;
-use crate::router::preference::Preference;
+use crate::router::preference::{Preference, MIN_SPEED_SAMPLES};
 
 const MODEL: &str = "acme/m-1";
 
@@ -14,6 +14,20 @@ async fn pool(w: &World, prices: &[(&str, i64)]) -> Vec<Arc<Listed>> {
         backends.push(backend);
     }
     backends
+}
+
+async fn warm(w: &World) {
+    w.router.collect_routed_preferring(MODEL, None, None, Some(Preference::Fastest)).await.unwrap();
+    for _ in 0..200 {
+        {
+            let board = w.router.speeds.read().await;
+            if !board.refreshing && board.refreshes > 0 {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("speed board never refreshed");
 }
 
 async fn first(w: &World, viewer: Option<i64>, requested: Option<Preference>) -> String {
@@ -71,6 +85,7 @@ async fn fastest_picks_the_highest_tokens_per_second_and_an_unsampled_member_is_
     pool(&w, &[("slow", 1), ("quick", 1), ("new", 1)]).await;
     sample(&w, "slow", 6, 10_000, 500, 100).await;
     sample(&w, "quick", 6, 2_000, 500, 100).await;
+    warm(&w).await;
     assert_eq!(first(&w, None, Some(Preference::Fastest)).await, "quick");
     let ranked = w.router.collect_routed_preferring(MODEL, None, None, Some(Preference::Fastest)).await.unwrap();
     let names: Vec<&str> = ranked.iter().map(|c| c.provider.name()).collect();
@@ -87,6 +102,7 @@ async fn precedence_is_request_then_model_then_user_then_balanced() {
     sample(&w, "dear", 6, 10_000, 500, 100).await;
     sample(&w, "cheap", 6, 8_000, 500, 100).await;
     sample(&w, "quick", 6, 1_000, 500, 100).await;
+    warm(&w).await;
     w.db.replace_routing_preferences(
         alice.id,
         &RoutingPreferences { default: Some("cheapest".into()), models: vec![(MODEL.into(), "fastest".into())] },
@@ -107,6 +123,7 @@ async fn the_nitro_suffix_is_stripped_before_the_pool_lookup() {
     let backends = pool(&w, &[("dear", 3_000_000), ("cheap", 1_000_000)]).await;
     sample(&w, "dear", 6, 1_000, 100, 100).await;
     sample(&w, "cheap", 6, 9_000, 100, 100).await;
+    warm(&w).await;
     for _ in 0..3 {
         w.router.chat_completions(&chat("acme/m-1:nitro", &Trace::new()), None).await.unwrap();
     }
@@ -182,4 +199,49 @@ async fn admin_routing_configs_ignore_a_user_preference() {
         seen.insert(ranked[0].provider.name().to_string());
     }
     assert_eq!(seen.len(), 2);
+}
+
+#[tokio::test]
+async fn a_fastest_request_on_a_stale_board_does_not_wait_for_the_refresh() {
+    let w = world().await;
+    pool(&w, &[("a", 1_000_000), ("b", 1_000_000)]).await;
+    w.router.speeds.write().await.delay = Duration::from_secs(5);
+    let started = Instant::now();
+    let ranked = w.router.collect_routed_preferring(MODEL, None, None, Some(Preference::Fastest)).await.unwrap();
+    assert_eq!(ranked.len(), 2);
+    assert!(started.elapsed() < Duration::from_secs(2), "routing waited {:?}", started.elapsed());
+    assert!(w.router.speeds.read().await.refreshing);
+}
+
+#[tokio::test]
+async fn concurrent_stale_requests_trigger_one_refresh() {
+    let w = world().await;
+    pool(&w, &[("a", 1_000_000), ("b", 1_000_000)]).await;
+    w.router.speeds.write().await.delay = Duration::from_millis(300);
+    let calls = (0..8).map(|_| w.router.collect_routed_preferring(MODEL, None, None, Some(Preference::Fastest)));
+    for ranked in futures::future::join_all(calls).await {
+        ranked.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(w.router.speeds.read().await.refreshes, 1);
+}
+
+#[tokio::test]
+async fn cheapest_prices_are_cached_between_requests() {
+    let w = world().await;
+    pool(&w, &[("dear", 3_000_000), ("cheap", 1_000_000)]).await;
+    assert_eq!(first(&w, None, Some(Preference::Cheapest)).await, "cheap");
+    w.db.execute_raw("DELETE FROM model_pricing").await.unwrap();
+    assert_eq!(first(&w, None, Some(Preference::Cheapest)).await, "cheap");
+}
+
+#[tokio::test]
+async fn the_speed_rollup_aggregates_in_sql_and_drops_thin_samples() {
+    let w = world().await;
+    pool(&w, &[("slow", 1), ("quick", 1)]).await;
+    sample(&w, "slow", 6, 10_000, 500, 100).await;
+    sample(&w, "quick", 2, 2_000, 500, 100).await;
+    let rows = w.db.speed_rollup(0, MIN_SPEED_SAMPLES).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].provider, "slow");
 }

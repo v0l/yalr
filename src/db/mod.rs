@@ -40,7 +40,7 @@ pub use nesting::{NestedLinkError, MAX_NESTING_DEPTH};
 pub use request_log::{Bodies, Detail, Filter, Record, Retention, Summary};
 pub use payments::{Debit, LedgerEntry};
 pub use provider_stats::{ProviderEarning, ProviderModelTraffic, ProviderTraffic};
-pub use public_stats::{HealthUptime, RequestCount, RequestSample};
+pub use public_stats::{HealthUptime, RequestCount, RequestSample, SpeedRollup};
 pub use currency::{fee_for, milli_per_unit, normalize_currency, Settled, Settlement, SATS};
 pub use types::*;
 pub use routing_preferences::RoutingPreferences;
