@@ -198,6 +198,7 @@ async fn the_expected_prefix_never_exceeds_the_prompt() {
 async fn a_negative_balance_blocks_withdrawals() {
     let f = fixture("sats", true, 2000).await;
     f.serve(eleven_k(), Some(note(10_000, "503"))).await;
-    assert_eq!(f.balances.withdrawable(f.a_owner, "sats").await.unwrap(), 0);
-    assert_eq!(f.balances.withdrawable(f.b_owner, "sats").await.unwrap(), 22_000);
+    assert_eq!(f.balance(f.a_owner).await, -18_000);
+    assert_eq!(f.db.withdrawable(f.a_owner, "sats", 0).await.unwrap(), 0);
+    assert_eq!(f.db.withdrawable(f.b_owner, "sats", 0).await.unwrap(), 22_000);
 }
