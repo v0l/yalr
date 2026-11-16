@@ -18,7 +18,9 @@ const CACHE_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Serialize, Debug, Clone)]
 pub struct PublicProvider {
-    pub name: String,
+    pub key: String,
+    pub provider: String,
+    pub owner: Option<String>,
     pub price: Option<Price>,
     pub verification: &'static str,
     pub uptime_24h: Option<f64>,

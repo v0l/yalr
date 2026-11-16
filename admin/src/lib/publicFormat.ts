@@ -38,3 +38,10 @@ export function formatPercent(value: number | null): string {
 export function formatMs(value: number | null): string {
   return value == null ? '-' : `${Math.round(value).toLocaleString()} ms`
 }
+
+export function badgesFor(
+  row: { key: string },
+  model: { cheapest_provider: string | null; fastest_provider: string | null },
+): { cheapest: boolean; fastest: boolean } {
+  return { cheapest: row.key === model.cheapest_provider, fastest: row.key === model.fastest_provider }
+}

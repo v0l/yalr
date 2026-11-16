@@ -74,7 +74,7 @@ async fn nostr_market() -> (super::tenant_tests::Tenancy, i64) {
 async fn the_public_page_shows_a_short_npub_until_a_profile_is_known_and_never_the_username() {
     let (t, owner) = nostr_market().await;
     let (_, before) = t.get("", &format!("/api/public/models/{MODEL}")).await;
-    let name = before["providers"][0]["name"].as_str().unwrap().to_string();
+    let name = before["providers"][0]["owner"].as_str().unwrap().to_string();
     assert!(name.starts_with("npub1") && name.contains('…'), "{name}");
     assert!(!before.to_string().contains("nostr_"), "{before}");
 
