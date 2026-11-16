@@ -6,6 +6,7 @@ pub mod guard;
 pub mod instructions;
 pub mod lightning;
 pub mod pricing;
+pub mod revolut;
 pub mod routstr;
 #[cfg(test)]
 mod settlement_tests;
@@ -25,6 +26,7 @@ pub struct PaymentsState {
     /// Held to keep the background settlement listener alive.
     #[allow(dead_code)]
     pub settlement_listener: Option<Arc<tokio::task::JoinHandle<()>>>,
+    pub revolut: Option<Arc<revolut::RevolutService>>,
 }
 
 impl PaymentsState {
@@ -62,12 +64,29 @@ impl PaymentsState {
             None
         };
 
+        let revolut = match payments_config.revolut.clone() {
+            None => None,
+            Some(settings) => match revolut::RevolutSecrets::from_env() {
+                Some(secrets) => {
+                    let service = Arc::new(revolut::RevolutService::new(settings, secrets, db.clone())?);
+                    revolut::spawn_runner(service.clone());
+                    tracing::info!("Revolut card top-ups enabled");
+                    Some(service)
+                }
+                None => {
+                    tracing::warn!("payments.revolut is configured but REVOLUT_API_KEY, REVOLUT_WEBHOOK_SECRET or YALR_ENCRYPTION_KEY is missing, card top-ups disabled");
+                    None
+                }
+            },
+        };
+
         Ok(Self {
             config: payments_config,
             balance_service,
             lightning_service,
             pricing_resolver,
             settlement_listener,
+            revolut,
         })
     }
 }

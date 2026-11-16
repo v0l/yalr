@@ -10,7 +10,7 @@ use crate::metrics::MetricsStore;
 use crate::state::AppState;
 
 pub(super) struct Tenancy {
-    app: axum::Router,
+    pub(super) app: axum::Router,
     pub(super) state: Arc<AppState>,
     pub(super) alice: String,
     pub(super) bob: String,
@@ -18,14 +18,19 @@ pub(super) struct Tenancy {
 }
 
 pub(super) async fn tenancy() -> Tenancy {
-    build_tenancy(None).await
+    build_tenancy(None, None).await
+}
+
+pub(super) async fn tenancy_with_revolut(url: &str) -> Tenancy {
+    let settings = crate::config::RevolutSettings { url: Some(url.to_string()), sandbox: true, ..Default::default() };
+    build_tenancy(Some(Default::default()), Some(settings)).await
 }
 
 pub(super) async fn tenancy_with_payments(defaults: crate::config::DefaultPricingConfig) -> Tenancy {
-    build_tenancy(Some(defaults)).await
+    build_tenancy(Some(defaults), None).await
 }
 
-async fn build_tenancy(defaults: Option<crate::config::DefaultPricingConfig>) -> Tenancy {
+async fn build_tenancy(defaults: Option<crate::config::DefaultPricingConfig>, revolut: Option<crate::config::RevolutSettings>) -> Tenancy {
     let db = Arc::new(Database::test().await);
     let payments_state = defaults.map(|d| {
         Arc::new(crate::payments::PaymentsState {
@@ -34,6 +39,14 @@ async fn build_tenancy(defaults: Option<crate::config::DefaultPricingConfig>) ->
             lightning_service: None,
             pricing_resolver: Arc::new(crate::payments::pricing::PricingResolver::new(db.clone(), d)),
             settlement_listener: None,
+            revolut: revolut.map(|settings| {
+                let secrets = crate::payments::revolut::RevolutSecrets {
+                    api_key: "sk_test".into(),
+                    webhook_secret: "whsec_test".into(),
+                    encryption_key_hex: "00".repeat(32),
+                };
+                Arc::new(crate::payments::revolut::RevolutService::new(settings, secrets, db.clone()).unwrap())
+            }),
         })
     });
     let metrics_store = Arc::new(MetricsStore::new(100));

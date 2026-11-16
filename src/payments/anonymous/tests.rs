@@ -14,6 +14,7 @@ async fn app() -> (Arc<AppState>, axum::Router) {
         lightning_service: None,
         pricing_resolver: Arc::new(PricingResolver::new(db.clone(), DefaultPricingConfig::default())),
         settlement_listener: None,
+        revolut: None,
     };
     let state = Arc::new(AppState {
         config: AppConfig {

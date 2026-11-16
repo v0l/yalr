@@ -11,7 +11,28 @@ use axum::{
 use std::sync::Arc;
 
 pub fn api(state: Arc<AppState>) -> Router<Arc<AppState>> {
-    public().merge(tenant(state.clone())).merge(admin(state))
+    let router = public().merge(tenant(state.clone())).merge(admin(state.clone()));
+    if state.payments_state.as_ref().is_some_and(|p| p.revolut.is_some()) {
+        return router.merge(fiat(state));
+    }
+    router
+}
+
+fn fiat(state: Arc<AppState>) -> Router<Arc<AppState>> {
+    use crate::api::fiat;
+    let tenant = Router::new()
+        .route("/account/topup/fiat/config", get(fiat::config))
+        .route("/account/topup/fiat", get(fiat::history).post(fiat::create_topup))
+        .route("/account/topup/fiat/:id", get(fiat::topup_status))
+        .route("/account/payment-methods", get(fiat::list_cards))
+        .route("/account/payment-methods/:id", delete(fiat::delete_card))
+        .route("/account/payment-methods/:id/default", put(fiat::default_card))
+        .route("/account/auto-reload", get(fiat::list_auto_reload).put(fiat::save_auto_reload))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+    let admin = Router::new()
+        .route("/payments/fiat-orders", get(fiat::admin_orders))
+        .layer(axum::middleware::from_fn_with_state(state, admin_middleware));
+    Router::new().route("/webhooks/revolut", post(fiat::webhook)).merge(tenant).merge(admin)
 }
 
 fn public() -> Router<Arc<AppState>> {

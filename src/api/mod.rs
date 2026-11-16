@@ -13,6 +13,7 @@ mod serving_tests;
 pub mod compression;
 pub mod config;
 pub mod decisions;
+pub mod fiat;
 pub mod health;
 pub mod images;
 pub mod limits;
@@ -53,6 +54,8 @@ pub mod tenant;
 pub mod quota;
 #[cfg(test)]
 mod tenant_tests;
+#[cfg(test)]
+mod fiat_tests;
 #[cfg(test)]
 mod approval_tenant_tests;
 pub mod usage;

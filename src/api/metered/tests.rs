@@ -36,6 +36,7 @@ async fn harness(model: &str) -> Harness {
         lightning_service: None,
         pricing_resolver: Arc::new(PricingResolver::new(db.clone(), DefaultPricingConfig::default())),
         settlement_listener: None,
+        revolut: None,
     };
     let state = Arc::new(AppState {
         config: AppConfig {

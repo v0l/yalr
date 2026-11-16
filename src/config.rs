@@ -193,6 +193,50 @@ pub struct PaymentsConfig {
     pub lnd: Option<LndConfig>,
     #[serde(default)]
     pub provider_fee_ppm: i64,
+    pub revolut: Option<RevolutSettings>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct RevolutSettings {
+    pub url: Option<String>,
+    #[serde(default = "RevolutSettings::default_api_version")]
+    pub api_version: String,
+    #[serde(default)]
+    pub sandbox: bool,
+    #[serde(default = "RevolutSettings::default_currencies")]
+    pub currencies: Vec<String>,
+    #[serde(default = "RevolutSettings::default_min_amount")]
+    pub min_amount: i64,
+    #[serde(default = "RevolutSettings::default_max_amount")]
+    pub max_amount: i64,
+    #[serde(default = "RevolutSettings::default_reconcile_after_secs")]
+    pub reconcile_after_secs: i64,
+    #[serde(default = "RevolutSettings::default_cooldown_secs")]
+    pub auto_reload_cooldown_secs: i64,
+}
+
+impl RevolutSettings {
+    fn default_api_version() -> String { "2024-09-01".to_string() }
+    fn default_currencies() -> Vec<String> { vec!["eur".to_string(), "usd".to_string()] }
+    fn default_min_amount() -> i64 { 5 }
+    fn default_max_amount() -> i64 { 500 }
+    fn default_reconcile_after_secs() -> i64 { 120 }
+    fn default_cooldown_secs() -> i64 { 3600 }
+}
+
+impl Default for RevolutSettings {
+    fn default() -> Self {
+        Self {
+            url: None,
+            api_version: Self::default_api_version(),
+            sandbox: false,
+            currencies: Self::default_currencies(),
+            min_amount: Self::default_min_amount(),
+            max_amount: Self::default_max_amount(),
+            reconcile_after_secs: Self::default_reconcile_after_secs(),
+            auto_reload_cooldown_secs: Self::default_cooldown_secs(),
+        }
+    }
 }
 
 
