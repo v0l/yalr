@@ -361,3 +361,27 @@ async fn metrics_events_never_name_other_callers() {
     assert!(!text.contains(&format!("key-{}", alice.id + 1000)), "{text}");
     assert!(text.contains(&format!("caller-{}", alice.id)), "{text}");
 }
+
+#[tokio::test]
+async fn the_owner_sees_why_their_provider_is_degraded_and_other_tenants_do_not() {
+    let t = tenancy().await;
+    let slug = t.alice_provider().await;
+    let name = t.state.db.get_provider_by_slug(&slug).await.unwrap().unwrap().name;
+    let emitter = t.state.metrics_store.emitter().clone();
+    let error = crate::ProviderError::ServerError { message: "upstream down".into(), status_code: Some(503) };
+    for user in 1..=3 {
+        let caller = crate::metrics::MetricsUser { id: Some(user), name: None, api_key_id: None, api_key_name: None };
+        emitter.emit_provider_error(&name, "m", &error, Some(caller));
+    }
+
+    let (status, alice) = t.get(&t.alice, "/api/metrics/health").await;
+    assert_eq!(status, 200, "{alice}");
+    let entry = alice["providers"].as_array().unwrap().iter().find(|p| p["provider"] == name.as_str()).unwrap_or_else(|| panic!("{alice}"));
+    assert_eq!(entry["health_state"], "degraded");
+    assert_eq!(entry["reason"]["cause"], "consecutive_faults");
+    assert_eq!(entry["reason"]["provider_faults"], 3);
+
+    let (_, bob) = t.get(&t.bob, "/api/metrics/health").await;
+    assert_eq!(bob["provider_count"], 0);
+    assert!(!bob.to_string().contains("consecutive_faults"), "{bob}");
+}
