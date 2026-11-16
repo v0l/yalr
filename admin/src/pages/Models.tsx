@@ -68,7 +68,7 @@ export default function Models() {
         />
         <label className="flex items-center gap-2 font-mono text-[12px] text-muted-foreground">
           <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} />
-          Show all pass-through models, including unpriced ones with no traffic
+          Show unpriced models too
         </label>
         {error && <div className="panel p-3 font-mono text-[12px] text-destructive">{error}</div>}
         <div className="panel overflow-x-auto">

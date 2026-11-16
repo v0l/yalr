@@ -157,7 +157,7 @@ fn finish(facts: &Facts, draft: Draft) -> PublicModelDetail {
         prices.extend(draft.own_price.clone());
     }
     let requests_24h: i64 = facts.counts.get(&draft.id.to_lowercase()).map_or(0, |by_provider| by_provider.values().sum());
-    let hidden = draft.kind == POOL && requests_24h == 0 && prices.is_empty();
+    let hidden = prices.is_empty();
     PublicModelDetail {
         model: PublicModel {
             id: draft.id,

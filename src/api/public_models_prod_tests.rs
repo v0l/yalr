@@ -145,26 +145,31 @@ fn model<'a>(list: &'a Value, id: &str) -> &'a Value {
 }
 
 #[tokio::test]
-async fn the_default_list_shows_served_names_with_traffic_and_hides_idle_pass_throughs() {
+async fn the_default_list_shows_only_priced_models() {
     let t = production().await;
     let (status, list) = t.get("", "/api/public/models").await;
     assert_eq!(status, 200, "{list}");
-    assert_eq!(ids(&list), vec!["classify", "org/Priced", "org/used"]);
+    assert_eq!(ids(&list), vec!["org/Priced"]);
 
-    let classify = model(&list, "classify");
-    assert_eq!(classify["kind"], "routed");
-    assert_eq!(classify["requests_24h"], 2);
-    assert_eq!(classify["price_ranges"].as_array().unwrap().len(), 0);
-    assert!(classify["cheapest_provider"].is_null());
-
-    let used = model(&list, "org/used");
-    assert_eq!(used["requests_24h"], 1);
-    assert_eq!(used["price_ranges"].as_array().unwrap().len(), 0);
     let priced = model(&list, "org/Priced");
     assert_eq!(priced["context_length"], 65_536);
     assert_eq!(priced["price_ranges"][0]["min_input"], 700.0);
     assert_eq!(priced["price_ranges"][0]["max_output"], 1_100.0);
     assert!(!list.to_string().contains("500.0") && !list.to_string().contains("900.0"));
+}
+
+#[tokio::test]
+async fn unpriced_models_with_traffic_show_under_all() {
+    let t = production().await;
+    let (_, all) = t.get("", "/api/public/models?all=true").await;
+    let classify = model(&all, "classify");
+    assert_eq!(classify["kind"], "routed");
+    assert_eq!(classify["requests_24h"], 2);
+    assert_eq!(classify["price_ranges"].as_array().unwrap().len(), 0);
+    assert!(classify["cheapest_provider"].is_null());
+    let used = model(&all, "org/used");
+    assert_eq!(used["requests_24h"], 1);
+    assert_eq!(used["price_ranges"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -211,7 +216,7 @@ async fn an_owner_sees_which_models_need_a_price_or_a_full_repo_id() {
 }
 
 #[tokio::test]
-async fn a_routed_config_with_no_live_backend_still_shows_traffic_with_no_price() {
+async fn a_routed_config_with_no_live_backend_shows_traffic_with_no_price_under_all() {
     let t = production().await;
     t.state
         .db
@@ -225,7 +230,9 @@ async fn a_routed_config_with_no_live_backend_still_shows_traffic_with_no_price(
         .await
         .unwrap();
     t.state.db.insert_request_logs(&[request("q1", "qwen-short", "gone-provider", 100, 1_000, 10)]).await.unwrap();
-    let (_, list) = t.get("", "/api/public/models").await;
+    let (_, default_list) = t.get("", "/api/public/models").await;
+    assert!(!ids(&default_list).contains(&"qwen-short"));
+    let (_, list) = t.get("", "/api/public/models?all=true").await;
     let found = model(&list, "qwen-short");
     assert_eq!(found["requests_24h"], 1);
     assert_eq!(found["provider_count"], 0);
@@ -270,5 +277,7 @@ async fn a_config_with_its_own_row_shows_that_price() {
     let code = model(&list, "code");
     assert_eq!(code["price_ranges"][0]["min_input"], 21.0);
     assert_eq!(code["price_ranges"][0]["max_output"], 34.0);
-    assert_eq!(model(&list, "classify")["price_ranges"].as_array().unwrap().len(), 0);
+    assert!(!ids(&list).contains(&"classify"));
+    let (_, all) = t.get("", "/api/public/models?all=true").await;
+    assert_eq!(model(&all, "classify")["price_ranges"].as_array().unwrap().len(), 0);
 }
