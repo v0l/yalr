@@ -21,6 +21,7 @@ export default function CardTopup({ config, hasSavedCard, onPaid }: Props) {
   const [amount, setAmount] = useState(PRESETS[1])
   const [saveCard, setSaveCard] = useState(false)
   const [email, setEmail] = useState('')
+  const [holder, setHolder] = useState('')
   const [order, setOrder] = useState<CreatedFiatTopup | null>(null)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
@@ -73,7 +74,7 @@ export default function CardTopup({ config, hasSavedCard, onPaid }: Props) {
 
   function pay() {
     setBusy(true); setError(null)
-    field.current?.submit({ email: email || undefined, ...(saveCard ? { savePaymentMethodFor: 'merchant' as const } : {}) })
+    field.current?.submit({ name: holder.trim(), email: email || undefined, ...(saveCard ? { savePaymentMethodFor: 'merchant' as const } : {}) })
   }
 
   function reset() { setOrder(null); setStatus(null); setError(null); setBusy(false) }
@@ -119,6 +120,10 @@ export default function CardTopup({ config, hasSavedCard, onPaid }: Props) {
         <div className="space-y-3">
           <div className="font-mono text-[13px] tabular-nums">Pay {formatMilli(order.amount_milli, order.currency)}</div>
           {config.mode === 'sandbox' && <div className="font-mono text-[11px] text-warning">Sandbox mode: use a Revolut test card</div>}
+          <div className="space-y-1">
+            <Label className="font-mono text-[10px] uppercase tracking-wider">Cardholder name</Label>
+            <Input value={holder} onChange={e => setHolder(e.target.value)} placeholder="First Last" className="h-8 max-w-xs font-mono" />
+          </div>
           <div ref={target} className="min-h-24" />
           <div className="flex gap-2">
             <Button size="sm" disabled={busy || status === 'pending'} onClick={pay} className="h-8 border border-brand/40 bg-brand/10 font-mono text-[11px] uppercase tracking-wider text-brand hover:bg-brand/20">
