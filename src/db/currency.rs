@@ -169,6 +169,22 @@ impl Database {
         .await
     }
 
+    pub async fn list_currency_balances_for_users(&self, user_ids: &[i64]) -> Result<Vec<(i64, String, i64, i64)>, sqlx::Error> {
+        if user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let marks = vec!["?"; user_ids.len()].join(",");
+        let sql = format!(
+            "SELECT user_id, currency, balance_milli, lifetime_deposited_milli FROM user_currency_balances \
+             WHERE user_id IN ({marks}) ORDER BY user_id, currency"
+        );
+        let mut query = sqlx::query_as(&sql);
+        for id in user_ids {
+            query = query.bind(id);
+        }
+        query.fetch_all(&self.pool).await
+    }
+
     pub async fn credit_currency(
         &self,
         user_id: i64,

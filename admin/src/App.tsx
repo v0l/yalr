@@ -12,6 +12,7 @@ import Chat from './pages/Chat'
 import RequestLog from './pages/RequestLog'
 import RequestLogDetail from './pages/RequestLogDetail'
 import Payments from './pages/Payments'
+import ApiKeys from './pages/ApiKeys'
 import Account from './pages/Account'
 import ProviderDetail from './pages/ProviderDetail'
 import Approvals from './pages/Approvals'
@@ -96,6 +97,7 @@ export default function App() {
           <Route path="users" element={<AdminRoute><Users /></AdminRoute>} />
           <Route path="users/:id" element={<AdminRoute><UserDetail /></AdminRoute>} />
           <Route path="payments" element={<Payments />} />
+          <Route path="api-keys" element={<ApiKeys />} />
           <Route path="chat" element={<Chat />} />
           <Route path="routing" element={<RoutingSettings />} />
           <Route path="providers/:slug" element={<ProviderDetail />} />

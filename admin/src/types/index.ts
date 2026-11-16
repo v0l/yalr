@@ -495,6 +495,7 @@ export interface UserBalanceEntry {
   created_at: string
   updated_at: string
   username: string
+  currencies?: { currency: string; balance_milli: number; lifetime_deposited_milli: number }[]
 }
 
 export interface BalanceTransaction {

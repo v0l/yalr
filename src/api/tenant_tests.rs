@@ -334,6 +334,10 @@ async fn payments_show_a_user_only_their_own_ledger() {
     assert_eq!(txs.as_array().unwrap().len(), 1);
     let (_, everyone) = t.get(&t.admin, "/api/payments/balances").await;
     assert_eq!(everyone.as_array().unwrap().len(), 2);
+    t.state.db.credit_currency(alice.id, "eur", 2_500_000, "deposit", "a-eur", 2_500_000).await.unwrap();
+    let (_, with_eur) = t.get(&t.alice, "/api/payments/balances").await;
+    assert_eq!(with_eur[0]["currencies"][0]["currency"], "eur");
+    assert_eq!(with_eur[0]["currencies"][0]["balance_milli"], 2_500_000);
     let credit = format!(r#"{{"user_id":{},"currency":"sats","amount_milli":5}}"#, alice.id);
     assert_eq!(t.call(&t.alice, "POST", "/api/payments/credit", &credit).await.0, 403);
 }

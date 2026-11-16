@@ -6,10 +6,10 @@ import { formatMilli, formatPrice } from '@/lib/money'
 import { api } from '../api/client'
 import type { UserBalanceEntry, BalanceTransaction, FailoverPenaltyTotal, LightningInvoice, ModelPricingEntry, Provider } from '../types'
 import { currentRole } from '@/lib/role'
-import CardPaymentsTab from '@/components/fiat/CardPaymentsTab'
-import { fiatApi, type FiatConfig } from '@/api/fiat'
-import { TopupBalanceDialog } from '@/components/TopupBalanceDialog'
-import ApiKeysPanel from '@/components/ApiKeysPanel'
+import BalancePanel from '@/components/BalancePanel'
+import FiatOrdersTable from '@/components/fiat/FiatOrdersTable'
+import { fiatApi, type FiatConfig, type FiatOrder } from '@/api/fiat'
+import { paymentTabs, paymentsSubtitle, type PaymentTabId } from '@/lib/paymentTabs'
 import WithdrawPanel from '@/components/payouts/WithdrawPanel'
 import { Button } from '@/components/ui/button'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
@@ -21,18 +21,18 @@ import CompareDialog from '@/components/pricing/CompareDialog'
 import { marketApi, type ListingStatus } from '@/api/market'
 import { ScaleIcon, PlusIcon, TrashIcon, PencilIcon, CoinsIcon, ReceiptIcon, ZapIcon, DollarSignIcon } from 'lucide-react'
 
-/* ── Tab types ─────────────────────────────────────────────────── */
+const tabIcons: Record<PaymentTabId, React.ReactNode> = {
+  balances: <CoinsIcon className="size-3.5" />,
+  pricing: <DollarSignIcon className="size-3.5" />,
+  transactions: <ReceiptIcon className="size-3.5" />,
+  failover: <ReceiptIcon className="size-3.5" />,
+  invoices: <ZapIcon className="size-3.5" />,
+  withdraw: <CoinsIcon className="size-3.5" />,
+}
 
-type TabId = 'balances' | 'pricing' | 'transactions' | 'failover' | 'invoices' | 'card' | 'withdraw'
-const allTabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
-  { id: 'balances', label: 'Balances', icon: <CoinsIcon className="size-3.5" /> },
-  { id: 'pricing', label: 'Pricing', icon: <DollarSignIcon className="size-3.5" /> },
-  { id: 'transactions', label: 'Transactions', icon: <ReceiptIcon className="size-3.5" /> },
-  { id: 'failover', label: 'Failover', icon: <ReceiptIcon className="size-3.5" /> },
-  { id: 'invoices', label: 'Invoices', icon: <ZapIcon className="size-3.5" /> },
-  { id: 'card', label: 'Card', icon: <CoinsIcon className="size-3.5" /> },
-  { id: 'withdraw', label: 'Withdraw', icon: <CoinsIcon className="size-3.5" /> },
-]
+function currencyMilli(b: UserBalanceEntry, currency: string): number {
+  return b.currencies?.find(c => c.currency === currency)?.balance_milli ?? 0
+}
 
 /* ── Helpers ──────────────────────────────────────────────────── */
 
@@ -80,9 +80,7 @@ export default function Payments() {
   const [params, setParams] = useSearchParams()
   const [fiat, setFiat] = useState<FiatConfig | null>(null)
   useEffect(() => { fiatApi.config().then(setFiat).catch(() => setFiat(null)) }, [])
-  const tabs = allTabs.filter(t => t.id !== 'card' || fiat)
-  const tabParam = params.get('tab')
-  const [activeTab, setActiveTab] = useState<TabId>(allTabs.some(t => t.id === tabParam) ? (tabParam as TabId) : 'balances')
+  const [adminOrders, setAdminOrders] = useState<FiatOrder[]>([])
   const [prefill, setPrefill] = useState<{ provider_slug: string; model_name: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -95,9 +93,11 @@ export default function Payments() {
   const [modelPricings, setModelPricings] = useState<ModelPricingEntry[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
   const { isAdmin } = currentRole()
+  const tabs = paymentTabs({ isAdmin, ownsProvider: providers.length > 0 })
+  const tabParam = params.get('tab')
+  const [activeTab, setActiveTab] = useState<PaymentTabId>(tabs.some(t => t.id === tabParam) ? (tabParam as PaymentTabId) : 'balances')
 
   const [adjustKind, setAdjustKind] = useState<BalanceAdjustKind | null>(null)
-  const [topupOpen, setTopupOpen] = useState(false)
 
   const [pricingDialog, setPricingDialog] = useState(false)
   const [editingPrice, setEditingPrice] = useState<ModelPricingEntry | null>(null)
@@ -107,7 +107,10 @@ export default function Payments() {
 
   useEffect(() => {
     loadAll()
-    if (isAdmin) marketApi.listing().then(setListing).catch(() => undefined)
+    if (isAdmin) {
+      marketApi.listing().then(setListing).catch(() => undefined)
+      fiatApi.adminOrders().then(setAdminOrders).catch(() => undefined)
+    }
   }, [])
 
   useEffect(() => {
@@ -163,7 +166,7 @@ export default function Payments() {
       {/* Header */}
       <div>
         <h1 className="font-display text-[28px] tracking-[0.04em] text-foreground leading-none mb-1">PAYMENTS</h1>
-        <p className="font-mono text-[13px] text-muted-foreground">Manage balances, pricing, transactions &amp; Lightning invoices</p>
+        <p className="font-mono text-[13px] text-muted-foreground">{paymentsSubtitle(isAdmin)}</p>
       </div>
 
       {/* Messages */}
@@ -188,7 +191,7 @@ export default function Payments() {
               activeTab === tab.id ? 'border-brand text-brand' : 'border-transparent text-muted-foreground hover:text-foreground/80'
             }`}
           >
-            {tab.icon}
+            {tabIcons[tab.id]}
             {tab.label}
           </button>
         ))}
@@ -197,23 +200,18 @@ export default function Payments() {
       {/* ══ Balances ═══════════════════════════════════════════════ */}
       {activeTab === 'balances' && (
         <div className="space-y-4">
-          <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => setTopupOpen(true)} className="font-mono text-[11px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20 h-8">
-              <ZapIcon className="size-3" /> Top up
-            </Button>
-            {isAdmin && (
-              <>
-                <Button size="sm" variant="outline" onClick={() => setAdjustKind('credit')} className="font-mono text-[11px] tracking-wider uppercase border-brand/40 text-brand h-8">
-                  <PlusIcon className="size-3" /> Credit
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => setAdjustKind('debit')} className="font-mono text-[11px] tracking-wider uppercase border-border text-muted-foreground h-8">
-                  <PlusIcon className="size-3" /> Debit
-                </Button>
-              </>
-            )}
-          </div>
+          <BalancePanel config={fiat} title={isAdmin ? 'My balance' : 'Your balance'} onPaid={() => { setSuccessMessage('TOP UP RECEIVED'); loadAll() }} />
 
-          {!isAdmin && <ApiKeysPanel onError={setError} />}
+          {isAdmin && (
+          <>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => setAdjustKind('credit')} className="font-mono text-[11px] tracking-wider uppercase border-brand/40 text-brand h-8">
+              <PlusIcon className="size-3" /> Credit
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setAdjustKind('debit')} className="font-mono text-[11px] tracking-wider uppercase border-border text-muted-foreground h-8">
+              <PlusIcon className="size-3" /> Debit
+            </Button>
+          </div>
 
           <div className="panel">
             <div className="overflow-x-auto">
@@ -221,14 +219,16 @@ export default function Payments() {
                 <thead>
                   <tr className="border-b border-border/50 text-left">
                     <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">User</th>
-                    <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Balance</th>
+                    <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Sats</th>
+                    <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">EUR</th>
+                    <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">USD</th>
                     <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Lifetime Deposited</th>
                     <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Updated</th>
                   </tr>
                 </thead>
                 <tbody>
                   {balances.length === 0 ? (
-                    <tr><td colSpan={4} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO BALANCES</td></tr>
+                    <tr><td colSpan={6} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO BALANCES</td></tr>
                   ) : balances.map(b => (
                     <tr key={b.id} className="border-b border-border/50 hover:bg-surface">
                       <td className="px-4 py-3">
@@ -236,6 +236,8 @@ export default function Payments() {
                         <span className="ml-2 font-mono text-[11px] text-muted-foreground">ID:{b.user_id}</span>
                       </td>
                       <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{satsFromMsat(b.balance_msat)}</td>
+                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{formatMilli(currencyMilli(b, 'eur'), 'eur')}</td>
+                      <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{formatMilli(currencyMilli(b, 'usd'), 'usd')}</td>
                       <td className="px-4 py-3 font-mono text-[12px] tabular-nums text-right text-muted-foreground">{formatMsat(b.lifetime_deposited_msat)}</td>
                       <td className="px-4 py-3 font-mono text-[12px] text-muted-foreground">{formatDate(b.updated_at)}</td>
                     </tr>
@@ -244,6 +246,14 @@ export default function Payments() {
               </table>
             </div>
           </div>
+          {fiat && (
+            <>
+              <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">All card payments</div>
+              <FiatOrdersTable orders={adminOrders} showUser />
+            </>
+          )}
+          </>
+          )}
         </div>
       )}
 
@@ -348,8 +358,6 @@ export default function Payments() {
         </div>
       )}
 
-      {activeTab === 'card' && fiat && <CardPaymentsTab config={fiat} onPaid={() => { setSuccessMessage('TOP UP RECEIVED'); loadAll() }} />}
-
       {/* ══ Failover ══════════════════════════════════════════════ */}
       {activeTab === 'failover' && (
         <div className="panel">
@@ -431,7 +439,6 @@ export default function Payments() {
         onSaved={m => { setSuccessMessage(m); loadAll() }}
         onError={setError}
       />
-      <TopupBalanceDialog open={topupOpen} onOpenChange={setTopupOpen} onPaid={() => { setSuccessMessage('TOP UP RECEIVED'); loadAll() }} />
       <CompareDialog open={!!compareTarget} onOpenChange={o => { if (!o) setCompareTarget(null) }} entry={compareTarget} />
 
       {/* ══ Delete Pricing ══════════════════════════════════════════ */}

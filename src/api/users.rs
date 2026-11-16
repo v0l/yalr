@@ -362,17 +362,41 @@ pub async fn get_user(
 
 const BALANCE_PAGE: i64 = 200;
 
+#[derive(serde::Serialize)]
+pub struct UserBalanceListEntry {
+    #[serde(flatten)]
+    balance: crate::db::UserBalanceWithUsername,
+    currencies: Vec<crate::api::currency_balances::CurrencyBalance>,
+}
+
 pub async fn list_all_balances(
     State(state): State<std::sync::Arc<AppState>>,
     user: crate::auth::admin::UserExtractor,
-) -> Result<Json<Vec<crate::db::UserBalanceWithUsername>>, (StatusCode, String)> {
+) -> Result<Json<Vec<UserBalanceListEntry>>, (StatusCode, String)> {
     let scope = crate::api::tenant::Scope::from(user);
     let balances = match scope.owner() {
         None => state.db.list_all_user_balances(BALANCE_PAGE).await,
         Some(owner) => state.db.list_user_balance_with_username(owner).await,
     }
     .map_err(crate::api::tenant::internal)?;
-    Ok(Json(balances))
+    let ids: Vec<i64> = balances.iter().map(|b| b.user_id).collect();
+    let rows = state.db.list_currency_balances_for_users(&ids).await.map_err(crate::api::tenant::internal)?;
+    let entries = balances
+        .into_iter()
+        .map(|balance| {
+            let currencies = rows
+                .iter()
+                .filter(|r| r.0 == balance.user_id)
+                .map(|r| crate::api::currency_balances::CurrencyBalance {
+                    currency: r.1.clone(),
+                    balance_milli: r.2,
+                    lifetime_deposited_milli: r.3,
+                })
+                .collect();
+            UserBalanceListEntry { balance, currencies }
+        })
+        .collect();
+    Ok(Json(entries))
 }
 
 #[derive(serde::Serialize)]

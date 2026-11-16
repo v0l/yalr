@@ -5,10 +5,10 @@ import { cn } from '@/lib/utils'
 import {
   LayoutDashboardIcon, SlidersIcon, ActivityIcon,
   UsersIcon, CreditCardIcon, MessageSquareIcon, SunIcon, MoonIcon,
-  LogOutIcon, ChevronRightIcon, ScrollTextIcon, ShieldCheckIcon, StoreIcon
+  LogOutIcon, ChevronRightIcon, ScrollTextIcon, ShieldCheckIcon, StoreIcon, KeyRoundIcon
 } from 'lucide-react'
 
-const navigation = [
+const navigation: { name: string; path: string; icon: typeof SunIcon; adminOnly: boolean; userOnly?: boolean }[] = [
   { name: 'Dashboard', path: '/', icon: LayoutDashboardIcon, adminOnly: false },
   { name: 'Config', path: '/config', icon: SlidersIcon, adminOnly: false },
   { name: 'Metrics', path: '/metrics', icon: ActivityIcon, adminOnly: false },
@@ -16,6 +16,7 @@ const navigation = [
   { name: 'Users', path: '/users', icon: UsersIcon, adminOnly: true },
   { name: 'Approvals', path: '/approvals', icon: ShieldCheckIcon, adminOnly: true },
   { name: 'Payments', path: '/payments', icon: CreditCardIcon, adminOnly: false },
+  { name: 'API keys', path: '/api-keys', icon: KeyRoundIcon, adminOnly: false, userOnly: true },
   { name: 'Routing', path: '/routing', icon: SlidersIcon, adminOnly: false },
   { name: 'Chat', path: '/chat', icon: MessageSquareIcon, adminOnly: false },
   { name: 'Models', path: '/models', icon: StoreIcon, adminOnly: false },
@@ -53,7 +54,7 @@ export default function Layout() {
 
         {/* Navigation */}
         <nav className="flex-1 flex flex-col gap-1 px-3 py-4 overflow-y-auto">
-          {navigation.filter(item => user.isAdmin || !item.adminOnly).map((item) => {
+          {navigation.filter(item => (user.isAdmin || !item.adminOnly) && !(user.isAdmin && item.userOnly)).map((item) => {
             const isActive = location.pathname === item.path
               || (item.path !== '/' && location.pathname.startsWith(item.path))
             const Icon = item.icon
