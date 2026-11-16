@@ -6,6 +6,8 @@ import { formatMilli, formatPrice } from '@/lib/money'
 import { api } from '../api/client'
 import type { UserBalanceEntry, BalanceTransaction, LightningInvoice, ModelPricingEntry, Provider } from '../types'
 import { currentRole } from '@/lib/role'
+import CardPaymentsTab from '@/components/fiat/CardPaymentsTab'
+import { fiatApi, type FiatConfig } from '@/api/fiat'
 import { TopupBalanceDialog } from '@/components/TopupBalanceDialog'
 import ApiKeysPanel from '@/components/ApiKeysPanel'
 import { Button } from '@/components/ui/button'
@@ -20,12 +22,13 @@ import { ScaleIcon, PlusIcon, TrashIcon, PencilIcon, CoinsIcon, ReceiptIcon, Zap
 
 /* ── Tab types ─────────────────────────────────────────────────── */
 
-type TabId = 'balances' | 'pricing' | 'transactions' | 'invoices'
-const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
+type TabId = 'balances' | 'pricing' | 'transactions' | 'invoices' | 'card'
+const allTabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: 'balances', label: 'Balances', icon: <CoinsIcon className="size-3.5" /> },
   { id: 'pricing', label: 'Pricing', icon: <DollarSignIcon className="size-3.5" /> },
   { id: 'transactions', label: 'Transactions', icon: <ReceiptIcon className="size-3.5" /> },
   { id: 'invoices', label: 'Invoices', icon: <ZapIcon className="size-3.5" /> },
+  { id: 'card', label: 'Card', icon: <CoinsIcon className="size-3.5" /> },
 ]
 
 /* ── Helpers ──────────────────────────────────────────────────── */
@@ -72,8 +75,11 @@ function invoiceStatusBadge(status: string) {
 
 export default function Payments() {
   const [params, setParams] = useSearchParams()
+  const [fiat, setFiat] = useState<FiatConfig | null>(null)
+  useEffect(() => { fiatApi.config().then(setFiat).catch(() => setFiat(null)) }, [])
+  const tabs = allTabs.filter(t => t.id !== 'card' || fiat)
   const tabParam = params.get('tab')
-  const [activeTab, setActiveTab] = useState<TabId>(tabs.some(t => t.id === tabParam) ? (tabParam as TabId) : 'balances')
+  const [activeTab, setActiveTab] = useState<TabId>(allTabs.some(t => t.id === tabParam) ? (tabParam as TabId) : 'balances')
   const [prefill, setPrefill] = useState<{ provider_slug: string; model_name: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -334,6 +340,8 @@ export default function Payments() {
           </div>
         </div>
       )}
+
+      {activeTab === 'card' && fiat && <CardPaymentsTab config={fiat} onPaid={() => { setSuccessMessage('TOP UP RECEIVED'); loadAll() }} />}
 
       {/* ══ Invoices ══════════════════════════════════════════════ */}
       {activeTab === 'invoices' && (
