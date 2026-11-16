@@ -1,5 +1,6 @@
 import type { Balances, ProviderStats } from '../types/providerStats'
 import type { ApprovalView, CreatedApiKey, MyApiKey, VerificationDetail } from '../types/verification'
+import type { Payout, WithdrawalOverview } from '../types/payouts'
 import { API_BASE_URL } from './client'
 
 async function call<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
@@ -25,6 +26,14 @@ export const tenantApi = {
   providerStats: (slug: string, days: number) => call<ProviderStats>(`${slugPath(slug)}/stats?days=${days}`),
   checkProvider: (slug: string) => call<{ healthy: boolean; error: string | null }>(`${slugPath(slug)}/check`, 'POST'),
   myBalances: () => call<Balances>('/my/balances'),
+  myPayouts: () => call<WithdrawalOverview>('/my/payouts'),
+  withdraw: (body: { currency: string; amount_milli: number; method: string; destination: string }) => call<Payout>('/my/payouts', 'POST', body),
+  cancelMyPayout: (id: number) => call<Payout>(`/my/payouts/${id}/cancel`, 'POST'),
+  listPayouts: (status?: string) => call<Payout[]>(`/payouts${status ? `?status=${status}` : ''}`),
+  approvePayout: (id: number) => call<Payout>(`/payouts/${id}/approve`, 'POST'),
+  rejectPayout: (id: number, reason: string) => call<Payout>(`/payouts/${id}/reject`, 'POST', { reason }),
+  retryPayout: (id: number) => call<Payout>(`/payouts/${id}/retry`, 'POST'),
+  cancelPayout: (id: number) => call<Payout>(`/payouts/${id}/cancel`, 'POST'),
   verifyProvider: (slug: string) => call<ApprovalView>(`${slugPath(slug)}/verify`, 'POST'),
   verifications: (slug: string) => call<VerificationDetail[]>(`${slugPath(slug)}/verifications`),
   setProviderStatus: (slug: string, action: string, reason?: string) => call<ApprovalView>(`${slugPath(slug)}/status`, 'PUT', { action, reason }),

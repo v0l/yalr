@@ -41,6 +41,7 @@ mod tests {
             },
             auth: None,
             payments: None,
+            payouts: None,
             discovery: None,
             anthropic: Default::default(),
             request_log: Default::default(),

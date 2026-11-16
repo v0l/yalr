@@ -11,6 +11,7 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub auth: Option<AuthConfig>,
     pub payments: Option<PaymentsConfig>,
+    pub payouts: Option<crate::payouts::config::PayoutsConfig>,
     pub discovery: Option<DiscoveryConfig>,
     #[serde(default)]
     pub anthropic: AnthropicConfig,
@@ -156,6 +157,7 @@ impl Default for Config {
             database: DatabaseConfig::default(),
             auth: None,
             payments: None,
+            payouts: None,
             discovery: None,
             anthropic: AnthropicConfig::default(),
             request_log: RequestLogConfig::default(),
@@ -338,6 +340,7 @@ impl AppConfig {
         crate::request_log::settings::set(config.request_log.clone());
         crate::list_price::set_overrides(config.list_prices.clone());
         crate::verify::settings::set(config.verification.clone());
+        crate::payouts::settings::set(config.payouts.clone().unwrap_or_default());
 
         let payments_config = config.payments;
         let discovery_config = config.discovery;

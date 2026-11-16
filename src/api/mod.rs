@@ -26,6 +26,7 @@ pub mod currency_balances;
 pub mod model_pricing;
 pub mod models;
 pub mod oauth;
+pub mod payouts;
 pub mod pool_models;
 pub mod provider_approval;
 pub mod provider_payments;

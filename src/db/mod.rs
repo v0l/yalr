@@ -18,6 +18,7 @@ mod nesting;
 mod nostr_identity;
 mod ownership;
 mod payments;
+pub mod payouts;
 mod pricing;
 mod provider_stats;
 mod public_stats;
