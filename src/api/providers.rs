@@ -28,6 +28,7 @@ pub struct ProviderResponse {
     pub status_reason: Option<String>,
     pub status_locked: bool,
     pub is_reference: bool,
+    pub max_concurrency: Option<i32>,
     pub verifications: Vec<crate::api::verification_view::VerificationSummary>,
     pub created_at: crate::db::Timestamp,
     pub updated_at: crate::db::Timestamp,
@@ -121,6 +122,8 @@ pub struct ProviderUpdateRequest {
     pub extra_body: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "present_or_null")]
     pub owner_user_id: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "present_or_null")]
+    pub max_concurrency: Option<Option<i32>>,
 }
 
 fn present_or_null<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
@@ -163,6 +166,7 @@ fn response(p: Provider, owner_username: Option<String>, health: Option<Provider
         status_reason: p.status_reason.clone(),
         status_locked: p.status_locked,
         is_reference: p.is_reference,
+        max_concurrency: p.max_concurrency,
         verifications: vec![],
         extra_body: p.extra_body_map(),
         has_api_key: p.api_key.as_deref().is_some_and(|k| !k.is_empty()),
@@ -308,6 +312,14 @@ pub async fn update_provider(
         )
         .await
         .map_err(internal)?;
+    let updated = match request.max_concurrency {
+        Some(limit) => {
+            let limit = limit.filter(|l| *l > 0);
+            state.db.set_provider_max_concurrency(updated.id, limit).await.map_err(internal)?;
+            state.db.get_provider_by_id(updated.id).await.map_err(internal)?.unwrap_or(updated)
+        }
+        None => updated,
+    };
     let updated = match request.client_version.as_deref() {
         Some(version) => {
             let version = Some(version.trim()).filter(|v| !v.is_empty());

@@ -83,6 +83,7 @@ fn tenant(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/payments/transactions", get(users::list_admin_transactions))
         .route("/payments/invoices", get(users::list_admin_invoices))
         .route("/payments/currencies", get(crate::api::currency_balances::currencies))
+        .route("/account/routing", get(crate::api::account_routing::get).put(crate::api::account_routing::put))
         .route("/my/balances", get(crate::api::currency_balances::my_balances))
         .route("/api-keys", get(list_api_keys).post(create_api_key))
         .route("/api-keys/:id", delete(crate::auth::api_keys::delete_my_api_key))
