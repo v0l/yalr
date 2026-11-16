@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { publicApi, type PublicModelDetail, type PublicProvider } from '@/api/publicApi'
 import PublicLayout from '@/layout/PublicLayout'
-import { badgesFor, formatMs, formatPercent, formatTokens, priceLine } from '@/lib/publicFormat'
+import { badgesFor, lowestTtftKey, providerShownName, formatMs, formatPercent, formatTokens, priceLine } from '@/lib/publicFormat'
 
 function VerifiedBadge({ status }: { status: PublicProvider['verification'] }) {
   const style = status === 'unverified'
@@ -19,12 +19,6 @@ function Stat({ label, value }: { label: string; value: string }) {
       <div className="font-mono text-[15px] tabular-nums text-foreground">{value}</div>
     </div>
   )
-}
-
-function lowestTtft(providers: PublicProvider[]): string | null {
-  const measured = providers.filter(p => p.ttft_p50_ms != null)
-  if (measured.length === 0) return null
-  return measured.reduce((a, b) => (b.ttft_p50_ms as number) < (a.ttft_p50_ms as number) ? b : a).name
 }
 
 export default function ModelDetail() {
@@ -73,9 +67,9 @@ export default function ModelDetail() {
               <div className="panel space-y-1 p-4 font-mono text-[12px]">
                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Routing preferences pick</p>
                 <p>balanced <span className="text-muted-foreground">spreads load across healthy providers</span></p>
-                <p>cheapest (:floor) <span className="text-brand">{model.cheapest_provider ?? '-'}</span></p>
-                <p>fastest (:nitro) <span className="text-brand">{model.fastest_provider ?? '-'}</span></p>
-                <p>latency (provider.sort) <span className="text-brand">{lowestTtft(model.providers) ?? '-'}</span></p>
+                <p>cheapest (:floor) <span className="text-brand">{providerShownName(model.providers, model.cheapest_provider)}</span></p>
+                <p>fastest (:nitro) <span className="text-brand">{providerShownName(model.providers, model.fastest_provider)}</span></p>
+                <p>latency (provider.sort) <span className="text-brand">{providerShownName(model.providers, lowestTtftKey(model.providers))}</span></p>
               </div>
             )}
 

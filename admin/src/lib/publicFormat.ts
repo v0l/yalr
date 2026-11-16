@@ -45,3 +45,13 @@ export function badgesFor(
 ): { cheapest: boolean; fastest: boolean } {
   return { cheapest: row.key === model.cheapest_provider, fastest: row.key === model.fastest_provider }
 }
+
+export function providerShownName(rows: { key: string; provider: string }[], key: string | null): string {
+  return rows.find(r => r.key === key)?.provider ?? '-'
+}
+
+export function lowestTtftKey(rows: { key: string; ttft_p50_ms: number | null }[]): string | null {
+  const measured = rows.filter(r => r.ttft_p50_ms != null)
+  if (measured.length === 0) return null
+  return measured.reduce((a, b) => (b.ttft_p50_ms as number) < (a.ttft_p50_ms as number) ? b : a).key
+}

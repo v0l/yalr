@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { badgesFor, formatTokens } from './publicFormat'
+import { badgesFor, formatTokens, lowestTtftKey, providerShownName } from './publicFormat'
 
 test('formatTokens renders millions as M', () => {
   expect(formatTokens(1000000)).toBe('1M')
@@ -25,4 +25,16 @@ test('badgesFor marks only the provider whose key matches', () => {
   expect(badgesFor(rows[0], model)).toEqual({ cheapest: false, fastest: true })
   expect(badgesFor(rows[1], model)).toEqual({ cheapest: true, fastest: false })
   expect(badgesFor(rows[1], { cheapest_provider: null, fastest_provider: null })).toEqual({ cheapest: false, fastest: false })
+})
+
+test('the routing pick shows the display name for a provider key and picks the lowest TTFT', () => {
+  const rows = [
+    { key: 'a1', provider: 'Alpha', ttft_p50_ms: 400 },
+    { key: 'b2', provider: 'Beta', ttft_p50_ms: 120 },
+    { key: 'c3', provider: 'Gamma', ttft_p50_ms: null },
+  ]
+  expect(providerShownName(rows, 'b2')).toBe('Beta')
+  expect(providerShownName(rows, null)).toBe('-')
+  expect(lowestTtftKey(rows)).toBe('b2')
+  expect(lowestTtftKey([rows[2]])).toBeNull()
 })
