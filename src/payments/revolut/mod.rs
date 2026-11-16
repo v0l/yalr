@@ -284,3 +284,30 @@ impl RevolutService {
         Ok(self.db.delete_payment_method(user_id, id).await?)
     }
 }
+
+#[cfg(test)]
+mod sandbox_tests {
+    use super::*;
+
+    fn local_token() -> Option<String> {
+        let path = std::env::var("YALR_REVOLUT_SANDBOX_CONFIG").ok()?;
+        let text = std::fs::read_to_string(path).ok()?;
+        text.lines().find_map(|l| l.trim().strip_prefix("token:").map(|t| t.trim().trim_matches('"').to_string()))
+    }
+
+    #[tokio::test]
+    #[ignore = "needs YALR_REVOLUT_SANDBOX_CONFIG pointing at a yaml with a sandbox token"]
+    async fn a_real_sandbox_order_is_created_and_stays_pending_until_paid() {
+        let token = local_token().expect("sandbox token");
+        let db = Arc::new(Database::test().await);
+        let user = db.add_test_user("u", false).await;
+        let settings = RevolutSettings { sandbox: true, ..Default::default() };
+        let secrets = RevolutSecrets { api_key: token, webhook_secret: "unused".into(), encryption_key_hex: "00".repeat(32) };
+        let service = RevolutService::new(settings, secrets, db.clone()).unwrap();
+        let created = service.create_topup(user.id, "eur", 500, false, None).await.unwrap();
+        assert!(!created.token.is_empty());
+        let reconciled = service.reconcile(created.order.external_id.as_deref().unwrap()).await.unwrap();
+        assert!(reconciled.is_none());
+        assert_eq!(db.get_currency_balance(user.id, "eur").await.unwrap(), 0);
+    }
+}
