@@ -2,6 +2,7 @@ use super::Database;
 
 mod access;
 mod model_providers;
+mod payouts;
 mod providers;
 mod routing;
 
