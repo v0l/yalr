@@ -37,14 +37,14 @@ async fn insert_one(tx: &mut Transaction<'_, MySql>, r: &Record, max_packet: usi
     let id = sqlx::query(
         "INSERT INTO request_log (
             request_id, started_at_ms, endpoint, stream, model, user_id, user_name,
-            api_key_id, api_key_name, client_ip, client_headers, provider, route, upstream_url,
+            api_key_id, api_key_name, client_ip, client_headers, provider, route, upstream_model, upstream_url,
             upstream_request_headers, upstream_status, upstream_response_headers, attempts,
             attempt_log, status, error, finish_reason, headers_ms, first_event_ms,
             first_thinking_ms, first_text_ms, total_ms, prompt_tokens, completion_tokens,
             cached_tokens, cache_write_tokens, weighted_input_tokens, message_count,
             system_hash, tools_hash, message_hashes, first_diverging_message,
             previous_request_id, request_bytes, response_bytes, cost_msat
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .bind(&r.request_id)
     .bind(r.started_at_ms)
@@ -59,6 +59,7 @@ async fn insert_one(tx: &mut Transaction<'_, MySql>, r: &Record, max_packet: usi
     .bind(&r.client_headers)
     .bind(&r.provider)
     .bind(&r.route)
+    .bind(&r.upstream_model)
     .bind(&r.upstream_url)
     .bind(&r.upstream_request_headers)
     .bind(r.upstream_status)

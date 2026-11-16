@@ -1148,6 +1148,7 @@ impl Router {
             if let Some(trace) = actual_request.trace() {
                 trace.begin_attempt(&provider_name);
                 trace.set_route(&route);
+                trace.set_upstream_model(&resolved_model);
             }
             let result = provider.chat_completions(&actual_request).await;
             let total_latency = start.elapsed();
@@ -1409,6 +1410,7 @@ impl Router {
                 if let Some(trace) = actual_request.trace() {
                     trace.begin_attempt(&provider_name);
                 trace.set_route(&route);
+                trace.set_upstream_model(&resolved_model);
                 }
                 match provider.chat_completions_stream(&actual_request) {
                     Ok(provider_stream) => {
@@ -1889,6 +1891,7 @@ impl Router {
             if let Some(trace) = trace {
                 trace.begin_attempt(&provider_name);
                 trace.set_route(&route);
+                trace.set_upstream_model(&resolved_model);
             }
             let result = provider.responses_with_body(&actual_request, &extra_body).await;
             let total_latency = start.elapsed();

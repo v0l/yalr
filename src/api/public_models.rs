@@ -66,10 +66,17 @@ pub struct Snapshot {
     pub models: Vec<PublicModelDetail>,
 }
 
+#[derive(Default)]
+struct Slot {
+    current: Option<(Instant, Arc<Snapshot>)>,
+    refreshing: bool,
+}
+
 #[derive(Clone)]
 pub struct PublicCache {
     ttl: Duration,
-    inner: Arc<Mutex<Option<(Instant, Arc<Snapshot>)>>>,
+    slot: Arc<std::sync::Mutex<Slot>>,
+    first_build: Arc<Mutex<()>>,
 }
 
 impl Default for PublicCache {
@@ -80,18 +87,38 @@ impl Default for PublicCache {
 
 impl PublicCache {
     pub fn with_ttl(ttl: Duration) -> Self {
-        Self { ttl, inner: Default::default() }
+        Self { ttl, slot: Default::default(), first_build: Default::default() }
     }
 
-    pub async fn snapshot(&self, state: &AppState) -> Arc<Snapshot> {
-        let mut slot = self.inner.lock().await;
-        if let Some((at, snapshot)) = slot.as_ref() {
-            if at.elapsed() < self.ttl {
-                return snapshot.clone();
+    fn store(&self, snapshot: Arc<Snapshot>) {
+        let mut slot = self.slot.lock().unwrap();
+        slot.current = Some((Instant::now(), snapshot));
+        slot.refreshing = false;
+    }
+
+    fn lookup(&self) -> Option<(Instant, Arc<Snapshot>)> {
+        self.slot.lock().unwrap().current.clone()
+    }
+
+    fn claim_refresh(&self) -> bool {
+        let mut slot = self.slot.lock().unwrap();
+        !std::mem::replace(&mut slot.refreshing, true)
+    }
+
+    pub async fn snapshot(&self, state: &Arc<AppState>) -> Arc<Snapshot> {
+        if let Some((at, snapshot)) = self.lookup() {
+            if at.elapsed() >= self.ttl && self.claim_refresh() {
+                let (cache, state) = (self.clone(), state.clone());
+                tokio::spawn(async move { cache.store(Arc::new(build(&state).await)) });
             }
+            return snapshot;
+        }
+        let _gate = self.first_build.lock().await;
+        if let Some((_, snapshot)) = self.lookup() {
+            return snapshot;
         }
         let snapshot = Arc::new(build(state).await);
-        *slot = Some((Instant::now(), snapshot.clone()));
+        self.store(snapshot.clone());
         snapshot
     }
 }

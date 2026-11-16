@@ -125,6 +125,7 @@ mod tests {
     fn sample(status: &str, ttft: Option<i64>, total: Option<i64>, tokens: Option<i64>) -> RequestSample {
         RequestSample {
             model: "m".into(),
+            upstream_model: None,
             provider: None,
             status: status.into(),
             started_at_ms: 0,

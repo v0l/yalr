@@ -13,6 +13,7 @@ pub struct HealthUptime {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct RequestCount {
     pub model: String,
+    pub upstream_model: Option<String>,
     pub provider: Option<String>,
     pub requests: i64,
 }
@@ -20,6 +21,7 @@ pub struct RequestCount {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct RequestSample {
     pub model: String,
+    pub upstream_model: Option<String>,
     pub provider: Option<String>,
     pub status: String,
     pub started_at_ms: i64,
@@ -66,8 +68,8 @@ impl Database {
 
     pub async fn request_counts_since(&self, since_ms: i64) -> Result<Vec<RequestCount>, sqlx::Error> {
         sqlx::query_as(
-            "SELECT model, provider, CAST(COUNT(*) AS SIGNED) AS requests
-             FROM request_log WHERE started_at_ms >= ? GROUP BY model, provider",
+            "SELECT model, upstream_model, provider, CAST(COUNT(*) AS SIGNED) AS requests
+             FROM request_log WHERE started_at_ms >= ? GROUP BY model, upstream_model, provider",
         )
         .bind(since_ms)
         .fetch_all(&self.pool)
@@ -76,7 +78,7 @@ impl Database {
 
     pub async fn request_samples_since(&self, since_ms: i64, limit: i64) -> Result<Vec<RequestSample>, sqlx::Error> {
         sqlx::query_as(
-            "SELECT model, provider, status, started_at_ms, first_event_ms, total_ms, completion_tokens
+            "SELECT model, upstream_model, provider, status, started_at_ms, first_event_ms, total_ms, completion_tokens
              FROM request_log WHERE started_at_ms >= ?
              ORDER BY started_at_ms DESC LIMIT ?",
         )

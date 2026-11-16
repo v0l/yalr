@@ -15,6 +15,7 @@ pub struct Record {
     pub client_headers: String,
     pub provider: Option<String>,
     pub route: Option<String>,
+    pub upstream_model: Option<String>,
     pub upstream_url: Option<String>,
     pub upstream_request_headers: String,
     pub upstream_status: Option<i64>,

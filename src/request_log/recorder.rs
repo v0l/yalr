@@ -96,6 +96,7 @@ pub fn build(inbound: Inbound, trace: &Trace, outcome: Outcome, started_at_ms: i
         client_headers: pairs_json(&inbound.client_headers),
         provider: trace.provider(),
         route: trace.route(),
+        upstream_model: trace.upstream_model(),
         upstream_url: upstream.url.clone(),
         upstream_request_headers: pairs_json(&upstream.request_headers),
         upstream_status: upstream.status.map(i64::from),

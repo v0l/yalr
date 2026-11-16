@@ -38,6 +38,7 @@ struct Inner {
     serving: Option<crate::serving::ServingReport>,
     provider: Option<String>,
     route: Option<String>,
+    upstream_model: Option<String>,
     upstream: Upstream,
     attempts: Vec<Attempt>,
 }
@@ -79,6 +80,14 @@ impl Trace {
 
     pub fn set_route(&self, route: &str) {
         self.with(|inner| inner.route = (!route.is_empty()).then(|| route.to_string()));
+    }
+
+    pub fn set_upstream_model(&self, model: &str) {
+        self.with(|inner| inner.upstream_model = Some(model.to_string()));
+    }
+
+    pub fn upstream_model(&self) -> Option<String> {
+        self.with(|inner| inner.upstream_model.clone()).flatten()
     }
 
     pub fn route(&self) -> Option<String> {

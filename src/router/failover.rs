@@ -136,6 +136,7 @@ impl Router {
             if let Some(trace) = trace {
                 trace.begin_attempt(&provider_name);
                 trace.set_route(&route);
+                trace.set_upstream_model(&resolved_model);
             }
             let result = call(provider.clone(), resolved_model, extra_body).await;
             guard.decrement();

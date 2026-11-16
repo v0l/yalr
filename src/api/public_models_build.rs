@@ -23,6 +23,14 @@ struct Facts {
     verifications: HashMap<i64, Vec<VerificationRow>>,
 }
 
+fn names_of(model: &str, upstream: Option<&str>) -> Vec<String> {
+    let mut names = vec![model.to_lowercase()];
+    if let Some(upstream) = upstream.map(str::to_lowercase).filter(|u| !u.is_empty() && *u != names[0]) {
+        names.push(upstream);
+    }
+    names
+}
+
 async fn gather(db: &Database, now_ms: i64) -> Facts {
     let records: HashMap<i64, Provider> = db
         .list_providers()
@@ -51,11 +59,15 @@ async fn gather(db: &Database, now_ms: i64) -> Facts {
         .collect();
     let mut samples: HashMap<String, HashMap<String, Vec<RequestSample>>> = HashMap::new();
     for s in db.request_samples_since(now_ms - 24 * HOUR_MS, SAMPLE_LIMIT).await.unwrap_or_default() {
-        samples.entry(s.model.to_lowercase()).or_default().entry(s.provider.clone().unwrap_or_default()).or_default().push(s);
+        for key in names_of(&s.model, s.upstream_model.as_deref()) {
+            samples.entry(key).or_default().entry(s.provider.clone().unwrap_or_default()).or_default().push(s.clone());
+        }
     }
     let mut counts: HashMap<String, HashMap<String, i64>> = HashMap::new();
     for c in db.request_counts_since(now_ms - 24 * HOUR_MS).await.unwrap_or_default() {
-        *counts.entry(c.model.to_lowercase()).or_default().entry(c.provider.unwrap_or_default()).or_default() += c.requests;
+        for key in names_of(&c.model, c.upstream_model.as_deref()) {
+            *counts.entry(key).or_default().entry(c.provider.clone().unwrap_or_default()).or_default() += c.requests;
+        }
     }
     let mut verifications = HashMap::new();
     for id in records.keys() {

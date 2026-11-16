@@ -139,6 +139,11 @@ pub async fn run_with_shutdown<F>(
         crate::discovery::spawn(discovery, state.db.clone());
     }
 
+    let warm = state.clone();
+    tokio::spawn(async move {
+        warm.public_cache.snapshot(&warm).await;
+    });
+
     let app = build_app(state);
 
     let addr: SocketAddr = addr.parse()?;

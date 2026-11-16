@@ -231,3 +231,21 @@ async fn responses_are_cached_for_the_ttl() {
     let snapshot = fresh.snapshot(&t.state).await;
     assert_eq!(snapshot.models[0].model.provider_count, 3);
 }
+
+#[tokio::test]
+async fn requests_routed_through_a_config_count_for_the_upstream_model() {
+    let (t, _) = market().await;
+    t.state
+        .db
+        .insert_request_logs(&[Record {
+            model: "my-config".into(),
+            upstream_model: Some(MODEL.into()),
+            route: Some("my-config > fast-p".into()),
+            ..request("r5", "fast-p", "ok", 100, 1_100, 100)
+        }])
+        .await
+        .unwrap();
+    let (_, detail) = t.get("", &format!("/api/public/models/{MODEL}")).await;
+    assert_eq!(detail["requests_24h"], 5);
+    assert_eq!(provider(&detail, "fastco")["requests_24h"], 4);
+}
