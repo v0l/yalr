@@ -805,6 +805,13 @@ export const api = {
     return response.json()
   },
 
+  async getFailoverPenalties(): Promise<import('../types').FailoverPenaltyTotal[]> {
+    const headers = await getAuthHeaders()
+    const response = await fetch(`${API_BASE_URL}/api/payments/failover-penalties`, { headers })
+    if (!response.ok) throw new Error('Failed to fetch failover penalties')
+    return response.json()
+  },
+
   async getAllTransactions(): Promise<import('../types').BalanceTransaction[]> {
     const headers = await getAuthHeaders()
     const response = await fetch(`${API_BASE_URL}/api/payments/transactions`, { headers })

@@ -714,6 +714,7 @@ export interface RequestLogSummary {
   previous_request_id: string | null
   endpoint: string
   cost_msat: number | null
+  failover_note: string | null
 }
 
 export interface RequestLogAttempt {
@@ -758,4 +759,13 @@ export interface RequestLogQuery {
   user_id?: number
   api_key_id?: number
   endpoint?: string
+}
+
+export interface FailoverPenaltyTotal {
+  day: string
+  failed_provider: string
+  currency: string
+  requests: number
+  penalty_milli: number
+  platform_milli: number
 }

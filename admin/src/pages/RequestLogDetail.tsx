@@ -236,6 +236,7 @@ export default function RequestLogDetail() {
           <Field name="Weighted input">{formatTokens(detail.weighted_input_tokens)}</Field>
           <Field name="Completion">{formatTokens(detail.completion_tokens)}</Field>
           <Field name="Billed">{detail.cost_msat === null ? '-' : `${formatCost(detail.cost_msat)} sats`}</Field>
+          {detail.failover_note && <Field name="Failover">{detail.failover_note}</Field>}
         </Panel>
 
         <Panel title="Conversation">

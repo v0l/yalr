@@ -11,6 +11,24 @@ pub struct Settlement<'a> {
     pub fee_ppm: i64,
     pub reference_id: &'a str,
     pub model: Option<&'a str>,
+    pub prefill_credit: i64,
+    pub failover: Option<FailoverCharge<'a>>,
+}
+
+pub struct FailoverCharge<'a> {
+    pub failed_provider: &'a str,
+    pub failed_owner_id: Option<i64>,
+    pub served_provider: &'a str,
+    pub penalty: i64,
+    pub expected_cached_tokens: u32,
+    pub reason: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct PenaltyMetadata<'a> {
+    failed_provider: &'a str,
+    served_provider: &'a str,
+    reason: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -18,6 +36,29 @@ pub struct Settled {
     pub debited: i64,
     pub owner_credit: i64,
     pub fee: i64,
+    pub penalty: i64,
+    pub platform_absorbed: i64,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct FailoverPenaltyTotal {
+    pub day: String,
+    pub failed_provider: String,
+    pub currency: String,
+    pub requests: i64,
+    pub penalty_milli: i64,
+    pub platform_milli: i64,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct FailoverPenaltyRow {
+    pub request_id: String,
+    pub failed_provider: String,
+    pub served_provider: String,
+    pub currency: String,
+    pub penalty_milli: i64,
+    pub reason: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 pub fn normalize_currency(raw: &str) -> Option<String> {
@@ -187,9 +228,12 @@ impl Database {
             return Ok(Settled::default());
         }
         let mut tx = self.pool.begin().await?;
-        add(&mut tx, s.consumer_id, s.currency, -s.amount, 0).await?;
-        record(&mut tx, s.consumer_id, s.currency, -s.amount, "usage", s.reference_id, s.model).await?;
-        let mut settled = Settled { debited: s.amount, ..Settled::default() };
+        let debited = (s.amount - s.prefill_credit.clamp(0, s.amount)).max(0);
+        if debited > 0 {
+            add(&mut tx, s.consumer_id, s.currency, -debited, 0).await?;
+            record(&mut tx, s.consumer_id, s.currency, -debited, "usage", s.reference_id, s.model).await?;
+        }
+        let mut settled = Settled { debited, ..Settled::default() };
         if let Some(owner) = s.owner_id {
             settled.fee = fee_for(s.amount, s.fee_ppm);
             settled.owner_credit = s.amount - settled.fee;
@@ -199,8 +243,67 @@ impl Database {
                     .await?;
             }
         }
+        if let Some(f) = &s.failover {
+            let penalty = f.penalty.clamp(0, s.prefill_credit);
+            if let (Some(owner), true) = (f.failed_owner_id, penalty > 0) {
+                let metadata = serde_json::to_string(&PenaltyMetadata {
+                    failed_provider: f.failed_provider,
+                    served_provider: f.served_provider,
+                    reason: f.reason,
+                })
+                .ok();
+                add(&mut tx, owner, s.currency, -penalty, 0).await?;
+                record(&mut tx, owner, s.currency, -penalty, "failover_penalty", s.reference_id, metadata.as_deref())
+                    .await?;
+            }
+            let applied = if f.failed_owner_id.is_some() { penalty } else { 0 };
+            sqlx::query(
+                "INSERT INTO failover_penalties (request_id, failed_provider, failed_owner_id, served_provider, \
+                 currency, gap_milli, penalty_milli, platform_milli, expected_cached_tokens, reason) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(s.reference_id)
+            .bind(f.failed_provider)
+            .bind(f.failed_owner_id)
+            .bind(f.served_provider)
+            .bind(s.currency)
+            .bind(s.prefill_credit)
+            .bind(applied)
+            .bind(s.prefill_credit - applied)
+            .bind(f.expected_cached_tokens as i64)
+            .bind(f.reason)
+            .execute(&mut *tx)
+            .await?;
+            settled.penalty = applied;
+            settled.platform_absorbed = s.prefill_credit - applied;
+        }
         tx.commit().await?;
         Ok(settled)
+    }
+
+    pub async fn failover_penalty_totals(&self, since_ms: i64) -> Result<Vec<FailoverPenaltyTotal>, sqlx::Error> {
+        sqlx::query_as::<_, FailoverPenaltyTotal>(
+            "SELECT DATE_FORMAT(created_at, '%Y-%m-%d') AS day, failed_provider, currency, \
+             CAST(COUNT(*) AS SIGNED) AS requests, \
+             CAST(SUM(penalty_milli) AS SIGNED) AS penalty_milli, \
+             CAST(SUM(platform_milli) AS SIGNED) AS platform_milli \
+             FROM failover_penalties WHERE created_at >= ? \
+             GROUP BY day, failed_provider, currency ORDER BY day DESC, failed_provider",
+        )
+        .bind(chrono::DateTime::from_timestamp_millis(since_ms).unwrap_or_default())
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn failover_penalties_for_owner(&self, owner_id: i64, limit: i64) -> Result<Vec<FailoverPenaltyRow>, sqlx::Error> {
+        sqlx::query_as::<_, FailoverPenaltyRow>(
+            "SELECT request_id, failed_provider, served_provider, currency, penalty_milli, reason, created_at \
+             FROM failover_penalties WHERE failed_owner_id = ? ORDER BY id DESC LIMIT ?",
+        )
+        .bind(owner_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
     }
 
     pub async fn list_transactions_for_reference(&self, reference_id: &str) -> Result<Vec<BalanceTransactionRow>, sqlx::Error> {

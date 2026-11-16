@@ -85,13 +85,22 @@ impl BillingGuard {
     }
 
     pub async fn finalize_served(&self, usage: TokenUsage, provider_name: Option<&str>) -> i64 {
+        self.finalize_failover(usage, provider_name, None).await
+    }
+
+    pub async fn finalize_failover(
+        &self,
+        usage: TokenUsage,
+        provider_name: Option<&str>,
+        failover: Option<&crate::request_log::FailoverNote>,
+    ) -> i64 {
         let (Some(engine), Some(admission)) = (&self.engine, &self.admission) else {
             return 0;
         };
         if self.settled.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return 0;
         }
-        match engine.finalize_served(admission, usage, provider_name).await {
+        match engine.finalize_failover(admission, usage, provider_name, failover).await {
             Ok(billed_msat) => billed_msat,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to finalize billing charge");

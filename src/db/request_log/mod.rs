@@ -22,7 +22,7 @@ const DAY_MS: i64 = 86_400_000;
 const SUMMARY_COLUMNS: &str = "id, request_id, started_at_ms, model, stream, provider, route, status, failure_attribution, error, attempts, \
     user_name, api_key_id, api_key_name, client_ip, headers_ms, first_event_ms, first_thinking_ms, first_text_ms, \
     total_ms, prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, weighted_input_tokens, \
-    message_count, first_diverging_message, previous_request_id, endpoint, cost_msat";
+    message_count, first_diverging_message, previous_request_id, endpoint, cost_msat, failover_note";
 
 const PACKET_HEADROOM: usize = 64 * 1024;
 
@@ -43,8 +43,8 @@ async fn insert_one(tx: &mut Transaction<'_, MySql>, r: &Record, max_packet: usi
             first_thinking_ms, first_text_ms, total_ms, prompt_tokens, completion_tokens,
             cached_tokens, cache_write_tokens, weighted_input_tokens, message_count,
             system_hash, tools_hash, message_hashes, first_diverging_message,
-            previous_request_id, request_bytes, response_bytes, cost_msat
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            previous_request_id, request_bytes, response_bytes, cost_msat, failover_note
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .bind(&r.request_id)
     .bind(r.started_at_ms)
@@ -89,6 +89,7 @@ async fn insert_one(tx: &mut Transaction<'_, MySql>, r: &Record, max_packet: usi
     .bind(r.request_bytes)
     .bind(r.response_bytes)
     .bind(r.cost_msat)
+    .bind(&r.failover_note)
     .execute(&mut **tx)
     .await?
     .last_insert_id() as i64;

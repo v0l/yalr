@@ -19,6 +19,34 @@ impl SessionKey {
 struct Pin {
     provider: String,
     last_used: Instant,
+    turn: Turn,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Turn {
+    pub hashes: Vec<String>,
+    pub prompt_tokens: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastServed {
+    pub provider: String,
+    pub turn: Turn,
+}
+
+pub fn expected_cached_prefix(previous: &Turn, current: &[String]) -> u32 {
+    let Some(prompt) = previous.prompt_tokens else {
+        return 0;
+    };
+    let before = previous.hashes.len();
+    let shared = previous.hashes.iter().zip(current).take_while(|(a, b)| a == b).count();
+    if before == 0 || shared == 0 {
+        return 0;
+    }
+    if shared >= before {
+        return prompt;
+    }
+    (prompt as u64 * shared as u64 / before as u64) as u32
 }
 
 #[derive(Clone, Default)]
@@ -39,7 +67,24 @@ impl StickySessions {
         }
     }
 
+    pub fn last_served(&self, key: &SessionKey) -> Option<LastServed> {
+        let pins = self.pins.lock().unwrap();
+        let pin = pins.get(key).filter(|pin| pin.last_used.elapsed() < IDLE_TTL)?;
+        Some(LastServed { provider: pin.provider.clone(), turn: pin.turn.clone() })
+    }
+
+    pub fn record_prompt_tokens(&self, key: &SessionKey, provider: &str, prompt_tokens: u32) {
+        let mut pins = self.pins.lock().unwrap();
+        if let Some(pin) = pins.get_mut(key).filter(|pin| pin.provider == provider) {
+            pin.turn.prompt_tokens = Some(prompt_tokens);
+        }
+    }
+
     pub fn pin(&self, key: &SessionKey, provider: &str) {
+        self.pin_turn(key, provider, Vec::new());
+    }
+
+    pub fn pin_turn(&self, key: &SessionKey, provider: &str, hashes: Vec<String>) {
         let mut pins = self.pins.lock().unwrap();
         if pins.len() >= MAX_SESSIONS && !pins.contains_key(key) {
             pins.retain(|_, pin| pin.last_used.elapsed() < IDLE_TTL);
@@ -49,7 +94,8 @@ impl StickySessions {
                 }
             }
         }
-        pins.insert(key.clone(), Pin { provider: provider.to_string(), last_used: Instant::now() });
+        let turn = Turn { hashes, prompt_tokens: None };
+        pins.insert(key.clone(), Pin { provider: provider.to_string(), last_used: Instant::now(), turn });
     }
 
     pub fn move_pinned_first<T>(&self, key: Option<&SessionKey>, candidates: &mut [T], name: impl Fn(&T) -> &str) {
@@ -72,6 +118,43 @@ mod tests {
         assert!(SessionKey::new(Some(1), "m", Some("  ")).is_none());
         assert_ne!(SessionKey::new(Some(1), "m", Some("s")), SessionKey::new(Some(2), "m", Some("s")));
         assert_ne!(SessionKey::new(Some(1), "a", Some("s")), SessionKey::new(Some(1), "b", Some("s")));
+    }
+
+    fn hashes(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn turn(items: &[&str], prompt: Option<u32>) -> Turn {
+        Turn { hashes: hashes(items), prompt_tokens: prompt }
+    }
+
+    #[test]
+    fn an_extended_conversation_expects_the_whole_previous_prompt_cached() {
+        let previous = turn(&["a", "b"], Some(10_000));
+        assert_eq!(expected_cached_prefix(&previous, &hashes(&["a", "b", "c", "d"])), 10_000);
+    }
+
+    #[test]
+    fn a_changed_early_message_expects_only_the_shared_part() {
+        let previous = turn(&["a", "b", "c", "d"], Some(10_000));
+        assert_eq!(expected_cached_prefix(&previous, &hashes(&["a", "x", "c", "d", "e"])), 2_500);
+        assert_eq!(expected_cached_prefix(&previous, &hashes(&["x", "b"])), 0);
+    }
+
+    #[test]
+    fn an_unknown_previous_prompt_expects_nothing() {
+        assert_eq!(expected_cached_prefix(&turn(&["a"], None), &hashes(&["a", "b"])), 0);
+    }
+
+    #[test]
+    fn the_last_served_turn_is_kept_until_the_provider_changes() {
+        let sticky = StickySessions::default();
+        let key = SessionKey::new(Some(1), "m", Some("s")).unwrap();
+        sticky.pin_turn(&key, "a", hashes(&["a"]));
+        sticky.record_prompt_tokens(&key, "a", 42);
+        sticky.record_prompt_tokens(&key, "b", 7);
+        let last = sticky.last_served(&key).unwrap();
+        assert_eq!((last.provider.as_str(), last.turn.prompt_tokens), ("a", Some(42)));
     }
 
     #[test]
@@ -118,12 +201,14 @@ mod tests {
             name: String,
             calls: AtomicUsize,
             failing: AtomicBool,
+            client_error: AtomicBool,
         }
 
         fn response() -> ChatResponse {
             serde_json::from_str(
                 r#"{"id":"c","object":"chat.completion","created":1,"model":"m",
-                "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}]}"#,
+                "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],
+                "usage":{"prompt_tokens":10000,"completion_tokens":5,"total_tokens":10005}}"#,
             )
             .unwrap()
         }
@@ -149,6 +234,9 @@ mod tests {
             }
             async fn chat_completions(&self, _request: &ChatRequest) -> Result<ChatResponse, ProviderError> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
+                if self.client_error.load(Ordering::SeqCst) {
+                    return Err(ProviderError::ServerError { message: "bad request".into(), status_code: Some(400) });
+                }
                 if self.failing.load(Ordering::SeqCst) {
                     return Err(ProviderError::ServerError { message: "down".into(), status_code: Some(503) });
                 }
@@ -170,7 +258,7 @@ mod tests {
         async fn pool(names: &[&str]) -> (Router, Vec<Arc<Backend>>) {
             let backends: Vec<Arc<Backend>> = names
                 .iter()
-                .map(|n| Arc::new(Backend { name: n.to_string(), calls: AtomicUsize::new(0), failing: AtomicBool::new(false) }))
+                .map(|n| Arc::new(Backend { name: n.to_string(), calls: AtomicUsize::new(0), failing: AtomicBool::new(false), client_error: AtomicBool::new(false) }))
                 .collect();
             let db = Arc::new(Database::test().await);
             let router = Router::new(MetricsStore::new(100), db);
@@ -278,6 +366,64 @@ mod tests {
             let key = super::super::SessionKey::new(Some(1), "pool", Some("s"));
             let candidates = router.collect_session_candidates("pool", key.as_ref()).await;
             assert_ne!(candidates[0].0.name(), name);
+        }
+
+        async fn pinned_and_other(router: &Router, backends: &[Arc<Backend>]) -> (usize, usize) {
+            router.chat_completions(&request(None, Some("s")), user(1)).await.unwrap();
+            let pinned = backends.iter().position(|b| b.calls.load(Ordering::SeqCst) == 1).unwrap();
+            (pinned, 1 - pinned)
+        }
+
+        fn traced() -> ChatRequest {
+            request(None, Some("s")).with_trace(crate::request_log::Trace::new())
+        }
+
+        #[tokio::test]
+        async fn a_provider_fault_failover_notes_the_prefix_the_pinned_provider_had_cached() {
+            let (router, backends) = pool(&["a", "b"]).await;
+            let (pinned, other) = pinned_and_other(&router, &backends).await;
+            backends[pinned].failing.store(true, Ordering::SeqCst);
+            let request = traced();
+            router.chat_completions(&request, user(1)).await.unwrap();
+            let note = request.trace().unwrap().failover().expect("failover note");
+            assert_eq!(note.provider, backends[pinned].name);
+            assert_eq!(note.expected_cached, 10_000);
+            assert_eq!(request.trace().unwrap().provider().as_deref(), Some(backends[other].name.as_str()));
+            let attempts = request.trace().unwrap().attempts();
+            assert!(attempts[0].error.is_some() && attempts[1].error.is_none());
+            assert!(request.trace().unwrap().usage().is_none());
+        }
+
+        #[tokio::test]
+        async fn a_request_fault_failure_notes_nothing() {
+            let (router, backends) = pool(&["a", "b"]).await;
+            let (pinned, _) = pinned_and_other(&router, &backends).await;
+            backends[pinned].client_error.store(true, Ordering::SeqCst);
+            let request = traced();
+            let _ = router.chat_completions(&request, user(1)).await;
+            assert!(request.trace().unwrap().failover().is_none());
+        }
+
+        #[tokio::test]
+        async fn the_pinned_provider_answering_notes_nothing() {
+            let (router, backends) = pool(&["a", "b"]).await;
+            pinned_and_other(&router, &backends).await;
+            let request = traced();
+            router.chat_completions(&request, user(1)).await.unwrap();
+            assert!(request.trace().unwrap().failover().is_none());
+        }
+
+        #[tokio::test]
+        async fn a_preference_switch_with_the_previous_provider_healthy_notes_nothing() {
+            use crate::router::failover_note::failover_note;
+            use crate::router::sticky::{LastServed, Turn};
+            let metrics = MetricsStore::new(100);
+            let hashes = vec!["h1".to_string()];
+            let previous = LastServed {
+                provider: "a".into(),
+                turn: Turn { hashes: hashes.clone(), prompt_tokens: Some(10_000) },
+            };
+            assert!(failover_note(&metrics, Some(&previous), "b", &hashes, &[]).await.is_none());
         }
     }
 }

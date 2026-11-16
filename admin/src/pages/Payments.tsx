@@ -4,7 +4,7 @@ import { BalanceAdjustDialog } from '@/components/BalanceAdjustDialog'
 import type { BalanceAdjustKind } from '../types'
 import { formatMilli, formatPrice } from '@/lib/money'
 import { api } from '../api/client'
-import type { UserBalanceEntry, BalanceTransaction, LightningInvoice, ModelPricingEntry, Provider } from '../types'
+import type { UserBalanceEntry, BalanceTransaction, FailoverPenaltyTotal, LightningInvoice, ModelPricingEntry, Provider } from '../types'
 import { currentRole } from '@/lib/role'
 import CardPaymentsTab from '@/components/fiat/CardPaymentsTab'
 import { fiatApi, type FiatConfig } from '@/api/fiat'
@@ -23,11 +23,12 @@ import { ScaleIcon, PlusIcon, TrashIcon, PencilIcon, CoinsIcon, ReceiptIcon, Zap
 
 /* ── Tab types ─────────────────────────────────────────────────── */
 
-type TabId = 'balances' | 'pricing' | 'transactions' | 'invoices' | 'card' | 'withdraw'
+type TabId = 'balances' | 'pricing' | 'transactions' | 'failover' | 'invoices' | 'card' | 'withdraw'
 const allTabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: 'balances', label: 'Balances', icon: <CoinsIcon className="size-3.5" /> },
   { id: 'pricing', label: 'Pricing', icon: <DollarSignIcon className="size-3.5" /> },
   { id: 'transactions', label: 'Transactions', icon: <ReceiptIcon className="size-3.5" /> },
+  { id: 'failover', label: 'Failover', icon: <ReceiptIcon className="size-3.5" /> },
   { id: 'invoices', label: 'Invoices', icon: <ZapIcon className="size-3.5" /> },
   { id: 'card', label: 'Card', icon: <CoinsIcon className="size-3.5" /> },
   { id: 'withdraw', label: 'Withdraw', icon: <CoinsIcon className="size-3.5" /> },
@@ -89,6 +90,7 @@ export default function Payments() {
 
   const [balances, setBalances] = useState<UserBalanceEntry[]>([])
   const [transactions, setTransactions] = useState<BalanceTransaction[]>([])
+  const [failovers, setFailovers] = useState<FailoverPenaltyTotal[]>([])
   const [invoices, setInvoices] = useState<LightningInvoice[]>([])
   const [modelPricings, setModelPricings] = useState<ModelPricingEntry[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
@@ -121,9 +123,10 @@ export default function Payments() {
   async function loadAll() {
     setLoading(true); setError(null)
     try {
-      const [b, t, i, m, p] = await Promise.allSettled([api.getAllBalances(), api.getAllTransactions(), api.getAllInvoices(), api.getModelPricing(), api.getProviders()])
+      const [b, t, i, m, p, f] = await Promise.allSettled([api.getAllBalances(), api.getAllTransactions(), api.getAllInvoices(), api.getModelPricing(), api.getProviders(), api.getFailoverPenalties()])
       if (b.status === 'fulfilled') setBalances(b.value)
       if (t.status === 'fulfilled') setTransactions(t.value)
+      if (f.status === 'fulfilled') setFailovers(f.value)
       if (i.status === 'fulfilled') setInvoices(i.value)
       if (m.status === 'fulfilled') setModelPricings(m.value)
       if (p.status === 'fulfilled') setProviders(p.value.providers)
@@ -346,6 +349,38 @@ export default function Payments() {
       )}
 
       {activeTab === 'card' && fiat && <CardPaymentsTab config={fiat} onPaid={() => { setSuccessMessage('TOP UP RECEIVED'); loadAll() }} />}
+
+      {/* ══ Failover ══════════════════════════════════════════════ */}
+      {activeTab === 'failover' && (
+        <div className="panel">
+          <div className="overflow-x-auto">
+            <table className="w-full table-scan">
+              <thead>
+                <tr className="border-b border-border/50 text-left">
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Day</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Failed provider</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Requests</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Charged to provider</th>
+                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium text-right">Absorbed by platform</th>
+                </tr>
+              </thead>
+              <tbody>
+                {failovers.length === 0 ? (
+                  <tr><td colSpan={5} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO FAILOVER CREDITS</td></tr>
+                ) : failovers.map(row => (
+                  <tr key={`${row.day}-${row.failed_provider}-${row.currency}`} className="border-b border-border/50 hover:bg-surface">
+                    <td className="px-4 py-3 font-mono text-[12px] text-muted-foreground">{row.day}</td>
+                    <td className="px-4 py-3 font-mono text-[12px]">{row.failed_provider}</td>
+                    <td className="px-4 py-3 font-mono text-[12px] tabular-nums text-right">{row.requests}</td>
+                    <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right text-destructive">{row.currency === 'sats' ? formatMsat(row.penalty_milli) : formatMilli(row.penalty_milli, row.currency)}</td>
+                    <td className="px-4 py-3 font-mono text-[13px] tabular-nums text-right">{row.currency === 'sats' ? formatMsat(row.platform_milli) : formatMilli(row.platform_milli, row.currency)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* ══ Invoices ══════════════════════════════════════════════ */}
       {activeTab === 'invoices' && (

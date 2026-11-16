@@ -93,6 +93,7 @@ pub fn fold_history(rows: Vec<BalanceTransactionRow>, models: &HashMap<String, S
             "refund_fee" => Some("lightning routing fee".to_string()),
             "refund" => Some("released reservation".to_string()),
             "refund_reversal" => Some("withdrawal failed, returned".to_string()),
+            "failover_penalty" => Some("failover: your provider failed, prefill charged to you".to_string()),
             "deposit" | "usage" | "reserve" | "overage" => None,
             other => Some(other.to_string()),
         };
@@ -227,6 +228,24 @@ mod tests {
     fn a_fully_released_request_disappears() {
         let rows = vec![row(2, 7000, "refund", "req-b"), row(1, -7000, "reserve", "req-b")];
         assert!(fold_history(rows, &HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn a_failover_penalty_is_labelled_for_the_provider_owner() {
+        let row = BalanceTransactionRow {
+            id: 1,
+            user_id: 1,
+            amount_msat: -500,
+            transaction_type: "failover_penalty".into(),
+            reference_id: Some("req-x".into()),
+            metadata: None,
+            currency: "sats".into(),
+            amount_milli: 0,
+            created_at: chrono::Utc::now(),
+        };
+        let h = fold_history(vec![row], &HashMap::new());
+        assert_eq!((h[0].kind, h[0].amount_milli), ("adjustment", -500));
+        assert!(h[0].detail.as_deref().unwrap().starts_with("failover:"));
     }
 
     #[test]

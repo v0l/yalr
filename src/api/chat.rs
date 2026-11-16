@@ -215,7 +215,7 @@ pub async fn chat_completions_handler(
                 Some(usage) => {
                     let billed = billed_usage(&request, usage.prompt_tokens, usage.completion_tokens, usage.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens));
                     let billed_msat = match &billing_guard {
-                        Some(guard) => guard.finalize_served(billed, request.trace().and_then(|t| t.provider()).as_deref()).await,
+                        Some(guard) => guard.finalize_failover(billed, request.trace().and_then(|t| t.provider()).as_deref(), request.trace().and_then(|t| t.failover()).as_ref()).await,
                         None => 0,
                     };
                     crate::usage::record(&state, authenticated_user.api_key.as_ref().map(|k| k.id), &request.model, billed, billed_msat, request.trace().and_then(|t| t.serving()).and_then(|s| s.cost_usd).unwrap_or(0.0)).await;
@@ -423,7 +423,7 @@ pub async fn chat_completions_stream(
                     }
                     let billed = billed_usage(&request, prompt_tokens, completion_tokens, None);
                     let billed_msat = match billing_guard.as_ref() {
-                        Some(guard) if guard.is_active() => guard.finalize_served(billed, request.trace().and_then(|t| t.provider()).as_deref()).await,
+                        Some(guard) if guard.is_active() => guard.finalize_failover(billed, request.trace().and_then(|t| t.provider()).as_deref(), request.trace().and_then(|t| t.failover()).as_ref()).await,
                         _ => 0,
                     };
                     if prompt_tokens + completion_tokens > 0 {

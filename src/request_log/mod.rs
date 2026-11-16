@@ -6,4 +6,4 @@ pub mod redact;
 pub mod settings;
 pub mod trace;
 
-pub use trace::Trace;
+pub use trace::{FailoverNote, Trace};

@@ -23,6 +23,7 @@ pub mod market;
 pub mod modalities;
 pub mod model_cache;
 pub mod currency_balances;
+pub mod failover_penalties;
 pub mod model_pricing;
 pub mod models;
 pub mod oauth;

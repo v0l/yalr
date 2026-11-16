@@ -47,6 +47,10 @@ fn conversation_key(inbound: &Inbound) -> String {
     )
 }
 
+pub fn failover_text(expected_cached: u32) -> String {
+    format!("failover: prefill billed as cached ({expected_cached} tokens)")
+}
+
 fn pairs_json(pairs: &[(String, String)]) -> String {
     serde_json::to_string(pairs).unwrap_or_default()
 }
@@ -126,6 +130,7 @@ pub fn build(inbound: Inbound, trace: &Trace, outcome: Outcome, started_at_ms: i
         request_bytes: upstream.request_body.as_ref().map_or(0, |b| b.len() as i64),
         response_bytes: outcome.response.len() as i64,
         cost_msat: outcome.cost_msat,
+        failover_note: trace.failover().map(|n| failover_text(n.expected_cached)),
         client_request_packed: pack(&inbound.body),
         upstream_request_packed: upstream.request_body.as_deref().and_then(pack),
         response_packed: if outcome.response.is_empty() { None } else { pack(&outcome.response) },

@@ -218,7 +218,7 @@ impl Metered {
     async fn settle(&self, usage: Option<TokenUsage>) -> i64 {
         let usage = usage.unwrap_or_default();
         let billed_msat = match &self.billing {
-            Some(guard) => guard.finalize_served(usage, self.trace.provider().as_deref()).await,
+            Some(guard) => guard.finalize_failover(usage, self.trace.provider().as_deref(), self.trace.failover().as_ref()).await,
             None => 0,
         };
         let api_key_id = self.authenticated.api_key.as_ref().map(|k| k.id);

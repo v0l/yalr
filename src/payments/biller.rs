@@ -25,6 +25,12 @@ impl TokenUsage {
         Self { prompt_tokens, completion_tokens, ..Default::default() }
     }
 
+    pub fn with_expected_cached(self, expected_cached: u32) -> Self {
+        let cached = self.cached_tokens.max(expected_cached).min(self.prompt_tokens);
+        let cache_write_tokens = self.cache_write_tokens.min(self.prompt_tokens - cached);
+        Self { cached_tokens: cached, cache_write_tokens, ..self }
+    }
+
     pub fn cost_msat(&self, pricing: &crate::payments::pricing::ResolvedPricing) -> i64 {
         let cached = (self.cached_tokens as i64).min(self.prompt_tokens as i64);
         let written = (self.cache_write_tokens as i64).min(self.prompt_tokens as i64 - cached);
@@ -119,6 +125,16 @@ impl BillingEngine {
         usage: TokenUsage,
         provider_name: Option<&str>,
     ) -> Result<i64, BillingError> {
+        self.finalize_failover(admission, usage, provider_name, None).await
+    }
+
+    pub async fn finalize_failover(
+        &self,
+        admission: &Admission,
+        usage: TokenUsage,
+        provider_name: Option<&str>,
+        failover: Option<&crate::request_log::FailoverNote>,
+    ) -> Result<i64, BillingError> {
         let pricing = self.pricing_resolver.resolve_served(&admission.model, provider_name).await;
         if pricing.is_free {
             return Ok(0);
@@ -128,6 +144,22 @@ impl BillingEngine {
             return Ok(0);
         }
 
+        let (credit, capped) = match failover {
+            Some(note) => self.prefill_credit(&admission.model, &pricing, usage, note).await,
+            None => (0, 0),
+        };
+        let failed_owner = match failover {
+            Some(note) => self.pricing_resolver.resolve_served(&admission.model, Some(&note.provider)).await.owner_user_id,
+            None => None,
+        };
+        let charge = failover.map(|note| crate::db::FailoverCharge {
+            failed_provider: &note.provider,
+            failed_owner_id: failed_owner,
+            served_provider: provider_name.unwrap_or_default(),
+            penalty: capped,
+            expected_cached_tokens: note.expected_cached,
+            reason: &note.reason,
+        });
         let settled = self
             .balance_service
             .settle(Settlement {
@@ -138,6 +170,8 @@ impl BillingEngine {
                 fee_ppm: self.fee_ppm,
                 reference_id: &admission.request_id,
                 model: Some(&admission.model),
+                prefill_credit: credit,
+                failover: charge.filter(|_| credit > 0),
             })
             .await
             .map_err(BillingError::Balance)?;
@@ -149,6 +183,7 @@ impl BillingEngine {
             amount,
             owner_credit = settled.owner_credit,
             fee = settled.fee,
+            prefill_credit = credit,
             prompt_tokens = usage.prompt_tokens,
             completion_tokens = usage.completion_tokens,
             cached_tokens = usage.cached_tokens,
@@ -157,6 +192,28 @@ impl BillingEngine {
         );
 
         Ok(settled.debited)
+    }
+}
+
+impl BillingEngine {
+    async fn prefill_credit(
+        &self,
+        model: &str,
+        pricing: &crate::payments::pricing::ResolvedPricing,
+        usage: TokenUsage,
+        note: &crate::request_log::FailoverNote,
+    ) -> (i64, i64) {
+        let adjusted = usage.with_expected_cached(note.expected_cached);
+        let gap = (usage.cost_msat(pricing) - adjusted.cost_msat(pricing)).max(0);
+        let failed = self.pricing_resolver.resolve_served(model, Some(&note.provider)).await;
+        if failed.is_free {
+            return (gap, 0);
+        }
+        if failed.currency != pricing.currency {
+            return (gap, gap);
+        }
+        let at_failed_price = (usage.cost_msat(&failed) - adjusted.cost_msat(&failed)).max(0);
+        (gap, gap.min(at_failed_price))
     }
 }
 

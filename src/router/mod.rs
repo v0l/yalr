@@ -5,6 +5,7 @@ pub mod decision;
 pub mod detector;
 pub mod engine;
 mod failover;
+mod failover_note;
 mod input_filter;
 pub mod image;
 pub mod model_info;

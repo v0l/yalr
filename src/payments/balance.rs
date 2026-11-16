@@ -88,6 +88,10 @@ impl BalanceService {
         Ok(self.db.get_currency_balance(user_id, currency).await?)
     }
 
+    pub async fn withdrawable(&self, user_id: i64, currency: &str) -> Result<i64, BalanceError> {
+        Ok(self.get_currency_balance(user_id, currency).await?.max(0))
+    }
+
     pub async fn settle(&self, settlement: crate::db::Settlement<'_>) -> Result<crate::db::Settled, BalanceError> {
         Ok(self.db.settle_usage(settlement).await?)
     }

@@ -36,8 +36,16 @@ pub struct Usage {
     pub cache_write_tokens: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FailoverNote {
+    pub provider: String,
+    pub expected_cached: u32,
+    pub reason: String,
+}
+
 #[derive(Debug, Default)]
 struct Inner {
+    failover: Option<FailoverNote>,
     usage: Option<Usage>,
     serving: Option<crate::serving::ServingReport>,
     provider: Option<String>,
@@ -173,6 +181,14 @@ impl Trace {
             };
             inner.attempts.push(attempt);
         });
+    }
+
+    pub fn set_failover(&self, note: FailoverNote) {
+        self.with(|inner| inner.failover = Some(note));
+    }
+
+    pub fn failover(&self) -> Option<FailoverNote> {
+        self.with(|inner| inner.failover.clone()).flatten()
     }
 
     pub fn set_usage(&self, usage: Usage) {

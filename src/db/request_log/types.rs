@@ -45,6 +45,7 @@ pub struct Record {
     pub request_bytes: i64,
     pub response_bytes: i64,
     pub cost_msat: Option<i64>,
+    pub failover_note: Option<String>,
     pub client_request_packed: Option<Vec<u8>>,
     pub upstream_request_packed: Option<Vec<u8>>,
     pub response_packed: Option<Vec<u8>>,
@@ -88,6 +89,7 @@ pub struct Summary {
     pub previous_request_id: Option<String>,
     pub endpoint: String,
     pub cost_msat: Option<i64>,
+    pub failover_note: Option<String>,
 }
 
 #[derive(Default)]
@@ -147,6 +149,7 @@ pub struct Detail {
     pub request_bytes: Option<i64>,
     pub response_bytes: Option<i64>,
     pub cost_msat: Option<i64>,
+    pub failover_note: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]

@@ -9,6 +9,8 @@ pub mod pricing;
 pub mod revolut;
 pub mod routstr;
 #[cfg(test)]
+mod failover_billing_tests;
+#[cfg(test)]
 mod settlement_tests;
 
 use std::sync::Arc;

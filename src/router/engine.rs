@@ -2,6 +2,7 @@ use crate::db::Database;
 use crate::metrics::{MetricsStore, MetricsUser};
 use crate::providers::{create_provider_from_record, ChatRequest, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
 use crate::router::errors::{keep_useful, FailureLog};
+use crate::router::failover_note::{failover_note, turn_hashes, FailedAttempt};
 use crate::router::transient::{RetryRounds, TransientRetry};
 use crate::router::input_filter;
 use crate::router::sticky::{SessionKey, StickySessions};
@@ -1115,6 +1116,9 @@ impl Router {
 
         let mut last_error: Option<RouterError> = None;
         let mut failures = FailureLog::default();
+        let previous = session.as_ref().and_then(|k| self.sticky.last_served(k));
+        let hashes = turn_hashes(request);
+        let mut failed: Vec<FailedAttempt> = Vec::new();
         let needed = request.input_modalities();
         let mut rounds = RetryRounds::new(self.transient_retry, self.metrics_store.emitter().clone())
             .with_request_bytes(serde_json::to_vec(&request.messages).map_or(0, |v| v.len()));
@@ -1182,11 +1186,17 @@ impl Router {
                 Ok(response) => {
                     guard.decrement();
                     rounds.served(&provider_name);
-                    if let Some(key) = &session {
-                        self.sticky.pin(key, &provider_name);
-                    }
                     if let Some(trace) = actual_request.trace() {
                         trace.end_attempt(None);
+                        if let Some(note) = failover_note(&self.metrics_store, previous.as_ref(), &provider_name, &hashes, &failed).await {
+                            trace.set_failover(note);
+                        }
+                    }
+                    if let Some(key) = &session {
+                        self.sticky.pin_turn(key, &provider_name, hashes.clone());
+                        if let Some(tokens) = response.usage.as_ref() {
+                            self.sticky.record_prompt_tokens(key, &provider_name, tokens.prompt_tokens);
+                        }
                     }
 
                     let latency_ms = total_latency.as_millis() as u32;
@@ -1288,6 +1298,7 @@ impl Router {
                     last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
                     failures.push(&provider_name, &e);
+                    failed.push(FailedAttempt::new(&provider_name, &e));
                     rounds.fail(retained, &original_model, &e, &user);
 
                     if e.is_transient() {
@@ -1357,10 +1368,13 @@ impl Router {
         let mut candidates = candidates;
         let request = request.clone();
         let needed = request.input_modalities();
+        let previous = session.as_ref().and_then(|k| sticky.last_served(k));
+        let hashes = turn_hashes(&request);
 
         let stream = stream! {
             let mut last_error: Option<RouterError> = None;
         let mut failures = FailureLog::default();
+            let mut failed: Vec<FailedAttempt> = Vec::new();
             let mut chunks_yielded = false;
             let mut attempt: u32;
 
@@ -1531,7 +1545,12 @@ impl Router {
 
                                     if !attempt_yielded {
                                         if let Some(key) = &session {
-                                            sticky.pin(key, &provider_name);
+                                            sticky.pin_turn(key, &provider_name, hashes.clone());
+                                        }
+                                        if let Some(trace) = actual_request.trace() {
+                                            if let Some(note) = failover_note(&metrics_store, previous.as_ref(), &provider_name, &hashes, &failed).await {
+                                                trace.set_failover(note);
+                                            }
                                         }
                                     }
                                     chunks_yielded = true;
@@ -1576,6 +1595,7 @@ impl Router {
                                             trace.end_failed_attempt(&e);
                                         }
                                         failures.push(&provider_name, &e);
+                                        failed.push(FailedAttempt::new(&provider_name, &e));
                                         rounds.fail(retained.clone(), &original_model, &e, &user);
                                         last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e)));
                                         guard.decrement();
@@ -1723,6 +1743,9 @@ impl Router {
                                 metrics_store.emitter().emit_output_tokens(&provider_name, &original_model, completion_tokens, user.clone());
                             }
 
+                            if let Some(key) = &session {
+                                sticky.record_prompt_tokens(key, &provider_name, prompt_tokens);
+                            }
                             if let Some(trace) = actual_request.trace() {
                                 trace.set_usage(crate::request_log::trace::Usage {
                                     prompt_tokens,
@@ -1758,6 +1781,7 @@ impl Router {
                         last_error = Some(keep_useful(last_error.take(), RouterError::ProviderError(e.clone())));
 
                         failures.push(&provider_name, &e);
+                        failed.push(FailedAttempt::new(&provider_name, &e));
                         rounds.fail(retained, &original_model, &e, &user);
 
                         if e.is_transient() {

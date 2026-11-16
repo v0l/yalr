@@ -140,6 +140,8 @@ mod tests {
                 fee_ppm: 100_000,
                 reference_id: id,
                 model: Some("m1"),
+                prefill_credit: 0,
+                failover: None,
             })
             .await
             .unwrap();
