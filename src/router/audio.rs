@@ -233,7 +233,7 @@ mod tests {
 
         // Health filtering drops the audio provider from the candidate list,
         // leaving a chat-only backend that cannot serve the request at all.
-        for _ in 0..6 {
+        for _ in 0..12 {
             router.metrics_store.emitter().emit_failure(
                 "whisper",
                 "whisper-1",

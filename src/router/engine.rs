@@ -2148,8 +2148,8 @@ mod tests {
         // Reload router config to pick up the new routing config providers
         router.reload_config().await.unwrap();
         
-        // Mark provider2 as unavailable by recording 5 failures (hits failure_threshold)
-        for _ in 0..5 {
+        // Mark provider2 as unavailable by recording 10 failures (hits the unhealthy threshold)
+        for _ in 0..10 {
             metrics_store.record(ProviderMetrics {
                 provider: "Provider2".to_string(),
                 model: "default".to_string(),

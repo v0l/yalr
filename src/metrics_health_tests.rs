@@ -28,11 +28,12 @@ async fn ten_oversized_prompt_500s_from_one_user_do_not_degrade_a_provider() {
 #[tokio::test]
 async fn a_busy_provider_at_half_a_percent_errors_stays_healthy() {
     let store = MetricsStore::new(5000);
-    for i in 0..995 {
-        store.emitter().emit_success("p", "m", caller(i % 50));
-    }
-    for i in 0..5 {
-        store.emitter().emit_provider_error("p", "m", &status(503, "upstream down"), caller(i));
+    for i in 0..1000 {
+        if i % 200 == 0 {
+            store.emitter().emit_provider_error("p", "m", &status(503, "upstream down"), caller(i));
+        } else {
+            store.emitter().emit_success("p", "m", caller(i % 50));
+        }
     }
     assert_eq!(store.get_provider_health("p").await, HealthState::Healthy);
 }
