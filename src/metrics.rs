@@ -62,6 +62,15 @@ pub struct ProviderMetrics {
     pub user: Option<MetricsUser>,
 }
 
+impl ProviderMetrics {
+    pub fn without_other_callers(mut self, viewer_id: i64, viewer_is_admin: bool) -> Self {
+        if !viewer_is_admin && self.user.as_ref().is_some_and(|u| u.id != Some(viewer_id)) {
+            self.user = None;
+        }
+        self
+    }
+}
+
 /// Metrics event types (value only, no provider/model info)
 #[derive(Debug, Clone, Serialize)]
 pub enum MetricsEvent {

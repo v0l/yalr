@@ -82,15 +82,6 @@ impl Visibility {
     }
 }
 
-fn hide_other_callers(metrics: &mut crate::metrics::ProviderMetrics, viewer: &crate::db::User) {
-    if viewer.is_admin {
-        return;
-    }
-    if metrics.user.as_ref().is_some_and(|u| u.id != Some(viewer.id)) {
-        metrics.user = None;
-    }
-}
-
 async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, user: crate::db::User) {
     let mut receiver = state.metrics_emitter.receiver();
     let mut visibility = Visibility::new(&state, user).await;
@@ -99,11 +90,11 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, user: crate::db:
         tokio::select! {
             result = receiver.recv() => {
                 match result {
-                    Ok(mut metrics) => {
+                    Ok(metrics) => {
                         if !visibility.admits(&state, &metrics.provider).await {
                             continue;
                         }
-                        hide_other_callers(&mut metrics, &visibility.user);
+                        let metrics = metrics.without_other_callers(visibility.user.id, visibility.user.is_admin);
                         let json = match serde_json::to_string(&metrics) {
                             Ok(j) => j,
                             Err(e) => {
@@ -291,34 +282,6 @@ mod tests {
         let admin = state.db.add_test_user("root", true).await;
         let mut everything = Visibility::new(&state, admin).await;
         assert!(everything.admits(&state, "platform-openai").await);
-    }
-
-    #[tokio::test]
-    async fn a_tenant_never_sees_other_callers_names_but_keeps_its_own() {
-        let (state, _) = setup_test_state().await;
-        let tenant = state.db.add_test_user("tenant", false).await;
-        let admin = state.db.add_test_user("root", true).await;
-        let event = |id: i64| crate::metrics::ProviderMetrics {
-            timestamp_ms: 0,
-            provider: "tenant/gpu".into(),
-            model: "m".into(),
-            event: crate::metrics::MetricsEvent::Success,
-            user: Some(crate::metrics::MetricsUser {
-                id: Some(id),
-                name: Some(format!("caller{id}")),
-                api_key_id: Some(id),
-                api_key_name: Some(format!("key{id}")),
-            }),
-        };
-        let mut other = event(tenant.id + 100);
-        hide_other_callers(&mut other, &tenant);
-        assert!(other.user.is_none());
-        let mut own = event(tenant.id);
-        hide_other_callers(&mut own, &tenant);
-        assert_eq!(own.user.unwrap().api_key_name.as_deref(), Some(format!("key{}", tenant.id).as_str()));
-        let mut seen = event(tenant.id + 100);
-        hide_other_callers(&mut seen, &admin);
-        assert!(seen.user.is_some());
     }
 
     #[tokio::test]

@@ -44,10 +44,13 @@ pub async fn list(
         endpoint: query.endpoint.as_deref(),
         since_ms: None,
     };
-    state.db.list_request_logs(limit, filter)
-        .await
-        .map(Json)
-        .map_err(internal)
+    let mut rows = state.db.list_request_logs(limit, filter).await.map_err(internal)?;
+    if let Some(own) = scope.provider_names(&state).await? {
+        for row in rows.iter_mut().filter(|r| !r.provider.as_ref().is_some_and(|p| own.contains(p))) {
+            row.route = None;
+        }
+    }
+    Ok(Json(rows))
 }
 
 #[derive(Serialize)]

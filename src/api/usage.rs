@@ -86,5 +86,13 @@ pub async fn my_requests(
         since_ms,
         ..Default::default()
     };
-    state.db.list_request_logs(limit, filter).await.map(Json).map_err(internal)
+    let mut rows = state.db.list_request_logs(limit, filter).await.map_err(internal)?;
+    if !authenticated.user.is_admin {
+        let scope = crate::api::tenant::Scope { user: authenticated.user.clone() };
+        let own = scope.provider_names(&state).await.map_err(|e| internal(e.1))?.unwrap_or_default();
+        for row in rows.iter_mut().filter(|r| !r.provider.as_ref().is_some_and(|p| own.contains(p))) {
+            row.route = None;
+        }
+    }
+    Ok(Json(rows))
 }

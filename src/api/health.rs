@@ -138,12 +138,17 @@ pub async fn build_provider_health_entry(
     }
 }
 
-struct Visible(Option<std::collections::HashSet<String>>);
+struct Visible(Option<std::collections::HashSet<String>>, i64, bool);
 
 impl Visible {
     async fn of(state: &AppState, user: UserExtractor) -> Result<Self, TenantError> {
-        let names = Scope::from(user).provider_names(state).await?;
-        Ok(Self(names.map(|n| n.into_iter().collect())))
+        let scope = Scope::from(user);
+        let names = scope.provider_names(state).await?;
+        Ok(Self(names.map(|n| n.into_iter().collect()), scope.user.id, scope.is_admin()))
+    }
+
+    fn scrub(&self, event: crate::metrics::ProviderMetrics) -> crate::metrics::ProviderMetrics {
+        event.without_other_callers(self.1, self.2)
     }
 
     fn admits(&self, provider: &str) -> bool {
@@ -203,6 +208,7 @@ pub async fn get_metrics(
         .await
         .into_iter()
         .filter(|e| visible.admits(&e.provider))
+        .map(|e| visible.scrub(e))
         .collect();
     let recent_events = events.iter().take(RECENT_EVENTS).map(|e| serde_json::to_value(e).unwrap_or_default()).collect();
     let ((total_requests, total_successes, total_failures), (transient_retries, transient_retry_successes)) = if visible.is_tenant() {

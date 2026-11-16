@@ -236,6 +236,7 @@ async fn request_log_shows_a_user_only_their_own_requests() {
         user_id: Some(user),
         provider: Some("plat".into()),
         upstream_url: Some("https://internal.example/v1".into()),
+        route: Some("code-high > secret-pool > plat".into()),
         status: "ok".into(),
         attempts: 1,
         ..Default::default()
@@ -245,6 +246,9 @@ async fn request_log_shows_a_user_only_their_own_requests() {
     let (_, list) = t.get(&t.alice, &format!("/api/request-log?user_id={}", bob.id)).await;
     let seen: Vec<&str> = list.as_array().unwrap().iter().map(|r| r["request_id"].as_str().unwrap()).collect();
     assert_eq!(seen, vec!["a1"]);
+    assert!(list[0]["route"].is_null(), "platform routing must be hidden in the list: {list}");
+    let (_, admin_list) = t.get(&t.admin, "/api/request-log").await;
+    assert_eq!(admin_list[0]["route"], "code-high > secret-pool > plat");
     assert_eq!(t.get(&t.alice, &format!("/api/request-log/{}", ids[1])).await.0, 404);
     assert_eq!(t.get(&t.alice, &format!("/api/request-log/{}/bodies", ids[1])).await.0, 404);
     let (status, own) = t.get(&t.alice, &format!("/api/request-log/{}", ids[0])).await;
@@ -319,4 +323,28 @@ async fn payments_show_a_user_only_their_own_ledger() {
     assert_eq!(everyone.as_array().unwrap().len(), 2);
     let credit = format!(r#"{{"user_id":{},"currency":"sats","amount_milli":5}}"#, alice.id);
     assert_eq!(t.call(&t.alice, "POST", "/api/payments/credit", &credit).await.0, 403);
+}
+
+#[tokio::test]
+async fn metrics_events_never_name_other_callers() {
+    let t = tenancy().await;
+    let slug = t.alice_provider().await;
+    let name = t.state.db.get_provider_by_slug(&slug).await.unwrap().unwrap().name;
+    let alice = t.state.db.get_user_by_username("alice").await.unwrap().unwrap();
+    let caller = |id: i64| crate::metrics::MetricsUser {
+        id: Some(id),
+        name: Some(format!("caller-{id}")),
+        api_key_id: Some(id),
+        api_key_name: Some(format!("key-{id}")),
+    };
+    let emitter = t.state.metrics_store.emitter().clone();
+    emitter.emit_success(&name, "m", Some(caller(alice.id + 1000)));
+    emitter.emit_success(&name, "m", Some(caller(alice.id)));
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let (_, body) = t.get(&t.alice, "/api/metrics").await;
+    let text = body["recent_events"].to_string();
+    assert!(!text.contains(&format!("caller-{}", alice.id + 1000)), "{text}");
+    assert!(!text.contains(&format!("key-{}", alice.id + 1000)), "{text}");
+    assert!(text.contains(&format!("caller-{}", alice.id)), "{text}");
 }
