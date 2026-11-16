@@ -42,7 +42,9 @@ argon2 = "0.5"
 rand = "0.8"
 sha2 = "0.10"
 hex = "0.4"
-payments-rs = { git = "https://github.com/v0l/payments-rs", default-features = false, features = [
+aes-gcm = "0.10"
+payments-rs = { git = "https://github.com/v0l/payments-rs", rev = "32b36eb722af3bac8325611b5617e689b4d32d48", default-features = false, features = [
+  "method-revolut",
   "method-lnd",
   "tls-ring",
 ] }

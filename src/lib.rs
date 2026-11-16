@@ -1,6 +1,7 @@
 pub mod api;
 pub mod auth;
 pub mod config;
+pub mod crypto;
 pub mod db;
 pub mod discovery;
 pub mod list_price;

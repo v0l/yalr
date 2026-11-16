@@ -34,7 +34,7 @@ pub fn fee_for(amount: i64, fee_ppm: i64) -> i64 {
     ((amount.max(0) as i128 * fee_ppm.clamp(0, 1_000_000) as i128) / 1_000_000) as i64
 }
 
-async fn add(
+pub(super) async fn add(
     tx: &mut Transaction<'_, MySql>,
     user_id: i64,
     currency: &str,
@@ -77,7 +77,7 @@ async fn add(
         .await
 }
 
-async fn record(
+pub(super) async fn record(
     tx: &mut Transaction<'_, MySql>,
     user_id: i64,
     currency: &str,
