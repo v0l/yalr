@@ -217,3 +217,40 @@ the migration surface away from #670.
   send payments.
 
 All of these go into the k8s Secret or env, never into this repository.
+
+## Configuration
+
+```yaml
+payouts:
+  enabled: true
+  min_fiat: 10
+  min_sats: 5000
+  daily_cap_fiat: 1000
+  daily_cap_sats: 5000000
+  hold_days: 7
+  approval_threshold_fiat: 250
+  approval_threshold_sats: 250000
+  fee_ppm: 0
+  revolut:
+    base_url: https://b2b.revolut.com/api/1.0
+    api_key: ""
+    webhook_secret: ""
+    account_ids:
+      eur: ""
+      usd: ""
+```
+
+Lightning payouts need `payments.lnd`. Without `revolut.api_key` and an account id for the
+currency, that currency offers no fiat method. Webhook URL:
+`POST /api/webhooks/revolut-business`. A worker runs every minute: it sends held payouts and
+polls links that stayed `sent` for more than 5 minutes.
+
+## Built
+
+- `payouts` table and hold/release/complete ledger: `src/db/payouts.rs`.
+- Rules and config: `src/payouts/config.rs`. Service and worker: `src/payouts/service.rs`.
+- Lightning (BOLT11 exact amount check, LNURL-pay): `src/payouts/lightning.rs`.
+- Revolut Business payout link client and webhook check: `src/payouts/revolut.rs`.
+- Routes `/api/my/payouts`, `/api/payouts*`, `/api/webhooks/revolut-business`.
+- UI: Withdraw tab on Payments, payouts queue on Approvals.
+- Not built: `revolut_bank`, the real sandbox run (no Business credentials on this machine).
