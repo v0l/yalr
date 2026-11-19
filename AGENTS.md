@@ -9,11 +9,14 @@ cargo run --bin yalr-server
 # Run CLI
 cargo run --bin yalr-cli
 
-# Test database (once): every test creates and drops its own database here
-docker run -d --name yalr-test-mariadb -e MARIADB_ROOT_PASSWORD=root -p 127.0.0.1:3307:3306 mariadb:11
+# Test database: tmpfs, no fsync MariaDB (container yalr-test-db, port 3307; override with
+# YALR_TEST_DB_NAME / YALR_TEST_DB_PORT). Prints the YALR_TEST_DATABASE_URL export to use.
+# Tests clone a migrated template database (yalr_tpl_<hash>) instead of migrating each time.
+eval "$(scripts/test-db.sh)"
 
 # Run all tests (YALR_TEST_DATABASE_URL overrides mysql://root:root@127.0.0.1:3307)
-cargo test
+# (plain cargo test hangs on tests/e2e_tests.rs, which needs a live stack)
+cargo test --lib --bins --test router_tests --test metrics_tests
 
 # Run library tests only
 cargo test --lib
