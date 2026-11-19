@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 const DEFAULT_SERVER: &str = "mysql://root:root@127.0.0.1:3307";
+const TEMPLATE_PREFIX: &str = "yalr_tpl_";
+const TEMPLATE_LOCK: &str = "yalr_tpl_build";
 const PREFIX: &str = "yalr_test_";
 
 pub struct DropOnLastUse {
@@ -66,6 +68,67 @@ async fn sweep_orphans(server: &str) {
     }
 }
 
+fn template_name() -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for migration in sqlx::migrate!("./migrations").iter() {
+        migration.version.hash(&mut hasher);
+        migration.checksum.hash(&mut hasher);
+    }
+    format!("{TEMPLATE_PREFIX}{:016x}", hasher.finish())
+}
+
+async fn build_template(server: &str, name: &str) -> Vec<String> {
+    let mut conn = admin(server).await.unwrap();
+    let _: Option<i64> = sqlx::query_scalar("SELECT GET_LOCK(?, 600)").bind(TEMPLATE_LOCK).fetch_one(&mut conn).await.unwrap();
+    let exists: Vec<String> = sqlx::query_scalar(&format!("SHOW DATABASES LIKE '{name}'")).fetch_all(&mut conn).await.unwrap();
+    if exists.is_empty() {
+        sqlx::query(&format!("CREATE DATABASE `{name}`")).execute(&mut conn).await.unwrap();
+        let built = Database::new(&format!("{}/{name}", server.trim_end_matches('/'))).await;
+        if let Err(e) = built {
+            drop_database(server, name).await;
+            panic!("migrating the template database failed: {e}");
+        }
+    }
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME",
+    )
+    .bind(name)
+    .fetch_all(&mut conn)
+    .await
+    .unwrap();
+    let mut ddl = Vec::new();
+    for table in tables {
+        let row: (String, String) = sqlx::query_as(&format!("SHOW CREATE TABLE `{name}`.`{table}`")).fetch_one(&mut conn).await.unwrap();
+        ddl.push(row.1);
+    }
+    let _ = sqlx::query("SELECT RELEASE_LOCK(?)").bind(TEMPLATE_LOCK).execute(&mut conn).await;
+    ddl
+}
+
+async fn template_ddl(server: &str) -> &'static (String, Vec<String>) {
+    static TEMPLATE: OnceLock<(String, Vec<String>)> = OnceLock::new();
+    if let Some(t) = TEMPLATE.get() {
+        return t;
+    }
+    let name = template_name();
+    let ddl = build_template(server, &name).await;
+    TEMPLATE.get_or_init(|| (name, ddl))
+}
+
+async fn clone_template(conn: &mut sqlx::MySqlConnection, server: &str, name: &str) {
+    let (template, ddl) = template_ddl(server).await;
+    sqlx::query(&format!("USE `{name}`")).execute(&mut *conn).await.unwrap();
+    sqlx::query("SET foreign_key_checks = 0").execute(&mut *conn).await.unwrap();
+    for statement in ddl {
+        sqlx::query(statement).execute(&mut *conn).await.unwrap();
+    }
+    sqlx::query(&format!("INSERT INTO _sqlx_migrations SELECT * FROM `{template}`._sqlx_migrations"))
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+}
+
 fn next_name() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     format!("{PREFIX}{}_{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed))
@@ -84,6 +147,8 @@ impl Database {
             .unwrap_or_else(|e| panic!("test MariaDB at {server} is unreachable ({e}); set YALR_TEST_DATABASE_URL"));
         sqlx::query(&format!("CREATE DATABASE `{name}`")).execute(&mut conn).await.unwrap();
         let guard = Arc::new(DropOnLastUse { server: server.clone(), name: name.clone() });
+        clone_template(&mut conn, &server, &name).await;
+        drop(conn);
         let mut db = Database::new(&format!("{}/{name}", server.trim_end_matches('/'))).await.unwrap();
         db._test_guard = Some(guard);
         db
@@ -148,6 +213,70 @@ mod tests {
         let mut conn = admin(server).await.unwrap();
         let found: Vec<String> = sqlx::query_scalar(&format!("SHOW DATABASES LIKE '{name}'")).fetch_all(&mut conn).await.unwrap();
         !found.is_empty()
+    }
+
+    async fn schema_of(server: &str, name: &str) -> (Vec<(String, String, String, String, String, String)>, Vec<(String, String, i64, String, String)>) {
+        let mut conn = admin(server).await.unwrap();
+        let columns = sqlx::query_as(
+            "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, CAST(COALESCE(COLUMN_DEFAULT, 'NULL') AS CHAR), EXTRA \
+             FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION",
+        )
+        .bind(name)
+        .fetch_all(&mut conn)
+        .await
+        .unwrap();
+        let indexes = sqlx::query_as(
+            "SELECT TABLE_NAME, INDEX_NAME, CAST(SEQ_IN_INDEX AS SIGNED), COLUMN_NAME, CAST(NON_UNIQUE AS CHAR) \
+             FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX",
+        )
+        .bind(name)
+        .fetch_all(&mut conn)
+        .await
+        .unwrap();
+        (columns, indexes)
+    }
+
+    async fn foreign_keys_of(server: &str, name: &str) -> Vec<(String, String, String, String, String, String)> {
+        let mut conn = admin(server).await.unwrap();
+        sqlx::query_as(
+            "SELECT c.TABLE_NAME, c.CONSTRAINT_NAME, k.COLUMN_NAME, c.REFERENCED_TABLE_NAME, c.DELETE_RULE, c.UPDATE_RULE \
+             FROM information_schema.REFERENTIAL_CONSTRAINTS c \
+             JOIN information_schema.KEY_COLUMN_USAGE k ON k.CONSTRAINT_SCHEMA = c.CONSTRAINT_SCHEMA AND k.CONSTRAINT_NAME = c.CONSTRAINT_NAME AND k.TABLE_NAME = c.TABLE_NAME \
+             WHERE c.CONSTRAINT_SCHEMA = ? ORDER BY 1, 2, 3",
+        )
+        .bind(name)
+        .fetch_all(&mut conn)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn cloned_database_schema_equals_a_freshly_migrated_one() {
+        let cloned = Database::test().await;
+        let (server, cloned_name) = target(&cloned);
+        let fresh_name = format!("{PREFIX}{}_fresh", std::process::id());
+        let mut conn = admin(&server).await.unwrap();
+        sqlx::query(&format!("CREATE DATABASE `{fresh_name}`")).execute(&mut conn).await.unwrap();
+        let fresh = Database::new(&format!("{}/{fresh_name}", server.trim_end_matches('/'))).await.unwrap();
+
+        let expected = schema_of(&server, &fresh_name).await;
+        let actual = schema_of(&server, &cloned_name).await;
+        assert!(!expected.0.is_empty());
+        assert_eq!(expected, actual);
+        assert_eq!(foreign_keys_of(&server, &fresh_name).await, foreign_keys_of(&server, &cloned_name).await);
+
+        let applied = |db: &Database| {
+            let pool = db.pool.clone();
+            async move {
+                sqlx::query_as::<_, (i64, String)>("SELECT version, HEX(checksum) FROM _sqlx_migrations ORDER BY version")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(applied(&fresh).await, applied(&cloned).await);
+        drop(fresh);
+        drop_database(&server, &fresh_name).await;
     }
 
     #[tokio::test]
