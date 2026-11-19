@@ -21,8 +21,8 @@ pub(super) async fn tenancy() -> Tenancy {
     build_tenancy(None, None).await
 }
 
-pub(super) async fn tenancy_with_revolut(url: &str) -> Tenancy {
-    let settings = crate::config::RevolutSettings { url: Some(url.to_string()), sandbox: true, ..Default::default() };
+pub(super) async fn tenancy_with_gateway(url: &str) -> Tenancy {
+    let settings = crate::config::GatewaySettings { url: url.to_string(), sandbox: true, ..Default::default() };
     build_tenancy(Some(Default::default()), Some(settings)).await
 }
 
@@ -30,22 +30,19 @@ pub(super) async fn tenancy_with_payments(defaults: crate::config::DefaultPricin
     build_tenancy(Some(defaults), None).await
 }
 
-async fn build_tenancy(defaults: Option<crate::config::DefaultPricingConfig>, revolut: Option<crate::config::RevolutSettings>) -> Tenancy {
+async fn build_tenancy(defaults: Option<crate::config::DefaultPricingConfig>, gateway: Option<crate::config::GatewaySettings>) -> Tenancy {
     let db = Arc::new(Database::test().await);
     let payments_state = defaults.map(|d| {
         Arc::new(crate::payments::PaymentsState {
             config: Default::default(),
             balance_service: Arc::new(crate::payments::balance::BalanceService::new(db.clone())),
-            lightning_service: None,
             pricing_resolver: Arc::new(crate::payments::pricing::PricingResolver::new(db.clone(), d)),
-            settlement_listener: None,
-            revolut: revolut.map(|settings| {
-                let secrets = crate::payments::revolut::RevolutSecrets {
-                    api_key: "sk_test".into(),
-                    webhook_secret: "whsec_test".into(),
-                    encryption_key_hex: "00".repeat(32),
+            gateway: gateway.map(|settings| {
+                let secrets = crate::payments::gateway::GatewaySecrets {
+                    api_key: "pgw_test".into(),
+                    webhook_secret: crate::payments::gateway::fake::WEBHOOK_SECRET.into(),
                 };
-                Arc::new(crate::payments::revolut::RevolutService::new(settings, secrets, db.clone()).unwrap())
+                Arc::new(crate::payments::gateway::GatewayService::new(settings, secrets, db.clone()).unwrap())
             }),
         })
     });

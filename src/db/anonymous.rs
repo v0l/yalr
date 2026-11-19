@@ -2,9 +2,15 @@ use super::Database;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct PublicInvoice {
-    pub payment_hash: String,
-    pub purpose: String,
     pub public_id: String,
+    pub purpose: String,
+    pub amount_sats: i64,
+    pub status: String,
+    pub created_at: super::Timestamp,
+    pub paid_at: Option<super::Timestamp>,
+    pub expires_at: Option<super::Timestamp>,
+    pub bolt11: Option<String>,
+    pub payment_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -28,26 +34,12 @@ impl Database {
             .await
     }
 
-    pub async fn mark_public_invoice(
-        &self,
-        payment_hash: &str,
-        purpose: &str,
-        public_id: &str,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE lightning_invoices SET purpose = ?, public_id = ? WHERE payment_hash = ?")
-            .bind(purpose)
-            .bind(public_id)
-            .bind(payment_hash)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
     pub async fn prune_unpaid_anonymous_users(&self) -> Result<u64, sqlx::Error> {
         let done = sqlx::query(
             "DELETE FROM users WHERE created_at < UTC_TIMESTAMP(3) - INTERVAL 2 DAY AND created_at >= UTC_TIMESTAMP(3) - INTERVAL 3 DAY
              AND username LIKE 'anon_%'
-             AND NOT EXISTS (SELECT 1 FROM lightning_invoices WHERE user_id = users.id AND status = 'paid')",
+             AND NOT EXISTS (SELECT 1 FROM gateway_payments WHERE user_id = users.id AND status = 'completed')
+             AND NOT EXISTS (SELECT 1 FROM legacy_lightning_invoices WHERE user_id = users.id AND status = 'paid')",
         )
         .execute(&self.pool)
         .await?;
@@ -57,9 +49,17 @@ impl Database {
 
     pub async fn list_account_invoices(&self, user_id: i64, limit: i64) -> Result<Vec<AccountInvoice>, sqlx::Error> {
         sqlx::query_as::<_, AccountInvoice>(
-            "SELECT public_id, purpose, amount_sats, status, created_at, paid_at FROM lightning_invoices
-             WHERE user_id = ? AND public_id IS NOT NULL ORDER BY id DESC LIMIT ?",
+            "SELECT public_id, purpose, amount_sats, status, created_at, paid_at FROM (
+                SELECT public_id, COALESCE(purpose, 'topup') AS purpose, amount_milli DIV 1000 AS amount_sats,
+                       CASE status WHEN 'completed' THEN 'paid' WHEN 'failed' THEN 'cancelled' ELSE status END AS status,
+                       created_at, completed_at AS paid_at
+                FROM gateway_payments WHERE user_id = ? AND kind = 'anonymous'
+                UNION ALL
+                SELECT public_id, purpose, amount_sats, status, created_at, paid_at
+                FROM legacy_lightning_invoices WHERE user_id = ? AND public_id IS NOT NULL
+             ) t ORDER BY created_at DESC LIMIT ?",
         )
+        .bind(user_id)
         .bind(user_id)
         .bind(limit)
         .fetch_all(&self.pool)
@@ -86,24 +86,39 @@ impl Database {
         Ok(q.fetch_all(&self.pool).await?.into_iter().collect())
     }
 
-    pub async fn get_public_invoice(&self, public_id: &str) -> Result<Option<PublicInvoice>, sqlx::Error> {
-        sqlx::query_as::<_, PublicInvoice>(
-            "SELECT payment_hash, purpose, public_id FROM lightning_invoices WHERE public_id = ?",
-        )
-        .bind(public_id)
+    pub async fn public_invoice(&self, public_id: &str) -> Result<Option<PublicInvoice>, sqlx::Error> {
+        self.public_invoice_where("public_id", public_id).await
+    }
+
+    pub async fn public_invoice_by_hash(&self, payment_hash: &str) -> Result<Option<PublicInvoice>, sqlx::Error> {
+        self.public_invoice_where("payment_hash", payment_hash).await
+    }
+
+    pub async fn public_invoice_by_bolt11(&self, bolt11: &str) -> Result<Option<PublicInvoice>, sqlx::Error> {
+        self.public_invoice_where("bolt11", bolt11).await
+    }
+
+    async fn public_invoice_where(&self, column: &str, value: &str) -> Result<Option<PublicInvoice>, sqlx::Error> {
+        let current = sqlx::query_as::<_, PublicInvoice>(&format!(
+            "SELECT public_id, COALESCE(purpose, 'topup') AS purpose, amount_milli DIV 1000 AS amount_sats,
+                    CASE status WHEN 'completed' THEN 'paid' WHEN 'failed' THEN 'cancelled' ELSE status END AS status,
+                    created_at, completed_at AS paid_at, expires_at, bolt11, payment_hash
+             FROM gateway_payments WHERE {column} = ? AND kind = 'anonymous'"
+        ))
+        .bind(value)
+        .fetch_optional(&self.pool)
+        .await?;
+        if current.is_some() {
+            return Ok(current);
+        }
+        sqlx::query_as::<_, PublicInvoice>(&format!(
+            "SELECT public_id, purpose, amount_sats, status, created_at, paid_at, expires_at, bolt11, payment_hash
+             FROM legacy_lightning_invoices WHERE {column} = ? AND public_id IS NOT NULL"
+        ))
+        .bind(value)
         .fetch_optional(&self.pool)
         .await
     }
-
-    pub async fn get_public_invoice_by_hash(&self, payment_hash: &str) -> Result<Option<PublicInvoice>, sqlx::Error> {
-        sqlx::query_as::<_, PublicInvoice>(
-            "SELECT payment_hash, purpose, public_id FROM lightning_invoices WHERE payment_hash = ? AND public_id IS NOT NULL",
-        )
-        .bind(payment_hash)
-        .fetch_optional(&self.pool)
-        .await
-    }
-
 }
 
 pub fn random_hex() -> String {

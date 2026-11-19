@@ -11,10 +11,8 @@ async fn app() -> (Arc<AppState>, axum::Router) {
     let payments = PaymentsState {
         config: PaymentsConfig::default(),
         balance_service: Arc::new(BalanceService::new(db.clone())),
-        lightning_service: None,
         pricing_resolver: Arc::new(PricingResolver::new(db.clone(), DefaultPricingConfig::default())),
-        settlement_listener: None,
-        revolut: None,
+        gateway: None,
     };
     let state = Arc::new(AppState {
         config: AppConfig {
@@ -42,6 +40,36 @@ async fn app() -> (Arc<AppState>, axum::Router) {
     (state, app)
 }
 
+async fn seed_invoice(db: &Database, user_id: i64, hash: &str, bolt11: &str, amount_milli: i64, purpose: &str, public_id: &str) {
+    let payment = db
+        .create_gateway_payment(crate::db::gateway_payments::NewGatewayPayment {
+            public_id,
+            user_id,
+            kind: crate::db::gateway_payments::KIND_ANONYMOUS,
+            purpose: Some(purpose),
+            currency: crate::db::SATS,
+            amount_milli,
+        })
+        .await
+        .unwrap();
+    db.attach_remote_payment(
+        payment.id,
+        crate::db::gateway_payments::RemotePayment {
+            gateway_payment_id: &format!("remote_{hash}"),
+            pay_url: None,
+            bolt11: Some(bolt11),
+            payment_hash: Some(hash),
+            expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+        },
+    )
+    .await
+    .unwrap();
+}
+
+async fn settle(db: &Database, hash: &str) {
+    db.complete_gateway_payment(&format!("remote_{hash}")).await.unwrap();
+}
+
 async fn get(app: &axum::Router, uri: &str, token: Option<&str>) -> (StatusCode, serde_json::Value) {
     use tower::util::ServiceExt;
     let mut req = axum::http::Request::builder().uri(uri);
@@ -60,19 +88,7 @@ async fn paid_invoice_yields_a_working_funded_key() {
     let secret = state.db.server_secret().await.unwrap();
     let public_id = random_hex();
     let user_id = create_account(&state.db, &secret, &public_id).await.unwrap();
-    state
-        .db
-        .create_lightning_invoice(crate::db::NewLightningInvoice {
-            user_id,
-            payment_hash: "hash1",
-            bolt11: "lnbc1",
-            amount_msat: 5_000_000,
-            amount_sats: 5000,
-            expire_seconds: Some(3600),
-        })
-        .await
-        .unwrap();
-    state.db.mark_public_invoice("hash1", "create", &public_id).await.unwrap();
+    seed_invoice(&state.db, user_id, "hash1", "lnbc1", 5_000_000, "create", &public_id).await;
 
     let uri = format!("/v2/lightning/invoice/{public_id}/status");
     let (code, body) = get(&app, &uri, None).await;
@@ -81,7 +97,7 @@ async fn paid_invoice_yields_a_working_funded_key() {
     assert!(body["api_key"].is_null());
 
     let balance = state.payments_state.as_ref().unwrap().balance_service.clone();
-    crate::payments::lightning::handle_settlement(&state.db, &balance, "hash1").await.unwrap();
+    settle(&state.db, "hash1").await;
 
     let (_, body) = get(&app, &uri, None).await;
     assert_eq!(body["status"], "paid");
@@ -262,21 +278,9 @@ async fn account_endpoint_shows_balance_history_and_invoices() {
     let secret = state.db.server_secret().await.unwrap();
     let public_id = random_hex();
     let user_id = create_account(&state.db, &secret, &public_id).await.unwrap();
-    state
-        .db
-        .create_lightning_invoice(crate::db::NewLightningInvoice {
-            user_id,
-            payment_hash: "h2",
-            bolt11: "lnbc2",
-            amount_msat: 100_000,
-            amount_sats: 100,
-            expire_seconds: Some(3600),
-        })
-        .await
-        .unwrap();
-    state.db.mark_public_invoice("h2", "create", &public_id).await.unwrap();
+    seed_invoice(&state.db, user_id, "h2", "lnbc2", 100_000, "create", &public_id).await;
     let balance = state.payments_state.as_ref().unwrap().balance_service.clone();
-    crate::payments::lightning::handle_settlement(&state.db, &balance, "h2").await.unwrap();
+    settle(&state.db, "h2").await;
     let reservation_id = "req-test";
     balance.debit_with_metadata(user_id, 7000, "reserve", reservation_id, Some("qwen")).await.unwrap();
     balance.credit(user_id, 6000, "refund", reservation_id).await.unwrap();
@@ -327,22 +331,10 @@ async fn a_key_can_be_topped_up_repeatedly() {
 
     for (n, sats) in [(1, 100i64), (2, 250), (3, 400)] {
         let hash = format!("topup{n}");
-        state
-            .db
-            .create_lightning_invoice(crate::db::NewLightningInvoice {
-                user_id,
-                payment_hash: &hash,
-                bolt11: &format!("lnbc{n}"),
-                amount_msat: sats * 1000,
-                amount_sats: sats,
-                expire_seconds: Some(3600),
-            })
-            .await
-            .unwrap();
         let invoice_id = random_hex();
-        state.db.mark_public_invoice(&hash, "topup", &invoice_id).await.unwrap();
-        crate::payments::lightning::handle_settlement(&state.db, &balance, &hash).await.unwrap();
-        crate::payments::lightning::handle_settlement(&state.db, &balance, &hash).await.unwrap();
+        seed_invoice(&state.db, user_id, &hash, &format!("lnbc{n}"), sats * 1000, "topup", &invoice_id).await;
+        settle(&state.db, &hash).await;
+        settle(&state.db, &hash).await;
 
         let (_, status) = get(&app, &format!("/v2/lightning/invoice/{invoice_id}/status"), None).await;
         assert_eq!(status["status"], "paid");

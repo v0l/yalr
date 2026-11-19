@@ -374,30 +374,6 @@ pub struct BalanceTransactionRow {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Clone)]
-pub struct NewLightningInvoice<'a> {
-    pub user_id: i64,
-    pub payment_hash: &'a str,
-    pub bolt11: &'a str,
-    pub amount_msat: i64,
-    pub amount_sats: i64,
-    pub expire_seconds: Option<u32>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct LightningInvoiceRow {
-    pub id: i64,
-    pub user_id: i64,
-    pub payment_hash: String,
-    pub bolt11: String,
-    pub amount_msat: i64,
-    pub amount_sats: i64,
-    pub status: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub paid_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ModelPricingRow {
     pub id: i64,

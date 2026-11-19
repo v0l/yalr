@@ -151,6 +151,23 @@ pub async fn retry(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> A
     Ok(Json(PayoutService::from_state(&state).retry(id).await.map_err(payout_error)?))
 }
 
+#[derive(Deserialize)]
+pub struct SettleRequest {
+    pub external_id: String,
+}
+
+pub async fn settle(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Json(req): Json<SettleRequest>,
+) -> ApiResult<PayoutRow> {
+    let external_id = req.external_id.trim();
+    if external_id.is_empty() {
+        return Err(bad_request("external_id is required"));
+    }
+    Ok(Json(PayoutService::from_state(&state).settle(id, external_id).await.map_err(payout_error)?))
+}
+
 pub async fn admin_cancel(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> ApiResult<PayoutRow> {
     Ok(Json(PayoutService::from_state(&state).cancel(id, None).await.map_err(payout_error)?))
 }

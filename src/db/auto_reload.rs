@@ -1,4 +1,4 @@
-use super::fiat_orders::{FiatOrder, KIND_AUTO_RELOAD};
+use super::gateway_payments::{GatewayPayment, KIND_AUTO_RELOAD};
 use super::{Database, Timestamp};
 
 pub const MAX_CONSECUTIVE_FAILURES: i32 = 2;
@@ -87,7 +87,7 @@ impl Database {
         user_id: i64,
         currency: &str,
         cooldown_secs: i64,
-    ) -> Result<Option<(FiatOrder, AutoReload)>, sqlx::Error> {
+    ) -> Result<Option<(GatewayPayment, AutoReload)>, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
         let settings: Option<AutoReload> = sqlx::query_as(&format!(
             "SELECT {COLUMNS} FROM auto_reload_settings WHERE user_id = ? AND currency = ? AND enabled = 1 FOR UPDATE"
@@ -106,7 +106,7 @@ impl Database {
             .fetch_one(&mut *tx)
             .await?;
         let in_flight: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM fiat_orders WHERE user_id = ? AND currency = ? AND kind = ? AND status = 'pending'",
+            "SELECT COUNT(*) FROM gateway_payments WHERE user_id = ? AND currency = ? AND kind = ? AND status = 'pending'",
         )
         .bind(user_id)
         .bind(currency)
@@ -122,7 +122,7 @@ impl Database {
         .fetch_one(&mut *tx)
         .await?;
         let spent: i64 = sqlx::query_scalar(
-            "SELECT CAST(COALESCE(SUM(amount_milli), 0) AS SIGNED) FROM fiat_orders WHERE user_id = ? AND currency = ? \
+            "SELECT CAST(COALESCE(SUM(amount_milli), 0) AS SIGNED) FROM gateway_payments WHERE user_id = ? AND currency = ? \
              AND kind = ? AND status IN ('pending', 'completed') \
              AND created_at >= DATE_FORMAT(UTC_TIMESTAMP(3), '%Y-%m-01')",
         )
@@ -145,7 +145,7 @@ impl Database {
         }
         let public_id = super::random_hex();
         sqlx::query(
-            "INSERT INTO fiat_orders (public_id, user_id, kind, currency, amount_milli, save_card) VALUES (?, ?, ?, ?, ?, 0)",
+            "INSERT INTO gateway_payments (public_id, user_id, kind, currency, amount_milli) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&public_id)
         .bind(user_id)
@@ -159,7 +159,7 @@ impl Database {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        let order = self.fiat_order(&public_id).await?.expect("order just inserted");
+        let order = self.gateway_payment(&public_id).await?.expect("order just inserted");
         Ok(Some((order, settings)))
     }
 
@@ -193,7 +193,10 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::payment_methods::NewPaymentMethod;
+
+    fn remote(id: &str) -> crate::db::gateway_payments::RemotePayment<'_> {
+        crate::db::gateway_payments::RemotePayment { gateway_payment_id: id, pay_url: None, bolt11: None, payment_hash: None, expires_at: None }
+    }
 
     struct Fixture {
         db: Database,
@@ -203,18 +206,6 @@ mod tests {
     async fn fixture(cap_units: i64) -> Fixture {
         let db = Database::test().await;
         let user = db.add_test_user("u", false).await;
-        let pm = db
-            .add_payment_method(NewPaymentMethod {
-                user_id: user.id,
-                external_customer_id_encrypted: "sealed",
-                external_id: "pm_1",
-                card_brand: None,
-                card_last_four: None,
-                exp_month: None,
-                exp_year: None,
-            })
-            .await
-            .unwrap();
         db.save_auto_reload(AutoReloadSettings {
             user_id: user.id,
             currency: "eur",
@@ -222,7 +213,7 @@ mod tests {
             threshold_milli: 500_000,
             amount_milli: 2_000_000,
             monthly_cap_milli: cap_units * 100_000,
-            payment_method_id: pm.id,
+            payment_method_id: 7,
         })
         .await
         .unwrap();
@@ -259,13 +250,13 @@ mod tests {
     async fn a_failure_cools_down_then_a_second_failure_disables() {
         let f = fixture(1000).await;
         let (first, _) = f.db.claim_auto_reload(f.user, "eur", 3600).await.unwrap().unwrap();
-        f.db.fail_unsent_fiat_order(first.id, "declined").await.unwrap();
+        f.db.fail_unsent_gateway_payment(first.id, "declined").await.unwrap();
         f.db.note_auto_reload_outcome(f.user, "eur", false).await.unwrap();
         assert!(f.db.claim_auto_reload(f.user, "eur", 3600).await.unwrap().is_none());
         assert!(f.db.auto_reload(f.user, "eur").await.unwrap().unwrap().enabled);
 
         let (second, _) = f.db.claim_auto_reload(f.user, "eur", 0).await.unwrap().unwrap();
-        f.db.fail_unsent_fiat_order(second.id, "declined").await.unwrap();
+        f.db.fail_unsent_gateway_payment(second.id, "declined").await.unwrap();
         f.db.note_auto_reload_outcome(f.user, "eur", false).await.unwrap();
         let settings = f.db.auto_reload(f.user, "eur").await.unwrap().unwrap();
         assert!(!settings.enabled);
@@ -287,19 +278,19 @@ mod tests {
         let f = fixture(40).await;
         for _ in 0..1 {
             let (order, _) = f.db.claim_auto_reload(f.user, "eur", 0).await.unwrap().unwrap();
-            f.db.set_fiat_order_external(order.id, &format!("rev_{}", order.id)).await.unwrap();
-            f.db.complete_fiat_order(&format!("rev_{}", order.id)).await.unwrap();
+            f.db.attach_remote_payment(order.id, remote(&format!("rev_{}", order.id))).await.unwrap();
+            f.db.complete_gateway_payment(&format!("rev_{}", order.id)).await.unwrap();
             f.db.execute_raw("UPDATE user_currency_balances SET balance_milli = 0").await.unwrap();
         }
         let (order, _) = f.db.claim_auto_reload(f.user, "eur", 0).await.unwrap().unwrap();
-        f.db.set_fiat_order_external(order.id, "rev_second").await.unwrap();
-        f.db.complete_fiat_order("rev_second").await.unwrap();
+        f.db.attach_remote_payment(order.id, remote("rev_second")).await.unwrap();
+        f.db.complete_gateway_payment("rev_second").await.unwrap();
         f.db.execute_raw("UPDATE user_currency_balances SET balance_milli = 0").await.unwrap();
         assert!(f.db.claim_auto_reload(f.user, "eur", 0).await.unwrap().is_none());
     }
 
     async fn configure(f: &Fixture, monthly_cap_milli: i64) {
-        let pm = f.db.list_payment_methods(f.user).await.unwrap()[0].id;
+        let pm = 7;
         f.db.save_auto_reload(AutoReloadSettings {
             user_id: f.user,
             currency: "eur",
@@ -323,8 +314,8 @@ mod tests {
         assert_eq!(order.amount_milli, 4_000_000);
         assert!(f.db.claim_auto_reload(f.user, "eur", 0).await.unwrap().is_none());
 
-        f.db.set_fiat_order_external(order.id, "rev_sized").await.unwrap();
-        f.db.complete_fiat_order("rev_sized").await.unwrap();
+        f.db.attach_remote_payment(order.id, remote("rev_sized")).await.unwrap();
+        f.db.complete_gateway_payment("rev_sized").await.unwrap();
         assert_eq!(f.db.get_currency_balance(f.user, "eur").await.unwrap(), 5_000_000);
         assert!(f.db.auto_reloads_below_threshold().await.unwrap().is_empty());
         assert!(f.db.claim_auto_reload(f.user, "eur", 0).await.unwrap().is_none());

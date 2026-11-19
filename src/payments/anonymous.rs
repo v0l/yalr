@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::auth::api_key::{get_last_four, hash_api_key};
-use crate::db::{random_hex, Database, LightningInvoiceRow, NewApiKey, NewUser, UserType};
-use crate::payments::instructions::PaymentInstruction;
+use crate::db::gateway_payments::KIND_ANONYMOUS;
+use crate::db::{random_hex, Database, NewApiKey, NewUser, PublicInvoice, UserType, SATS};
+use crate::payments::gateway::{GatewayService, TopupRequest};
 use crate::state::AppState;
 
 const MIN_SATS: u64 = 100;
@@ -139,12 +140,16 @@ async fn topup_user(state: &AppState, headers: &HeaderMap) -> Result<i64, Respon
     Ok(key.user_id)
 }
 
+fn gateway(state: &AppState) -> Option<Arc<GatewayService>> {
+    state.payments_state.as_ref().and_then(|p| p.gateway.clone())
+}
+
 pub async fn create_invoice(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<InvoiceRequest>,
 ) -> Response {
-    let Some(lightning) = state.payments_state.as_ref().and_then(|p| p.lightning_service.clone()) else {
+    let Some(gateway) = gateway(&state) else {
         return error(StatusCode::NOT_FOUND, "Lightning payments not configured on this node");
     };
     if !(MIN_SATS..=MAX_SATS).contains(&body.amount_sats) {
@@ -174,67 +179,73 @@ pub async fn create_invoice(
         },
     };
 
-    let memo = format!("Routstr {} {} sats", body.purpose.as_str(), body.amount_sats);
-    let instruction = match lightning.create_invoice(user_id, body.amount_sats, &memo, Some(3600)).await {
-        Ok(i) => i,
+    let created = gateway
+        .create_topup(TopupRequest {
+            user_id,
+            kind: KIND_ANONYMOUS,
+            purpose: Some(body.purpose.as_str()),
+            currency: SATS,
+            amount_milli: body.amount_sats as i64 * 1000,
+            save_card: false,
+            email: None,
+            public_id: Some(&public_id),
+        })
+        .await;
+    let payment = match created {
+        Ok(p) => p,
         Err(e) => {
-            tracing::error!(error = %e, "Failed to create Lightning invoice");
+            tracing::error!(error = %e, "Failed to create gateway payment");
             if created_user {
                 let _ = state.db.delete_user(user_id).await;
             }
             return error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create invoice");
         }
     };
-    let PaymentInstruction::LightningBolt11 { bolt11, payment_hash, amount_sats, expires_at, .. } = instruction else {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, "Unexpected payment instruction");
+    let (Some(bolt11), Some(payment_hash)) = (payment.bolt11.clone(), payment.payment_hash.clone()) else {
+        if created_user {
+            let _ = state.db.delete_user(user_id).await;
+        }
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "The gateway did not return a Lightning invoice");
     };
-
-    if state
-        .db
-        .mark_public_invoice(&payment_hash, body.purpose.as_str(), &public_id)
-        .await
-        .is_err()
-    {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to record invoice");
-    }
 
     (
         StatusCode::OK,
         Json(InvoiceCreated {
             invoice_id: public_id,
             bolt11,
-            amount_sats,
-            expires_at: expires_at.unwrap_or_default(),
+            amount_sats: body.amount_sats as i64,
+            expires_at: payment.expires_at.map_or_else(|| chrono::Utc::now().timestamp() + 3600, |t| t.timestamp()),
             payment_hash,
         }),
     )
         .into_response()
 }
 
-async fn status_for(
-    state: &AppState,
-    row: LightningInvoiceRow,
-    public_id: &str,
-    purpose: &str,
-) -> Response {
-    let mut status = row.status.clone();
-    if status == "pending" {
-        if let Some(expires) = row.expires_at.map(|t| t.timestamp()) {
-            if chrono::Utc::now().timestamp() > expires {
-                let _ = state.db.update_lightning_invoice_status(&row.payment_hash, "expired").await;
-                status = "expired".to_string();
+async fn status_for(state: &AppState, mut row: PublicInvoice) -> Response {
+    if row.status == "pending" {
+        if let Some(gateway) = gateway(state) {
+            if let Ok(Some(payment)) = state.db.gateway_payment(&row.public_id).await {
+                if let Some(remote) = payment.gateway_payment_id.as_deref() {
+                    let _ = gateway.reconcile(remote).await;
+                }
+            }
+            if let Ok(Some(fresh)) = state.db.public_invoice(&row.public_id).await {
+                row = fresh;
             }
         }
     }
+    if row.status == "pending" && row.expires_at.is_some_and(|t| chrono::Utc::now() > t) {
+        row.status = "expired".to_string();
+    }
 
-    let api_key = if status == "paid" && purpose == "create" {
-        state.db.server_secret().await.ok().map(|s| derive_api_key(&s, public_id))
+    let api_key = if row.status == "paid" && row.purpose == "create" {
+        state.db.server_secret().await.ok().map(|s| derive_api_key(&s, &row.public_id))
     } else {
         None
     };
 
     Json(InvoiceStatus {
-        status,
+        status: row.status,
         api_key,
         amount_sats: row.amount_sats,
         paid_at: row.paid_at.map(|t| t.timestamp()),
@@ -248,11 +259,8 @@ pub async fn invoice_status(
     State(state): State<Arc<AppState>>,
     Path(invoice_id): Path<String>,
 ) -> Response {
-    let Ok(Some(public)) = state.db.get_public_invoice(&invoice_id).await else {
-        return error(StatusCode::NOT_FOUND, "Invoice not found");
-    };
-    match state.db.get_lightning_invoice_by_hash(&public.payment_hash).await {
-        Ok(Some(row)) => status_for(&state, row, &public.public_id, &public.purpose).await,
+    match state.db.public_invoice(&invoice_id).await {
+        Ok(Some(row)) => status_for(&state, row).await,
         _ => error(StatusCode::NOT_FOUND, "Invoice not found"),
     }
 }
@@ -261,13 +269,10 @@ pub async fn recover_invoice(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RecoverRequest>,
 ) -> Response {
-    let Ok(Some(row)) = state.db.get_invoice_by_bolt11(body.bolt11.trim()).await else {
-        return error(StatusCode::NOT_FOUND, "Invoice not found");
-    };
-    let Ok(Some(public)) = state.db.get_public_invoice_by_hash(&row.payment_hash).await else {
-        return error(StatusCode::NOT_FOUND, "Invoice not found");
-    };
-    status_for(&state, row, &public.public_id, &public.purpose).await
+    match state.db.public_invoice_by_bolt11(body.bolt11.trim()).await {
+        Ok(Some(row)) => status_for(&state, row).await,
+        _ => error(StatusCode::NOT_FOUND, "Invoice not found"),
+    }
 }
 
 #[cfg(test)]

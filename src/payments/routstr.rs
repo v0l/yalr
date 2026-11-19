@@ -3,8 +3,8 @@
 //! These endpoints follow the Routstr protocol (RIP-01, RIP-08).
 //! All are feature-gated behind `payments.enabled` in config.yaml.
 //!
-//! Cashu is intentionally not supported — Lightning (Bolt11 via LND) is the
-//! sole payment method. Balances are tracked internally in SQLite.
+//! Cashu is intentionally not supported. Lightning invoices come from the
+//! payment gateway. Balances are tracked in the database.
 
 use axum::{
     extract::{Extension, Path, State},
@@ -136,7 +136,7 @@ pub async fn routstr_info(State(state): State<Arc<AppState>>) -> axum::response:
     let lightning = state
         .payments_state
         .as_ref()
-        .is_some_and(|p| p.lightning_service.is_some());
+        .is_some_and(|p| p.gateway.as_ref().is_some_and(|g| g.currency_allowed(crate::db::SATS)));
 
     Json(RoutstrInfoResponse {
         name: discovery.and_then(|d| d.name.clone()).unwrap_or_else(|| "yalr".to_string()),
@@ -201,9 +201,8 @@ pub async fn balance_refund(
         None => return payments_disabled(),
     };
 
-    let lightning = match &payments.lightning_service {
-        Some(ls) => ls.clone(),
-        None => return error_response(StatusCode::NOT_FOUND, "Lightning payments not configured on this node"),
+    let Some(gateway) = payments.gateway.clone() else {
+        return error_response(StatusCode::NOT_FOUND, "Lightning payments not configured on this node");
     };
 
     // Check balance
@@ -236,46 +235,45 @@ pub async fn balance_refund(
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to process refund");
     }
 
-    match lightning.pay_invoice(&body.invoice, None).await {
-        Ok(result) => {
-            let remaining = balance - amount_msat;
-            let fee = (result.fee_msat as i64).min(remaining);
-            if fee > 0 {
-                let _ = payments
-                    .balance_service
-                    .debit(user.id, fee, "refund_fee", &ref_id)
-                    .await;
-            }
-            tracing::info!(
-                user_id = user.id,
-                refunded_msat = amount_msat,
-                fee_msat = result.fee_msat,
-                payment_hash = %result.payment_hash,
-                "Balance refunded via Lightning"
-            );
-            Json(RefundResponse {
-                refunded_msat: amount_msat,
-                refunded_sats: amount_msat / 1000,
-                payment_hash: result.payment_hash,
-            })
-            .into_response()
+    match refund_against_deposits(&state, &gateway, user.id, amount_msat, &body.invoice).await {
+        Ok(payment_hash) => {
+            tracing::info!(user_id = user.id, refunded_msat = amount_msat, "Balance refunded via the gateway");
+            Json(RefundResponse { refunded_msat: amount_msat, refunded_sats: amount_msat / 1000, payment_hash }).into_response()
         }
-        Err(e) => {
-            tracing::error!(user_id = user.id, error = %e, "Refund payment failed, crediting back balance");
-            let _ = payments
-                .balance_service
-                .credit(user.id, amount_msat, "refund_reversal", &ref_id)
-                .await;
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Refund payment failed: {}", e))
+        Err(message) => {
+            tracing::error!(user_id = user.id, error = %message, "Refund failed, crediting back balance");
+            let _ = payments.balance_service.credit(user.id, amount_msat, "refund_reversal", &ref_id).await;
+            error_response(StatusCode::BAD_REQUEST, format!("Refund payment failed: {message}"))
         }
     }
 }
 
+async fn refund_against_deposits(
+    state: &AppState,
+    gateway: &crate::payments::gateway::GatewayService,
+    user_id: i64,
+    amount_msat: i64,
+    invoice: &str,
+) -> Result<String, String> {
+    let deposits = state
+        .db
+        .recent_completed_gateway_payments(user_id, crate::db::SATS, 20)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut last = "no Lightning deposit is large enough to refund from".to_string();
+    for deposit in deposits.into_iter().filter(|d| d.amount_milli >= amount_msat) {
+        let Some(remote) = deposit.gateway_payment_id.as_deref() else { continue };
+        match gateway.client.refund_payment(remote, &payment_gateway_client::RefundInput { amount: Some(amount_msat as u64), destination: Some(invoice.to_string()), attempt_id: None }).await {
+            Ok(_) => return Ok(deposit.payment_hash.unwrap_or_default()),
+            Err(e) => last = e.to_string(),
+        }
+    }
+    Err(last)
+}
+
 fn invoice_amount_msat(invoice: &str) -> Result<i64, &'static str> {
-    let parsed = payments_rs::lightning::AddInvoiceResponse::from_invoice(invoice.trim(), None)
-        .map_err(|_| "Invalid bolt11 invoice")?;
+    let parsed = invoice.trim().parse::<lightning_invoice::Bolt11Invoice>().map_err(|_| "Invalid bolt11 invoice")?;
     let msat = parsed
-        .parsed_invoice
         .amount_milli_satoshis()
         .ok_or("Invoice must specify an amount")?;
     if msat == 0 {
@@ -296,25 +294,33 @@ pub async fn create_lightning_invoice(
         None => return payments_disabled(),
     };
 
-    let lightning = match &payments.lightning_service {
-        Some(ls) => ls.clone(),
-        None => return error_response(StatusCode::NOT_FOUND, "Lightning payments not configured on this node"),
+    let Some(gateway) = payments.gateway.clone() else {
+        return error_response(StatusCode::NOT_FOUND, "Lightning payments not configured on this node");
+    };
+    let amount_milli = match gateway.check_amount(crate::db::SATS, body.amount_sats as f64) {
+        Ok(a) => a,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, e.to_string()),
     };
 
-    match lightning
-        .create_invoice(user.id, body.amount_sats, &body.memo, body.expire_seconds)
-        .await
-    {
-        Ok(instruction) => {
-            use crate::payments::instructions::{TopupResponse, ProviderInfo};
+    match gateway.topup(user.id, crate::db::SATS, amount_milli, false, None).await {
+        Ok(payment) => {
+            use crate::payments::instructions::{PaymentInstruction, ProviderInfo, TopupResponse};
+            let (Some(bolt11), Some(payment_hash)) = (payment.bolt11.clone(), payment.payment_hash.clone()) else {
+                return error_response(StatusCode::BAD_GATEWAY, "The gateway did not return a Lightning invoice");
+            };
             (
                 StatusCode::CREATED,
                 Json(TopupResponse {
-                    provider: ProviderInfo {
-                        slug: "user-balance".to_string(),
-                        name: "User Balance".to_string(),
+                    provider: ProviderInfo { slug: "user-balance".to_string(), name: "User Balance".to_string() },
+                    instruction: PaymentInstruction::LightningBolt11 {
+                        bolt11,
+                        payment_hash,
+                        amount_sats: body.amount_sats as i64,
+                        amount_msat: amount_milli,
+                        memo: Some(body.memo.clone()),
+                        expires_at: payment.expires_at.map(|t| t.timestamp()),
+                        invoice_id: Some(payment.id),
                     },
-                    instruction,
                     message: Some("Pay this invoice to top up your balance".to_string()),
                 }),
             )
@@ -337,25 +343,50 @@ pub async fn check_lightning_invoice(
         None => return payments_disabled(),
     };
 
-    let lightning = match &payments.lightning_service {
-        Some(ls) => ls.clone(),
-        None => return error_response(StatusCode::NOT_FOUND, "Lightning payments not configured on this node"),
+    let Some(gateway) = payments.gateway.clone() else {
+        return error_response(StatusCode::NOT_FOUND, "Lightning payments not configured on this node");
     };
 
-    match lightning.check_invoice(&payment_hash).await {
-        Ok(invoice) => {
-            Json(InvoiceStatusResponse {
-                status: invoice.status,
-                payment_hash: invoice.payment_hash,
-                amount_sats: invoice.amount_sats,
-                created_at: invoice.created_at,
-                expires_at: invoice.expires_at,
-            })
-            .into_response()
+    let found = match state.db.gateway_payment_by_hash(&payment_hash).await {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::error!(payment_hash = %payment_hash, error = %e, "Failed to check invoice");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
-        Err(crate::payments::lightning::LightningError::NotFound(_)) => {
-            error_response(StatusCode::NOT_FOUND, "Invoice not found")
+    };
+    if let Some(mut payment) = found {
+        if payment.status == "pending" {
+            if let Some(remote) = payment.gateway_payment_id.clone() {
+                let _ = gateway.reconcile(&remote).await;
+                payment = state.db.gateway_payment(&payment.public_id).await.ok().flatten().unwrap_or(payment);
+            }
         }
+        let expired = payment.status == "pending" && payment.expires_at.is_some_and(|t| chrono::Utc::now() > t);
+        let status = match payment.status.as_str() {
+            "completed" => "paid".to_string(),
+            "failed" => "cancelled".to_string(),
+            _ if expired => "expired".to_string(),
+            other => other.to_string(),
+        };
+        return Json(InvoiceStatusResponse {
+            status,
+            payment_hash,
+            amount_sats: payment.amount_milli / 1000,
+            created_at: payment.created_at,
+            expires_at: payment.expires_at,
+        })
+        .into_response();
+    }
+    match state.db.public_invoice_by_hash(&payment_hash).await {
+        Ok(Some(row)) => Json(InvoiceStatusResponse {
+            status: row.status,
+            payment_hash,
+            amount_sats: row.amount_sats,
+            created_at: row.created_at,
+            expires_at: row.expires_at,
+        })
+        .into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "Invoice not found"),
         Err(e) => {
             tracing::error!(payment_hash = %payment_hash, error = %e, "Failed to check invoice");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()

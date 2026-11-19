@@ -63,11 +63,7 @@ impl PayoutService {
 
     pub fn from_state(state: &AppState) -> Self {
         let config = super::settings::get();
-        let lightning = state
-            .payments_state
-            .as_ref()
-            .and_then(|p| p.lightning_service.clone())
-            .map(|l| l as Arc<dyn InvoicePayer>);
+        let lightning = None;
         let revolut = config.revolut.as_ref().filter(|r| !r.api_key.is_empty()).map(RevolutBusiness::new);
         Self::new(state.db.clone(), config, lightning, revolut)
     }
@@ -117,6 +113,14 @@ impl PayoutService {
         let row = self.db.approve_payout(id).await?;
         self.process(id).await;
         Ok(self.db.get_payout(id).await.ok().flatten().unwrap_or(row))
+    }
+
+    pub async fn settle(&self, id: i64, external_id: &str) -> Result<PayoutRow, PayoutError> {
+        let row = self.db.get_payout(id).await?.ok_or(PayoutError::NotFound)?;
+        if row.status == HELD {
+            self.db.mark_payout_sent(id, external_id, None).await?;
+        }
+        self.db.complete_payout(id).await
     }
 
     pub async fn retry(&self, id: i64) -> Result<PayoutRow, PayoutError> {
@@ -352,6 +356,22 @@ mod tests {
         assert_eq!(row.status, COMPLETED);
         assert_eq!(lnd.paid.lock().unwrap().len(), 1);
         assert_eq!(db.get_currency_balance(u.id, "sats").await.unwrap(), 350_000_000);
+    }
+
+    #[tokio::test]
+    async fn an_operator_settles_a_held_lightning_payout_once_the_gateway_sent_it() {
+        let db = Arc::new(Database::test().await);
+        let u = db.add_test_user("u", false).await;
+        earn(&db, u.id, "sats", 600_000_000).await;
+        already_approved_once(&db, u.id, "sats").await;
+        let service = PayoutService::new(db.clone(), config(None), None, None);
+        let bolt11 = invoice(Some(250_000_000), 5);
+        let row = service.request(request(u.id, "sats", 250_000_000, LIGHTNING, &bolt11)).await.unwrap();
+        assert_eq!(row.status, HELD);
+        let done = service.settle(row.id, "gateway-withdrawal-9").await.unwrap();
+        assert_eq!((done.status.as_str(), done.external_id.as_deref()), (COMPLETED, Some("gateway-withdrawal-9")));
+        assert_eq!(db.get_currency_balance(u.id, "sats").await.unwrap(), 350_000_000);
+        assert_eq!(service.settle(row.id, "again").await.unwrap_err(), PayoutError::WrongState);
     }
 
     #[tokio::test]

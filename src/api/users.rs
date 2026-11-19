@@ -439,11 +439,11 @@ pub async fn list_admin_invoices(
     State(state): State<std::sync::Arc<AppState>>,
     user: crate::auth::admin::UserExtractor,
     Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<crate::db::LightningInvoiceRow>>, (StatusCode, String)> {
+) -> Result<Json<Vec<crate::db::gateway_payments::GatewayPayment>>, (StatusCode, String)> {
     let scope = crate::api::tenant::Scope::from(user);
     let requested = params.get("user_id").and_then(|v| v.parse::<i64>().ok());
     let user_id = scope.owner().or(requested);
-    let invoices = state.db.list_all_lightning_invoices(user_id, 200).await.map_err(crate::api::tenant::internal)?;
+    let invoices = state.db.list_gateway_payments(user_id, 200).await.map_err(crate::api::tenant::internal)?;
     Ok(Json(invoices))
 }
 

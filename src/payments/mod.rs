@@ -2,11 +2,10 @@ pub mod balance;
 pub mod account;
 pub mod anonymous;
 pub mod biller;
+pub mod gateway;
 pub mod guard;
 pub mod instructions;
-pub mod lightning;
 pub mod pricing;
-pub mod revolut;
 pub mod routstr;
 #[cfg(test)]
 mod failover_billing_tests;
@@ -17,18 +16,12 @@ use std::sync::Arc;
 use crate::db::Database;
 use crate::config::PaymentsConfig;
 
-/// Holds all initialized payments sub-services.
-/// Created at startup when payments.enabled is true.
 #[derive(Clone)]
 pub struct PaymentsState {
     pub config: PaymentsConfig,
     pub balance_service: Arc<balance::BalanceService>,
-    pub lightning_service: Option<Arc<lightning::LightningService>>,
     pub pricing_resolver: Arc<pricing::PricingResolver>,
-    /// Held to keep the background settlement listener alive.
-    #[allow(dead_code)]
-    pub settlement_listener: Option<Arc<tokio::task::JoinHandle<()>>>,
-    pub revolut: Option<Arc<revolut::RevolutService>>,
+    pub gateway: Option<Arc<gateway::GatewayService>>,
 }
 
 impl PaymentsState {
@@ -42,53 +35,22 @@ impl PaymentsState {
             payments_config.default_pricing.clone(),
         ));
 
-        let mut settlement_listener = None;
-
-        let lightning_service = if let Some(ref lnd_config) = payments_config.lnd {
-            payments_rs::lightning::setup_crypto_provider();
-            let lnd = payments_rs::lightning::LndNode::new(
-                &lnd_config.url,
-                std::path::Path::new(&lnd_config.tls_cert_path),
-                std::path::Path::new(&lnd_config.macaroon_path),
-            ).await?;
-
-            let ls = Arc::new(lightning::LightningService::new(
-                lnd,
-                db.clone(),
-            ));
-
-            // Start background settlement listener
-            let handle = ls.start_settlement_listener(balance_service.clone());
-            settlement_listener = Some(Arc::new(handle));
-
-            Some(ls)
-        } else {
-            None
-        };
-
-        let revolut = match payments_config.revolut.clone() {
+        let gateway = match payments_config.gateway.clone() {
             None => None,
-            Some(settings) => match revolut::RevolutSecrets::from_env() {
+            Some(settings) => match gateway::GatewaySecrets::from_env() {
                 Some(secrets) => {
-                    let service = Arc::new(revolut::RevolutService::new(settings, secrets, db.clone())?);
-                    revolut::spawn_runner(service.clone());
-                    tracing::info!("Revolut card top-ups enabled");
+                    let service = Arc::new(gateway::GatewayService::new(settings, secrets, db.clone())?);
+                    gateway::spawn_runner(service.clone());
+                    tracing::info!(mode = service.mode(), "Payment gateway enabled");
                     Some(service)
                 }
                 None => {
-                    tracing::warn!("payments.revolut is configured but REVOLUT_API_KEY, REVOLUT_WEBHOOK_SECRET or YALR_ENCRYPTION_KEY is missing, card top-ups disabled");
+                    tracing::warn!("payments.gateway is configured but GATEWAY_API_KEY or GATEWAY_WEBHOOK_SECRET is missing, top-ups disabled");
                     None
                 }
             },
         };
 
-        Ok(Self {
-            config: payments_config,
-            balance_service,
-            lightning_service,
-            pricing_resolver,
-            settlement_listener,
-            revolut,
-        })
+        Ok(Self { config: payments_config, balance_service, pricing_resolver, gateway })
     }
 }

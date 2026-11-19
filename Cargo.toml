@@ -44,12 +44,8 @@ sha2 = "0.10"
 hex = "0.4"
 aes-gcm = "0.10"
 hmac = "0.12"
+payment-gateway-client = { git = "https://github.com/v0l/payment-gateway", rev = "fa36d1a" }
 lightning-invoice = { version = "0.34", features = ["std"] }
-payments-rs = { git = "https://github.com/v0l/payments-rs", rev = "32b36eb722af3bac8325611b5617e689b4d32d48", default-features = false, features = [
-  "method-revolut",
-  "method-lnd",
-  "tls-ring",
-] }
 bytes = "1"
 flate2 = "1"
 zstd = "0.14"

@@ -1,4 +1,4 @@
-use super::RevolutService;
+use super::GatewayService;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,22 +6,22 @@ const TICK: Duration = Duration::from_secs(30);
 const PENDING_BATCH: i64 = 50;
 const UNSENT_AFTER_SECS: i64 = 3600;
 
-impl RevolutService {
+impl GatewayService {
     pub async fn reconcile_stale(&self) -> usize {
-        let stale = match self.db.stale_pending_fiat_orders(self.settings.reconcile_after_secs, PENDING_BATCH).await {
+        let stale = match self.db.stale_pending_gateway_payments(self.settings.reconcile_after_secs, PENDING_BATCH).await {
             Ok(rows) => rows,
             Err(e) => {
-                tracing::warn!(error = %e, "Could not list pending fiat orders");
+                tracing::warn!(error = %e, "Could not list pending gateway payments");
                 return 0;
             }
         };
         let mut settled = 0;
-        for order in stale {
-            let Some(external) = order.external_id.as_deref() else { continue };
-            match self.reconcile(external).await {
+        for payment in stale {
+            let Some(remote) = payment.gateway_payment_id.as_deref() else { continue };
+            match self.reconcile(remote).await {
                 Ok(Some(_)) => settled += 1,
                 Ok(None) => {}
-                Err(e) => tracing::warn!(order = %order.public_id, error = %e, "Fiat order reconciliation failed"),
+                Err(e) => tracing::warn!(payment = %payment.public_id, error = %e, "Gateway payment reconciliation failed"),
             }
         }
         settled
@@ -48,20 +48,20 @@ impl RevolutService {
             };
             charged += 1;
             if let Err(e) = self.charge_auto_reload(&order, &settings).await {
-                tracing::warn!(order = %order.public_id, error = %e, "Auto-reload charge failed");
+                tracing::warn!(payment = %order.public_id, error = %e, "Auto-reload charge failed");
             }
         }
         charged
     }
 }
 
-pub fn spawn_runner(service: Arc<RevolutService>) -> tokio::task::JoinHandle<()> {
+pub fn spawn_runner(service: Arc<GatewayService>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(TICK);
         loop {
             tick.tick().await;
             service.reconcile_stale().await;
-            let _ = service.db.expire_unsent_fiat_orders(UNSENT_AFTER_SECS).await;
+            let _ = service.db.expire_unsent_gateway_payments(UNSENT_AFTER_SECS).await;
             service.run_auto_reloads().await;
         }
     })

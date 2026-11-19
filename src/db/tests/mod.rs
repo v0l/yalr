@@ -1,6 +1,7 @@
 use super::Database;
 
 mod access;
+mod gateway_cutover;
 mod model_providers;
 mod payouts;
 mod providers;

@@ -33,10 +33,8 @@ async fn harness(model: &str) -> Harness {
     let payments = PaymentsState {
         config: PaymentsConfig::default(),
         balance_service: balance_service.clone(),
-        lightning_service: None,
         pricing_resolver: Arc::new(PricingResolver::new(db.clone(), DefaultPricingConfig::default())),
-        settlement_listener: None,
-        revolut: None,
+        gateway: None,
     };
     let state = Arc::new(AppState {
         config: AppConfig {

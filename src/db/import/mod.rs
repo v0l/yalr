@@ -113,6 +113,10 @@ async fn columns(source: &SqlitePool, table: &str) -> Result<Vec<String>, sqlx::
     rows.iter().map(|r| r.try_get::<String, _>("name")).collect()
 }
 
+fn target_table(table: &str) -> &str {
+    if table == "lightning_invoices" { "legacy_lightning_invoices" } else { table }
+}
+
 async fn insert_rows(
     target: &mut MySqlConnection,
     table: &str,
@@ -122,7 +126,7 @@ async fn insert_rows(
     if rows.is_empty() {
         return Ok(0);
     }
-    let mut insert = QueryBuilder::<MySql>::new(format!("INSERT INTO {table} ({list}) "));
+    let mut insert = QueryBuilder::<MySql>::new(format!("INSERT INTO {} ({list}) ", target_table(table)));
     insert.push_values(rows, |mut b, row| {
         for value in row {
             push(&mut b, value);
@@ -134,7 +138,7 @@ async fn insert_rows(
 impl Database {
     async fn is_empty(&self) -> Result<bool, sqlx::Error> {
         for table in TABLES {
-            let any: bool = sqlx::query_scalar(&format!("SELECT EXISTS(SELECT 1 FROM {table})"))
+            let any: bool = sqlx::query_scalar(&format!("SELECT EXISTS(SELECT 1 FROM {})", target_table(table)))
                 .fetch_one(&self.pool)
                 .await?;
             if any {

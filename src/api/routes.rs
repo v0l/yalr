@@ -12,27 +12,26 @@ use std::sync::Arc;
 
 pub fn api(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let router = public().merge(tenant(state.clone())).merge(admin(state.clone()));
-    if state.payments_state.as_ref().is_some_and(|p| p.revolut.is_some()) {
-        return router.merge(fiat(state));
+    if state.payments_state.as_ref().is_some_and(|p| p.gateway.is_some()) {
+        return router.merge(topup(state));
     }
     router
 }
 
-fn fiat(state: Arc<AppState>) -> Router<Arc<AppState>> {
-    use crate::api::fiat;
+fn topup(state: Arc<AppState>) -> Router<Arc<AppState>> {
+    use crate::api::topup;
     let tenant = Router::new()
-        .route("/account/topup/fiat/config", get(fiat::config))
-        .route("/account/topup/fiat", get(fiat::history).post(fiat::create_topup))
-        .route("/account/topup/fiat/:id", get(fiat::topup_status))
-        .route("/account/payment-methods", get(fiat::list_cards))
-        .route("/account/payment-methods/:id", delete(fiat::delete_card))
-        .route("/account/payment-methods/:id/default", put(fiat::default_card))
-        .route("/account/auto-reload", get(fiat::list_auto_reload).put(fiat::save_auto_reload))
+        .route("/account/topup/config", get(topup::config))
+        .route("/account/topup", get(topup::history).post(topup::create_topup))
+        .route("/account/topup/:id", get(topup::topup_status))
+        .route("/account/payment-methods", get(topup::list_cards))
+        .route("/account/payment-methods/:id", delete(topup::delete_card))
+        .route("/account/auto-reload", get(topup::list_auto_reload).put(topup::save_auto_reload))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
     let admin = Router::new()
-        .route("/payments/fiat-orders", get(fiat::admin_orders))
+        .route("/payments/topups", get(topup::admin_payments))
         .layer(axum::middleware::from_fn_with_state(state, admin_middleware));
-    Router::new().route("/webhooks/revolut", post(fiat::webhook)).merge(tenant).merge(admin)
+    Router::new().route("/webhooks/gateway", post(topup::webhook)).merge(tenant).merge(admin)
 }
 
 fn public() -> Router<Arc<AppState>> {
@@ -119,6 +118,7 @@ fn admin(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/payouts/:id/approve", post(crate::api::payouts::approve))
         .route("/payouts/:id/reject", post(crate::api::payouts::reject))
         .route("/payouts/:id/retry", post(crate::api::payouts::retry))
+        .route("/payouts/:id/settle", post(crate::api::payouts::settle))
         .route("/payouts/:id/cancel", post(crate::api::payouts::admin_cancel))
         .route("/payments/failover-penalties", get(crate::api::failover_penalties::totals))
         .route("/payments/credit", post(crate::api::currency_balances::admin_credit))

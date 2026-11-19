@@ -54,9 +54,9 @@ async fn a_legacy_sqlite_database_imports_with_ids_types_and_timestamps_intact()
     assert_eq!((key.id, user.id), (1, 1));
     assert_eq!(db.get_user_balance(1).await.unwrap().unwrap().lifetime_deposited_msat, 9000);
 
-    let invoice = db.get_lightning_invoice_by_hash("ph").await.unwrap().unwrap();
+    let invoice = db.public_invoice("pub").await.unwrap().unwrap();
     assert_eq!(invoice.paid_at.unwrap().to_rfc3339(), "2026-10-20T14:05:00+00:00");
-    assert_eq!(db.get_public_invoice("pub").await.unwrap().unwrap().purpose, "create");
+    assert_eq!(invoice.purpose, "create");
 
     let provider = db.get_provider_by_slug("local").await.unwrap().unwrap();
     assert_eq!((provider.provider_type, provider.oauth_expires_at), (ProviderType::LlamaCpp, Some(1792504800000)));

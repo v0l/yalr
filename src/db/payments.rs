@@ -1,8 +1,5 @@
-use super::{BalanceTransactionRow, Database, LightningInvoiceRow, NewLightningInvoice, UserBalanceRow, UserBalanceWithUsername};
+use super::{BalanceTransactionRow, Database, UserBalanceRow, UserBalanceWithUsername};
 use sqlx::{MySql, Transaction};
-
-const INVOICE_COLUMNS: &str =
-    "id, user_id, payment_hash, bolt11, amount_msat, amount_sats, status, created_at, expires_at, paid_at";
 
 pub struct LedgerEntry<'a> {
     pub user_id: i64,
@@ -133,74 +130,5 @@ impl Database {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-    }
-
-    pub async fn list_all_lightning_invoices(
-        &self,
-        user_id: Option<i64>,
-        limit: i64,
-    ) -> Result<Vec<LightningInvoiceRow>, sqlx::Error> {
-        let mut query = sqlx::QueryBuilder::new(format!("SELECT {INVOICE_COLUMNS} FROM lightning_invoices"));
-        if let Some(uid) = user_id {
-            query.push(" WHERE user_id = ").push_bind(uid);
-        }
-        query.push(" ORDER BY created_at DESC, id DESC LIMIT ").push_bind(limit);
-        query.build_query_as().fetch_all(&self.pool).await
-    }
-
-    pub async fn create_lightning_invoice(&self, invoice: NewLightningInvoice<'_>) -> Result<LightningInvoiceRow, sqlx::Error> {
-        let id = sqlx::query(
-            "INSERT INTO lightning_invoices (user_id, payment_hash, bolt11, amount_msat, amount_sats, status, expires_at) \
-             VALUES (?, ?, ?, ?, ?, 'pending', UTC_TIMESTAMP(3) + INTERVAL ? SECOND)",
-        )
-        .bind(invoice.user_id)
-        .bind(invoice.payment_hash)
-        .bind(invoice.bolt11)
-        .bind(invoice.amount_msat)
-        .bind(invoice.amount_sats)
-        .bind(invoice.expire_seconds.unwrap_or(3600))
-        .execute(&self.pool)
-        .await?
-        .last_insert_id() as i64;
-        self.lightning_invoice_by_id(id).await
-    }
-
-    async fn lightning_invoice_by_id(&self, id: i64) -> Result<LightningInvoiceRow, sqlx::Error> {
-        sqlx::query_as::<_, LightningInvoiceRow>(&format!("SELECT {INVOICE_COLUMNS} FROM lightning_invoices WHERE id = ?"))
-            .bind(id)
-            .fetch_one(&self.pool)
-            .await
-    }
-
-    pub async fn get_lightning_invoice_by_hash(&self, payment_hash: &str) -> Result<Option<LightningInvoiceRow>, sqlx::Error> {
-        sqlx::query_as::<_, LightningInvoiceRow>(&format!(
-            "SELECT {INVOICE_COLUMNS} FROM lightning_invoices WHERE payment_hash = ?"
-        ))
-        .bind(payment_hash)
-        .fetch_optional(&self.pool)
-        .await
-    }
-
-    pub async fn get_invoice_by_bolt11(&self, bolt11: &str) -> Result<Option<LightningInvoiceRow>, sqlx::Error> {
-        sqlx::query_as::<_, LightningInvoiceRow>(&format!(
-            "SELECT {INVOICE_COLUMNS} FROM lightning_invoices WHERE bolt11 = ?"
-        ))
-        .bind(bolt11)
-        .fetch_optional(&self.pool)
-        .await
-    }
-
-    pub async fn update_lightning_invoice_status(
-        &self,
-        payment_hash: &str,
-        status: &str,
-    ) -> Result<Option<LightningInvoiceRow>, sqlx::Error> {
-        let set_paid = if status == "paid" { ", paid_at = UTC_TIMESTAMP(3)" } else { "" };
-        sqlx::query(&format!("UPDATE lightning_invoices SET status = ?{set_paid} WHERE payment_hash = ?"))
-            .bind(status)
-            .bind(payment_hash)
-            .execute(&self.pool)
-            .await?;
-        self.get_lightning_invoice_by_hash(payment_hash).await
     }
 }

@@ -1,5 +1,6 @@
 // ── E2E Test Suite ──────────────────────────
-// Real bitcoind (regtest) + LND + YALR.
+// YALR against the payment gateway sandbox (regtest Lightning).
+// Needs GATEWAY_SANDBOX_URL and GATEWAY_SANDBOX_ADMIN_TOKEN for the payer node.
 // Run with: cargo test --test e2e_tests -- --nocapture --test-threads=1
 
 use reqwest::{Client, StatusCode};
@@ -7,8 +8,6 @@ use serde_json::{json, Value};
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::Mutex;
-
-use payments_rs::lightning::{LndNode, LightningNode, PayInvoiceRequest};
 
 // ── Config ─────────────────────────────────
 
@@ -128,23 +127,11 @@ async fn setup_admin() -> (String, i64) {
     (token, uid)
 }
 
-/// LND Bob connect helper
-async fn bob_lnd() -> LndNode {
-    payments_rs::lightning::setup_crypto_provider();
-    // Copy credentials from docker if needed
-    let cert = "lnd-data-bob-temp/tls.cert";
-    let mac = "lnd-data-bob-temp/data/chain/bitcoin/regtest/admin.macaroon";
-    if !std::path::Path::new(cert).exists() {
-        let _ = std::process::Command::new("docker")
-            .args(["compose", "-f", "docker-compose.e2e.yaml", "cp", "lnd-bob:/root/.lnd", "lnd-data-bob-temp"])
-            .output();
-        // Flatten if nested
-        let nested = "lnd-data-bob-temp/.lnd";
-        if std::path::Path::new(nested).exists() {
-            let _ = std::process::Command::new("sh").args(["-c", "mv lnd-data-bob-temp/.lnd/* lnd-data-bob-temp/ && rmdir lnd-data-bob-temp/.lnd"]).output();
-        }
-    }
-    LndNode::new("https://localhost:10029", std::path::Path::new(cert), std::path::Path::new(mac)).await.unwrap()
+async fn pay_bolt11(bolt11: &str) {
+    let url = std::env::var("GATEWAY_SANDBOX_URL").unwrap_or_else(|_| "https://pay-sandbox.apexstrata.ie".into());
+    let admin = std::env::var("GATEWAY_SANDBOX_ADMIN_TOKEN").expect("GATEWAY_SANDBOX_ADMIN_TOKEN");
+    let r = client().post(&format!("{url}/sandbox/api/pay-invoice")).bearer_auth(admin).json(&json!({"bolt11": bolt11})).send().await.unwrap();
+    assert!(r.status().is_success(), "sandbox payer failed: {}", r.text().await.unwrap_or_default());
 }
 
 async fn wait_invoice_paid(token: &str, payment_hash: &str, secs: u64) -> bool {
@@ -438,8 +425,7 @@ async fn test_ln_invoice_payment() {
     let st: Value = ua.get(&format!("{}/lightning/invoice/{}/status", YALR_URL, ph)).send().await.unwrap().json().await.unwrap();
     assert_eq!(st["status"], "pending");
 
-    let lnd = bob_lnd().await;
-    lnd.pay_invoice(PayInvoiceRequest { invoice: bolt11, timeout_seconds: Some(120) }).await.expect("pay failed");
+    pay_bolt11(&bolt11).await;
 
     assert!(wait_invoice_paid(&ut, &ph, 60).await, "invoice not settled");
     assert!(wait_balance(&ut, 1_000_000, 60).await, "balance not credited");
@@ -476,16 +462,10 @@ async fn test_ln_refund() {
     let bal: Value = ua.get(&format!("{}/v1/balance/info", YALR_URL)).send().await.unwrap().json().await.unwrap();
     assert_eq!(bal["balance_msat"].as_i64().unwrap(), 500_000);
 
-    let lnd = bob_lnd().await;
-    use payments_rs::lightning::AddInvoiceRequest;
-    let binv = lnd.add_invoice(AddInvoiceRequest { amount: 500_000, memo: Some("e2e refund".into()), expire: None }).await.unwrap();
-
-    let rr = ua.post(&format!("{}/v1/balance/refund", YALR_URL)).json(&json!({"invoice":binv.pr(),"amount_sats":500})).send().await;
-    match rr {
-        Ok(r) if r.status().is_success() => { println!("Refund OK"); }
-        Ok(r) => { println!("Refund status: {}", r.status()); }
-        Err(e) => { println!("Refund err: {e}"); }
-    }
+    let rr = ua.post(&format!("{}/v1/balance/refund", YALR_URL)).json(&json!({"invoice":"lnbcrt1invalid","amount_sats":500})).send().await.unwrap();
+    assert!(rr.status().is_client_error(), "a refund to a bad invoice must be refused");
+    let after: Value = ua.get(&format!("{}/v1/balance/info", YALR_URL)).send().await.unwrap().json().await.unwrap();
+    assert_eq!(after["balance_msat"].as_i64().unwrap(), 500_000);
 
     a.delete(&format!("{}/api/users/{}", YALR_URL, uid)).send().await.unwrap();
     println!("LN refund: OK");
@@ -718,13 +698,12 @@ async fn test_multi_ln() {
     let ut = login["token"].as_str().unwrap().to_string();
     let ua = client_auth(&ut);
 
-    let lnd = bob_lnd().await;
     let mut total = 0i64;
     for amt in [500, 250, 750] {
         let inv: Value = ua.post(&format!("{}/lightning/invoice", YALR_URL)).json(&json!({"amount_sats":amt,"memo":"e2e"})).send().await.unwrap().json().await.unwrap();
         let bolt11 = inv["instruction"]["bolt11"].as_str().unwrap().to_string();
         let ph = inv["instruction"]["payment_hash"].as_str().unwrap().to_string();
-        lnd.pay_invoice(PayInvoiceRequest { invoice: bolt11, timeout_seconds: Some(120) }).await.unwrap();
+        pay_bolt11(&bolt11).await;
         wait_invoice_paid(&ut, &ph, 30).await;
         total += (amt as i64) * 1000;
     }
