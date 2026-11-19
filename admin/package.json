@@ -16,7 +16,6 @@
     "@assistant-ui/react-markdown": "^0.12.9",
     "@base-ui/react": "^1.4.1",
     "@fontsource-variable/geist": "^5.2.8",
-    "@revolut/checkout": "^1.1.25",
     "@tailwindcss/vite": "^4.2.3",
     "ai": "^6.0.168",
     "class-variance-authority": "^0.7.1",

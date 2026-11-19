@@ -33,6 +33,7 @@ export const tenantApi = {
   approvePayout: (id: number) => call<Payout>(`/payouts/${id}/approve`, 'POST'),
   rejectPayout: (id: number, reason: string) => call<Payout>(`/payouts/${id}/reject`, 'POST', { reason }),
   retryPayout: (id: number) => call<Payout>(`/payouts/${id}/retry`, 'POST'),
+  settlePayout: (id: number, external_id: string) => call<Payout>(`/payouts/${id}/settle`, 'POST', { external_id }),
   cancelPayout: (id: number) => call<Payout>(`/payouts/${id}/cancel`, 'POST'),
   verifyProvider: (slug: string) => call<ApprovalView>(`${slugPath(slug)}/verify`, 'POST'),
   verifications: (slug: string) => call<VerificationDetail[]>(`${slugPath(slug)}/verifications`),

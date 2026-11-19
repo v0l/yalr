@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import type { Payout, PayoutStatus } from '@/types/payouts'
 import { formatPayoutAmount, statusClass } from './format'
 
-const filters: (PayoutStatus | 'all')[] = ['requested', 'failed', 'sent', 'completed', 'all']
+const filters: (PayoutStatus | 'all')[] = ['requested', 'held', 'failed', 'sent', 'completed', 'all']
 
 export default function PayoutsQueue() {
   const [rows, setRows] = useState<Payout[]>([])
@@ -27,6 +27,11 @@ export default function PayoutsQueue() {
   function reject(id: number) {
     const reason = prompt('Reason for rejecting this payout') ?? ''
     act(id, () => tenantApi.rejectPayout(id, reason))
+  }
+
+  function settle(id: number) {
+    const reference = prompt('Gateway withdrawal id or payment hash') ?? ''
+    if (reference.trim()) act(id, () => tenantApi.settlePayout(id, reference.trim()))
   }
 
   return (
@@ -60,6 +65,9 @@ export default function PayoutsQueue() {
             )}
             {p.status === 'failed' && (
               <Button size="xs" variant="outline" disabled={busy === p.id} onClick={() => act(p.id, () => tenantApi.retryPayout(p.id))} className="border-border font-mono text-[10px] uppercase">Retry</Button>
+            )}
+            {p.status === 'held' && (
+              <Button size="xs" variant="outline" disabled={busy === p.id} onClick={() => settle(p.id)} className="border-border font-mono text-[10px] uppercase text-brand">Mark sent</Button>
             )}
             {(p.status === 'held' || p.status === 'sent') && (
               <Button size="xs" variant="outline" disabled={busy === p.id} onClick={() => act(p.id, () => tenantApi.cancelPayout(p.id))} className="border-border font-mono text-[10px] uppercase text-destructive">Cancel</Button>

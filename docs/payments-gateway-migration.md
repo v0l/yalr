@@ -130,14 +130,15 @@ held BTC balance. It also has no fiat payout. So:
      invoice, with the old pod still running so the LND listener credits late payments.
    * Revolut orders: `reconcile_stale` settles within 2 minutes of payment. Anything still
      `pending` after 1 h is abandoned by the card flow.
-5. Run `yalr-cli payments-cutover` (dry run by default, `--apply` to write). It reports and
-   then, in one transaction per row:
-   * leaves balances and `balance_transactions` untouched,
-   * lists any still-`pending` `lightning_invoices` and `fiat_orders`. With `--apply` they
-     are expired (`expired` / `failed`, reason `cutover`). A payer who paid after the
-     drain is credited by hand with `/api/payments/credit` against the listed row,
-   * disables every auto-reload setting with reason `Card moved: add it again`.
-6. Deploy the new image. The sqlx migration renames `lightning_invoices`, `fiat_orders`,
+5. Deploy the new image (step 6). The migration is the one-shot cutover:
+   * balances, `balance_transactions` and `payouts` are untouched,
+   * any still-`pending` `lightning_invoices` become `expired` and `fiat_orders` become
+     `failed` (reason `closed at gateway cutover`) before the tables are renamed. A payer who
+     paid after the drain is credited by hand with `/api/payments/credit`, using the
+     `legacy_*` rows to find them,
+   * `auto_reload_settings` is recreated empty (the old rows are kept in
+     `legacy_auto_reload_settings`), so users set it up again with a new gateway card.
+6. The sqlx migration renames `lightning_invoices`, `fiat_orders`,
    `user_payment_methods` to `legacy_*` and creates `gateway_payments`. Nothing is dropped.
 7. Register no Revolut webhook for YALR any more. The gateway registers its own. Delete the
    old YALR Revolut merchant webhook after the new deploy is healthy.
@@ -162,4 +163,6 @@ Nothing is copied into the gateway. History stays readable.
 
 k8s Secret mounts to remove (listed for the supervisor, not edited here): `lnd` (TLS cert,
 macaroon), `yalr-revolut` (`api-key`, `webhook-secret`, `encryption-key`).
-Cargo: `payments-rs` (with `method-lnd`, `method-revolut`) is removed.
+Cargo: `payments-rs` (with `method-lnd`, `method-revolut`) is removed. The gateway is reached
+through the official `payment-gateway-client` crate (git dependency, pinned rev), including
+`verify_webhook`.

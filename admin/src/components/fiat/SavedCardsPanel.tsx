@@ -19,7 +19,7 @@ function AutoReloadForm({ currency, cards, current, config, onSaved }: { currenc
   const [threshold, setThreshold] = useState((current?.threshold_milli ?? 5 * UNIT) / UNIT)
   const [amount, setAmount] = useState((current?.amount_milli ?? 25 * UNIT) / UNIT)
   const [cap, setCap] = useState((current?.monthly_cap_milli ?? 100 * UNIT) / UNIT)
-  const [card, setCard] = useState(current?.payment_method_id ?? cards.find(c => c.is_default)?.id ?? cards[0]?.id)
+  const [card, setCard] = useState(current?.payment_method_id ?? cards[0]?.id)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => { if (current) setEnabled(current.enabled) }, [current])
@@ -88,15 +88,13 @@ export default function SavedCardsPanel({ config, cards, onChanged }: Props) {
           <span className="uppercase">{c.brand ?? 'Card'}</span>
           <span className="tabular-nums">**** {c.last_four}</span>
           <span className="tabular-nums text-muted-foreground">{c.exp_month && c.exp_year ? `${String(c.exp_month).padStart(2, '0')}/${c.exp_year}` : ''}</span>
-          {c.is_default ? <Badge className="h-5 border-brand/30 bg-brand/15 px-1.5 py-0 text-[10px] text-brand">default</Badge>
-            : <Button size="sm" variant="ghost" onClick={() => act(() => fiatApi.defaultCard(c.id))} className="h-6 font-mono text-[11px] uppercase">Make default</Button>}
           <Button size="sm" variant="ghost" onClick={() => act(() => fiatApi.deleteCard(c.id))} className="ml-auto h-6 font-mono text-[11px] uppercase text-destructive">Remove</Button>
         </div>
       ))}
       {cards.length > 0 && (
         <div className="space-y-3">
           <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Auto-reload</div>
-          {config.currencies.map(currency => (
+          {config.currencies.filter(c => c !== 'sats').map(currency => (
             <AutoReloadForm key={currency + (reloads.find(r => r.currency === currency)?.enabled ?? '')} currency={currency} cards={cards} config={config} current={reloads.find(r => r.currency === currency)} onSaved={() => { load(); onChanged() }} />
           ))}
         </div>
