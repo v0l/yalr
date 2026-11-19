@@ -280,7 +280,8 @@ impl Metered {
 
     async fn finish_stream(mut self, body: Vec<u8>, content_type: &str, failed: Option<String>) {
         let usage = usage_in_body(content_type, &body);
-        let billed_msat = self.settle(usage).await;
+        let nothing_served = body.is_empty() && failed.as_deref().is_some_and(|e| e != CLIENT_DISCONNECTED);
+        let billed_msat = if nothing_served { 0 } else { self.settle(usage).await };
         if let Some(mut pending) = self.log.take() {
             if let Some(usage) = usage {
                 pending.observe_tokens(usage);
@@ -294,6 +295,8 @@ impl Metered {
         }
     }
 }
+
+const CLIENT_DISCONNECTED: &str = "client disconnected";
 
 struct Finish {
     metered: Option<Metered>,
@@ -314,7 +317,7 @@ impl Drop for Finish {
     fn drop(&mut self) {
         if let Some((metered, body, content_type, _)) = self.take() {
             tokio::spawn(async move {
-                metered.finish_stream(body, &content_type, Some("client disconnected".to_string())).await;
+                metered.finish_stream(body, &content_type, Some(CLIENT_DISCONNECTED.to_string())).await;
             });
         }
     }

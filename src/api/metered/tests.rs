@@ -474,3 +474,5 @@ async fn a_responses_failover_bills_the_cached_prefix_and_charges_the_failed_pro
     let owner_balance = h.state.payments_state.as_ref().unwrap().balance_service.get_balance(owner.id).await.unwrap();
     assert_eq!(owner_balance, -(cold - discounted));
 }
+
+mod failed;

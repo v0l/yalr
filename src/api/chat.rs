@@ -422,8 +422,9 @@ pub async fn chat_completions_stream(
                         );
                     }
                     let billed = billed_usage(&request, prompt_tokens, completion_tokens, None);
+                    let nothing_served = chunk_count == 0;
                     let billed_msat = match billing_guard.as_ref() {
-                        Some(guard) if guard.is_active() => guard.finalize_failover(billed, request.trace().and_then(|t| t.provider()).as_deref(), request.trace().and_then(|t| t.failover()).as_ref()).await,
+                        Some(guard) if guard.is_active() && !nothing_served => guard.finalize_failover(billed, request.trace().and_then(|t| t.provider()).as_deref(), request.trace().and_then(|t| t.failover()).as_ref()).await,
                         _ => 0,
                     };
                     if prompt_tokens + completion_tokens > 0 {
