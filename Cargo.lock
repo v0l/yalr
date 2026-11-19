@@ -1737,7 +1737,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -2496,7 +2496,7 @@ checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 [[package]]
 name = "payment-gateway-client"
 version = "0.1.0"
-source = "git+https://github.com/v0l/payment-gateway?rev=fa36d1a#fa36d1a95b6bf69f3c85e2b03299b4738d633b2e"
+source = "git+https://github.com/v0l/payment-gateway?rev=399ddd6#399ddd61aa65f9ae6436085c1111595e4143cec5"
 dependencies = [
  "hex",
  "hmac",
@@ -2688,7 +2688,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2725,7 +2725,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]
