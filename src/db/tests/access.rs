@@ -194,6 +194,48 @@ async fn plain_users_get_only_models_for_sale() {
     assert_eq!(access("unpriced").await, ModelAccess::Deny);
 }
 
+async fn provider_price(db: &Database, slug: &str, model: &str, status: &str, advertised: bool) {
+    let provider = db
+        .create_provider(NewProvider {
+            name: slug,
+            slug,
+            base_url: "http://localhost:1",
+            api_key: None,
+            provider_type: None,
+        })
+        .await
+        .unwrap();
+    db.set_provider_status(provider.id, status, None, false).await.unwrap();
+    sqlx::query("INSERT INTO model_pricing (model_name, is_advertised, provider_id) VALUES (?, ?, ?)")
+        .bind(model)
+        .bind(advertised)
+        .bind(provider.id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn models_priced_only_per_provider_are_for_sale() {
+    let db = setup_test_db().await;
+    let user = priced_user(&db, "buyer", false).await;
+    provider_price(&db, "orcarouter", "orcarouter/Qwen-27B", "approved", true).await;
+    provider_price(&db, "other", "glm-flash", "approved", true).await;
+    provider_price(&db, "pending-p", "pending-model", "pending", true).await;
+    provider_price(&db, "quiet", "quiet-model", "approved", false).await;
+
+    let access = |m: &'static str| {
+        let db = db.clone();
+        async move { db.effective_model_access(user.id, m, true).await.unwrap() }
+    };
+    assert_eq!(access("orcarouter/Qwen-27B").await, ModelAccess::Allow);
+    assert_eq!(access("glm-flash").await, ModelAccess::Allow);
+    assert_eq!(access("other/glm-flash").await, ModelAccess::Allow);
+    assert_eq!(access("pending-model").await, ModelAccess::Deny);
+    assert_eq!(access("quiet-model").await, ModelAccess::Deny);
+    assert_eq!(access("nothing-priced").await, ModelAccess::Deny);
+}
+
 #[tokio::test]
 async fn explicit_rules_override_the_sale_default() {
     let db = setup_test_db().await;

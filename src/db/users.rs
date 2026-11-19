@@ -268,7 +268,19 @@ impl Database {
     }
 
     pub async fn is_for_sale(&self, model: &str) -> Result<bool, sqlx::Error> {
-        Ok(self.get_model_pricing(model).await?.is_some_and(|p| p.is_advertised))
+        let (slug, actual) = model.split_once('/').unwrap_or(("", model));
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM model_pricing mp LEFT JOIN providers p ON p.id = mp.provider_id \
+             WHERE mp.is_advertised = TRUE \
+             AND (mp.provider_id IS NULL OR p.status = 'approved') \
+             AND (mp.model_name = ? OR (p.slug = ? AND mp.model_name = ?))",
+        )
+        .bind(model)
+        .bind(slug)
+        .bind(actual)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count > 0)
     }
 
     pub async fn effective_model_access(
