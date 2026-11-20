@@ -819,7 +819,7 @@ export const api = {
     return response.json()
   },
 
-  async getAllInvoices(userId?: number): Promise<import('../types').LightningInvoice[]> {
+  async getAllInvoices(userId?: number): Promise<import('../types').GatewayPayment[]> {
     const headers = await getAuthHeaders()
     const params = userId ? `?user_id=${userId}` : ''
     const response = await fetch(`${API_BASE_URL}/api/payments/invoices${params}`, { headers })

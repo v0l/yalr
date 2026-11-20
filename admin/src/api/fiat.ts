@@ -1,3 +1,4 @@
+import type { GatewayPayment } from '@/types'
 import { API_BASE_URL } from './client'
 
 export interface FiatConfig {
@@ -7,22 +8,7 @@ export interface FiatConfig {
   max_amount: number
 }
 
-export interface FiatOrder {
-  id: number
-  public_id: string
-  user_id: number
-  kind: string
-  currency: string
-  amount_milli: number
-  status: 'pending' | 'completed' | 'failed' | 'cancelled' | 'expired'
-  pay_url: string | null
-  bolt11: string | null
-  expires_at: string | null
-  failure_reason: string | null
-  created_at: string
-  completed_at: string | null
-  username?: string
-}
+export type FiatOrder = GatewayPayment & { username?: string }
 
 export interface SavedCard {
   id: number

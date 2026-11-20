@@ -540,17 +540,30 @@ export interface DeleteUserModelPermissionResponse {
   model: string
 }
 
-export interface LightningInvoice {
+export type GatewayPaymentStatus = 'pending' | 'completed' | 'failed' | 'cancelled' | 'expired'
+
+export interface GatewayPayment {
   id: number
+  public_id: string
+  gateway_payment_id: string | null
   user_id: number
-  payment_hash: string
-  bolt11: string
-  amount_msat: number
-  amount_sats: number
-  status: string
+  kind: string
+  purpose: string | null
+  currency: string
+  amount_milli: number
+  status: GatewayPaymentStatus
+  bolt11: string | null
+  payment_hash: string | null
+  pay_url: string | null
+  failure_reason: string | null
   created_at: string
+  updated_at: string
   expires_at: string | null
-  paid_at: string | null
+  completed_at: string | null
+}
+
+export interface GatewayPaymentWithUser extends GatewayPayment {
+  username: string
 }
 
 // Payment Instruction Types for Top-up
