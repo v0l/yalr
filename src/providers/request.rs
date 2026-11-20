@@ -232,6 +232,28 @@ impl ChatRequest {
         &self.body_defaults
     }
 
+    pub fn requested_effort(&self) -> Option<String> {
+        self.extra_fields
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                self.inner
+                    .reasoning_effort
+                    .as_ref()
+                    .and_then(|e| serde_json::to_value(e).ok())
+                    .and_then(|v| v.as_str().map(str::to_string))
+            })
+    }
+
+    pub fn map_reasoning_effort(&mut self, map: &crate::providers::effort::EffortMap) {
+        let Some(target) = self.requested_effort().and_then(|asked| map.get(&asked).cloned()) else {
+            return;
+        };
+        self.inner.reasoning_effort = None;
+        self.extra_fields.insert("reasoning_effort".to_string(), Value::String(target));
+    }
+
     pub fn trace(&self) -> Option<&crate::request_log::Trace> {
         self.trace.as_ref()
     }
@@ -391,6 +413,46 @@ mod tests {
         .unwrap();
 
         assert!(request.extra_fields().is_empty());
+    }
+
+    #[test]
+    fn mapped_reasoning_effort_replaces_the_requested_level() {
+        let mut request = ChatRequest::from_value(serde_json::json!({
+            "model": "m",
+            "messages": [],
+            "reasoning_effort": "xhigh"
+        }))
+        .unwrap();
+        let map = [("xhigh".to_string(), "high".to_string())].into_iter().collect();
+        request.map_reasoning_effort(&map);
+        assert_eq!(request.extra_fields().get("reasoning_effort").unwrap(), "high");
+    }
+
+    #[test]
+    fn unmapped_reasoning_effort_is_left_alone() {
+        let mut request = ChatRequest::from_value(serde_json::json!({
+            "model": "m",
+            "messages": [],
+            "reasoning_effort": "low"
+        }))
+        .unwrap();
+        let map = [("xhigh".to_string(), "high".to_string())].into_iter().collect();
+        request.map_reasoning_effort(&map);
+        assert_eq!(request.extra_fields().get("reasoning_effort").unwrap(), "low");
+    }
+
+    #[test]
+    fn typed_reasoning_effort_is_mapped_too() {
+        let mut request = ChatRequest::from_value(serde_json::json!({
+            "model": "m",
+            "messages": []
+        }))
+        .unwrap();
+        request.reasoning_effort = Some(async_openai::types::chat::ReasoningEffort::High);
+        let map = [("high".to_string(), "max".to_string())].into_iter().collect();
+        request.map_reasoning_effort(&map);
+        assert!(request.reasoning_effort.is_none());
+        assert_eq!(request.extra_fields().get("reasoning_effort").unwrap(), "max");
     }
 
     #[test]

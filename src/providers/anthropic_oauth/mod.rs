@@ -630,6 +630,8 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
             status_locked: false,
             is_reference: false,
             max_concurrency: None,
+            ttft_deadline_ms: None,
+            reasoning_effort_map: None,
             created_at: Default::default(),
             updated_at: Default::default(),
         };

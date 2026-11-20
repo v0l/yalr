@@ -88,6 +88,7 @@ pub(crate) struct ProviderAgg {
     probe_passes: Vec<u64>,
     last_balance: Option<(CurrencyAmount, u64)>,
     last_quota: Option<(Vec<QuotaSnapshot>, u64)>,
+    slow_start: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -210,6 +211,8 @@ impl ProviderAgg {
             MetricsEvent::Probe { passed: false } => self.probe_passes.clear(),
             MetricsEvent::Balance(amount) => self.last_balance = Some((*amount, ts_ms)),
             MetricsEvent::Quota(q) => self.last_quota = Some((q.clone(), ts_ms)),
+            MetricsEvent::TtftDeadline { exceeded: true } => self.slow_start = Some(ts_ms),
+            MetricsEvent::TtftDeadline { exceeded: false } => self.slow_start = None,
             _ => {}
         }
         self.prune(now_ms);
@@ -329,16 +332,28 @@ impl ProviderAgg {
         Some(reset)
     }
 
+    fn slow_start_live(&self, now_ms: u64, th: &HealthThresholds) -> bool {
+        let forgiven = self.forgiven_before(th);
+        self.slow_start
+            .is_some_and(|ts| ts >= Self::window_start(now_ms) && ts > forgiven)
+    }
+
     pub fn health(&self, now_ms: u64, th: &HealthThresholds) -> HealthState {
         if self.balance_issue(now_ms) || self.quota_reset(now_ms).is_some() {
             return HealthState::Degraded;
         }
-        self.tally(now_ms, th).state(th).0
+        match self.tally(now_ms, th).state(th).0 {
+            HealthState::Healthy if self.slow_start_live(now_ms, th) => HealthState::Degraded,
+            state => state,
+        }
     }
 
     pub fn explain(&self, now_ms: u64, th: &HealthThresholds) -> HealthReason {
         let tally = self.tally(now_ms, th);
-        let (_, mut cause) = tally.state(th);
+        let (state, mut cause) = tally.state(th);
+        if state == HealthState::Healthy && self.slow_start_live(now_ms, th) {
+            cause = "slow_first_token";
+        }
         if self.balance_issue(now_ms) {
             cause = "balance";
         } else if self.quota_reset(now_ms).is_some() {

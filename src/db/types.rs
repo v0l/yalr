@@ -109,6 +109,10 @@ pub struct Provider {
     pub is_reference: bool,
     #[sqlx(default)]
     pub max_concurrency: Option<i32>,
+    #[sqlx(default)]
+    pub ttft_deadline_ms: Option<i32>,
+    #[sqlx(default)]
+    pub reasoning_effort_map: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }

@@ -106,4 +106,25 @@ mod tests {
         let (status, body) = t.call(&t.alice, "PUT", &format!("/api/providers/{slug}"), r#"{"max_concurrency":null}"#).await;
         assert_eq!((status, body["max_concurrency"].is_null()), (200, true), "{body}");
     }
+
+    #[tokio::test]
+    async fn the_owner_sets_a_ttft_deadline_and_a_thinking_level_map() {
+        let t = tenancy().await;
+        let slug = t.alice_provider().await;
+        let uri = format!("/api/providers/{slug}");
+        let (status, body) = t
+            .call(&t.alice, "PUT", &uri, r#"{"ttft_deadline_ms":1500,"reasoning_effort_map":{"xhigh":"high"}}"#)
+            .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["ttft_deadline_ms"], 1500);
+        assert_eq!(body["reasoning_effort_map"]["xhigh"], "high");
+
+        let (status, body) = t.call(&t.alice, "PUT", &uri, r#"{"reasoning_effort_map":{"xhigh":3}}"#).await;
+        assert_eq!(status, 400, "{body}");
+
+        let (status, body) = t.call(&t.alice, "PUT", &uri, r#"{"ttft_deadline_ms":null,"reasoning_effort_map":null}"#).await;
+        assert_eq!(status, 200, "{body}");
+        assert!(body["ttft_deadline_ms"].is_null());
+        assert!(body.get("reasoning_effort_map").is_none());
+    }
 }

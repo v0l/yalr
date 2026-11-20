@@ -51,6 +51,24 @@ impl Database {
             .await?;
         Ok(())
     }
+
+    pub async fn set_provider_tuning(
+        &self,
+        provider_id: i64,
+        ttft_deadline_ms: Option<i32>,
+        reasoning_effort_map: Option<&crate::providers::effort::EffortMap>,
+    ) -> Result<(), sqlx::Error> {
+        let encoded = reasoning_effort_map.and_then(|m| serde_json::to_string(m).ok());
+        sqlx::query(
+            "UPDATE providers SET ttft_deadline_ms = ?, reasoning_effort_map = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
+        )
+        .bind(ttft_deadline_ms)
+        .bind(encoded)
+        .bind(provider_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

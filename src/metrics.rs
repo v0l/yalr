@@ -24,6 +24,7 @@ fn apply_aggregate(aggregates: &AggMap, provider: &str, event: &MetricsEvent, us
         event,
         MetricsEvent::Failure(_)
             | MetricsEvent::Success
+            | MetricsEvent::TtftDeadline { .. }
             | MetricsEvent::Probe { .. }
             | MetricsEvent::Balance(_)
             | MetricsEvent::Quota(_)
@@ -99,6 +100,8 @@ pub enum MetricsEvent {
     OutputTokens(u32),
     /// Request success
     Success,
+    /// Whether the first token beat the provider's configured TTFT deadline
+    TtftDeadline { exceeded: bool },
     /// Request failed with error details
     Failure(FailureDetails),
     /// Result of a background health probe
@@ -286,6 +289,10 @@ impl MetricsEmitter {
 
     pub fn emit_success(&self, provider: &str, model: &str, user: Option<MetricsUser>) {
         self.emit(provider.to_string(), model.to_string(), MetricsEvent::Success, user);
+    }
+
+    pub fn emit_ttft_deadline(&self, provider: &str, model: &str, exceeded: bool, user: Option<MetricsUser>) {
+        self.emit(provider.to_string(), model.to_string(), MetricsEvent::TtftDeadline { exceeded }, user);
     }
 
     pub fn emit_failure(
@@ -1233,6 +1240,32 @@ fn percentile<T: Copy + PartialOrd>(values: &[T], p: f32) -> Option<T> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_missed_ttft_deadline_degrades_until_a_fast_start() {
+        let store = create_test_metrics_store();
+        let emitter = store.emitter().clone();
+        assert_eq!(store.get_provider_health("p").await, HealthState::Healthy);
+
+        emitter.emit_ttft_deadline("p", "m", true, None);
+        assert_eq!(store.get_provider_health("p").await, HealthState::Degraded);
+        assert_eq!(store.health_reason("p").await.unwrap().cause, "slow_first_token");
+        assert!(store.is_provider_available("p").await);
+
+        emitter.emit_ttft_deadline("p", "m", false, None);
+        assert_eq!(store.get_provider_health("p").await, HealthState::Healthy);
+    }
+
+    #[tokio::test]
+    async fn probe_passes_forgive_a_missed_ttft_deadline() {
+        let store = create_test_metrics_store();
+        let emitter = store.emitter().clone();
+        emitter.emit_ttft_deadline("p", "m", true, None);
+        std::thread::sleep(Duration::from_millis(5));
+        emitter.emit_probe("p", true);
+        emitter.emit_probe("p", true);
+        assert_eq!(store.get_provider_health("p").await, HealthState::Healthy);
+    }
 
     #[tokio::test]
     async fn time_until_retry_honors_rate_limit() {

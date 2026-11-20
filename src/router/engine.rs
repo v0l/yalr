@@ -285,6 +285,7 @@ pub struct Router {
     full_names: RwLock<full_name::FullNameIndex>,
     provider_access: std::sync::RwLock<HashMap<String, (Option<i64>, String)>>,
     provider_limits: std::sync::RwLock<HashMap<String, u32>>,
+    provider_tuning: std::sync::RwLock<Arc<tuning::TuningMap>>,
     speeds: Arc<RwLock<prefer::SpeedBoard>>,
 }
 
@@ -307,6 +308,7 @@ impl Router {
             full_names: RwLock::new(Default::default()),
             provider_access: std::sync::RwLock::new(HashMap::new()),
             provider_limits: std::sync::RwLock::new(HashMap::new()),
+            provider_tuning: std::sync::RwLock::new(Default::default()),
             speeds: Arc::new(RwLock::new(Default::default())),
         }
     }
@@ -340,6 +342,7 @@ impl Router {
         
         let provider_records = self.db.list_providers().await?;
         self.set_provider_access(&provider_records);
+        self.set_provider_tuning(&provider_records);
 
         let mut providers = HashMap::new();
         let mut provider_bodies: HashMap<String, crate::db::ExtraBody> = HashMap::new();
@@ -1148,6 +1151,7 @@ impl Router {
             let mut actual_request = request.clone().with_body_defaults(extra_body);
             actual_request.model = resolved_model.clone();
             Self::normalize_chat_request(&mut actual_request, &provider_name);
+            tuning::apply_effort_map(&mut actual_request, &self.tuning_snapshot(), provider.slug());
 
             let in_flight = self.metrics_store.increment_in_flight(&provider_name).await;
             let mut guard = InFlightGuard::new(
@@ -1370,6 +1374,7 @@ impl Router {
         let needed = request.input_modalities();
         let previous = session.as_ref().and_then(|k| sticky.last_served(k));
         let hashes = turn_hashes(&request);
+        let tuning_map = self.tuning_snapshot();
 
         let stream = stream! {
             let mut last_error: Option<RouterError> = None;
@@ -1402,6 +1407,8 @@ impl Router {
                 let mut actual_request = request.clone().with_body_defaults(extra_body);
                 actual_request.model = resolved_model.clone();
                 Self::normalize_chat_request(&mut actual_request, &provider_name);
+                tuning::apply_effort_map(&mut actual_request, &tuning_map, provider.slug());
+                let ttft_deadline = tuning::ttft_deadline(&tuning_map, provider.slug());
 
                 // Backends that stream usage only on request (vLLM, and any
                 // other OpenAI-compatible server) omit prompt_tokens_details
@@ -1482,7 +1489,16 @@ impl Router {
                         let mut attempt_yielded = false;
                         let mut stream_errored = false;
 
-                        while let Some(result) = stream.next().await {
+                        loop {
+                            let (next, missed_deadline) = if first_token {
+                                tuning::next_within(&mut stream, ttft_deadline).await
+                            } else {
+                                (stream.next().await, false)
+                            };
+                            let Some(result) = next else { break };
+                            if missed_deadline {
+                                metrics_store.emitter().emit_ttft_deadline(&provider_name, &original_model, true, user.clone());
+                            }
                             match result {
                                 Ok(mut chunk) => {
                                     if let Some(trace) = actual_request.trace() {
@@ -1493,6 +1509,14 @@ impl Router {
                                         first_token = false;
                                         ttft_ms = start.elapsed().as_millis() as u32;
                                         metrics_store.emitter().emit_ttft(&provider_name, &original_model, ttft_ms, user.clone());
+                                        if let Some(deadline) = ttft_deadline {
+                                            metrics_store.emitter().emit_ttft_deadline(
+                                                &provider_name,
+                                                &original_model,
+                                                u128::from(ttft_ms) > deadline.as_millis(),
+                                                user.clone(),
+                                            );
+                                        }
                                     }
 
                                     if let Some(usage) = chunk.usage.clone() {
@@ -2088,6 +2112,7 @@ impl Clone for RouterError {
 }
 
 mod full_name;
+mod tuning;
 mod prefer;
 #[cfg(test)]
 mod prefer_tests;

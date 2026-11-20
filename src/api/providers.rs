@@ -29,6 +29,9 @@ pub struct ProviderResponse {
     pub status_locked: bool,
     pub is_reference: bool,
     pub max_concurrency: Option<i32>,
+    pub ttft_deadline_ms: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort_map: Option<crate::providers::effort::EffortMap>,
     pub verifications: Vec<crate::api::verification_view::VerificationSummary>,
     pub created_at: crate::db::Timestamp,
     pub updated_at: crate::db::Timestamp,
@@ -124,6 +127,10 @@ pub struct ProviderUpdateRequest {
     pub owner_user_id: Option<Option<i64>>,
     #[serde(default, deserialize_with = "present_or_null")]
     pub max_concurrency: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "present_or_null")]
+    pub ttft_deadline_ms: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "present_or_null")]
+    pub reasoning_effort_map: Option<Option<serde_json::Value>>,
 }
 
 fn present_or_null<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
@@ -167,6 +174,8 @@ fn response(p: Provider, owner_username: Option<String>, health: Option<Provider
         status_locked: p.status_locked,
         is_reference: p.is_reference,
         max_concurrency: p.max_concurrency,
+        ttft_deadline_ms: p.ttft_deadline_ms,
+        reasoning_effort_map: crate::providers::effort::parse_stored(p.reasoning_effort_map.as_deref()),
         verifications: vec![],
         extra_body: p.extra_body_map(),
         has_api_key: p.api_key.as_deref().is_some_and(|k| !k.is_empty()),
@@ -319,6 +328,21 @@ pub async fn update_provider(
             state.db.get_provider_by_id(updated.id).await.map_err(internal)?.unwrap_or(updated)
         }
         None => updated,
+    };
+    let updated = if request.ttft_deadline_ms.is_some() || request.reasoning_effort_map.is_some() {
+        let deadline = match request.ttft_deadline_ms {
+            Some(value) => value.filter(|ms| *ms > 0),
+            None => updated.ttft_deadline_ms,
+        };
+        let efforts = match request.reasoning_effort_map.clone() {
+            Some(value) => crate::providers::effort::validate(value.unwrap_or(serde_json::Value::Null))
+                .map_err(|e| bad_request(&e))?,
+            None => crate::providers::effort::parse_stored(updated.reasoning_effort_map.as_deref()),
+        };
+        state.db.set_provider_tuning(updated.id, deadline, efforts.as_ref()).await.map_err(internal)?;
+        state.db.get_provider_by_id(updated.id).await.map_err(internal)?.unwrap_or(updated)
+    } else {
+        updated
     };
     let updated = match request.client_version.as_deref() {
         Some(version) => {
