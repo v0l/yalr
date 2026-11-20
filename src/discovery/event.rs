@@ -20,6 +20,14 @@ pub struct ModelDetail {
     pub max_output_tokens: Option<i32>,
     pub vision: bool,
     pub pricing: SatsPricing,
+    pub usd_pricing: Option<SatsPricing>,
+}
+
+#[derive(Serialize)]
+struct ModelPrices<'a> {
+    sats: &'a SatsPricing,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usd: Option<&'a SatsPricing>,
 }
 
 impl ModelDetail {
@@ -50,7 +58,7 @@ struct Metadata<'a> {
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     models: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pricing: BTreeMap<&'a str, &'a SatsPricing>,
+    pricing: BTreeMap<&'a str, ModelPrices<'a>>,
 }
 
 impl Listing {
@@ -84,7 +92,7 @@ impl Listing {
             name: &self.name,
             about: &self.about,
             models: self.model_ids(),
-            pricing: self.unique_models().into_iter().map(|m| (m.id.as_str(), &m.pricing)).collect(),
+            pricing: self.unique_models().into_iter().map(|m| (m.id.as_str(), ModelPrices { sats: &m.pricing, usd: m.usd_pricing.as_ref() })).collect(),
         })
         .unwrap_or_default();
         EventBuilder::new(Kind::from(PROVIDER_KIND), content)
@@ -121,6 +129,7 @@ mod tests {
             max_output_tokens: Some(4096),
             vision,
             pricing: SatsPricing { prompt: 0.00042, completion: 0.00084, request: 1.0, input_cache_read: 0.000042, input_cache_write: 0.000042 },
+            usd_pricing: Some(SatsPricing { prompt: 0.00026, completion: 0.00052, request: 0.62, input_cache_read: 0.000026, input_cache_write: 0.000026 }),
         }
     }
 
@@ -197,9 +206,20 @@ mod tests {
         let event = listing().sign(&Keys::generate()).unwrap();
         let content: serde_json::Value = serde_json::from_str(&event.content).unwrap();
         assert_eq!(content["models"], serde_json::json!(["gpt-4o", "llama"]));
-        assert_eq!(content["pricing"]["gpt-4o"]["prompt"], 0.00042);
-        assert_eq!(content["pricing"]["llama"]["request"], 1.0);
+        assert_eq!(content["pricing"]["gpt-4o"]["sats"]["prompt"], 0.00042);
+        assert_eq!(content["pricing"]["gpt-4o"]["usd"]["prompt"], 0.00026);
+        assert_eq!(content["pricing"]["llama"]["sats"]["request"], 1.0);
         assert_eq!(content["pricing"].as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn usd_pricing_is_left_out_without_a_rate() {
+        let mut l = listing();
+        l.models[0].usd_pricing = None;
+        let event = l.sign(&Keys::generate()).unwrap();
+        let content: serde_json::Value = serde_json::from_str(&event.content).unwrap();
+        assert!(content["pricing"]["gpt-4o"].get("usd").is_none());
+        assert!(content["pricing"]["gpt-4o"].get("sats").is_some());
     }
 
     #[test]

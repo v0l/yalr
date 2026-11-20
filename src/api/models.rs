@@ -128,7 +128,8 @@ pub struct PublicModel {
     pub description: String,
     pub context_length: i32,
     pub architecture: PublicArchitecture,
-    pub pricing: PublicPricing,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<PublicPricing>,
     pub sats_pricing: PublicPricing,
     pub top_provider: PublicTopProvider,
 }
@@ -171,7 +172,25 @@ pub async fn public_models(State(state): State<std::sync::Arc<AppState>>) -> Jso
     Json(PublicModelsResponse { data: public_model_list(&state).await })
 }
 
+impl PublicPricing {
+    pub fn in_usd(&self, usd_per_btc: f64) -> PublicPricing {
+        let usd = |sats: f64| sats * usd_per_btc / 100_000_000.0;
+        PublicPricing {
+            prompt: usd(self.prompt),
+            completion: usd(self.completion),
+            request: usd(self.request),
+            input_cache_read: usd(self.input_cache_read),
+            input_cache_write: usd(self.input_cache_write),
+        }
+    }
+}
+
+async fn usd_per_btc(state: &AppState) -> Option<f64> {
+    state.payments_state.as_ref()?.gateway.as_ref()?.btc_usd().await
+}
+
 pub async fn public_model_list(state: &std::sync::Arc<AppState>) -> Vec<PublicModel> {
+    let usd_per_btc = usd_per_btc(state).await;
     let pricings = state.db.list_model_pricings().await.unwrap_or_default();
     let for_sale: std::collections::HashSet<String> = pricings
         .iter()
@@ -209,7 +228,7 @@ pub async fn public_model_list(state: &std::sync::Arc<AppState>) -> Vec<PublicMo
                     input_modalities: arch.map_or_else(|| vec!["text".to_string()], |a| a.input_modalities.clone()),
                     output_modalities: arch.map_or_else(|| vec!["text".to_string()], |a| a.output_modalities.clone()),
                 },
-                pricing: PublicPricing { prompt: 0.0, completion: 0.0, request: 0.0, input_cache_read: 0.0, input_cache_write: 0.0 },
+                pricing: usd_per_btc.map(|rate| sats.in_usd(rate)),
                 sats_pricing: sats,
                 id: m.id,
             }

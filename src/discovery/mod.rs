@@ -113,6 +113,13 @@ async fn advertised_models(state: &Arc<AppState>) -> Vec<ModelDetail> {
             id: m.id,
             context_length: m.context_length,
             max_output_tokens: m.top_provider.max_completion_tokens,
+            usd_pricing: m.pricing.as_ref().map(|p| SatsPricing {
+                prompt: p.prompt,
+                completion: p.completion,
+                request: p.request,
+                input_cache_read: p.input_cache_read,
+                input_cache_write: p.input_cache_write,
+            }),
             pricing: SatsPricing {
                 prompt: m.sats_pricing.prompt,
                 completion: m.sats_pricing.completion,
@@ -124,7 +131,7 @@ async fn advertised_models(state: &Arc<AppState>) -> Vec<ModelDetail> {
         .collect()
 }
 
-async fn current_listing(config: &DiscoveryConfig, state: &Arc<AppState>, urls: Vec<String>) -> Listing {
+pub(crate) async fn current_listing(config: &DiscoveryConfig, state: &Arc<AppState>, urls: Vec<String>) -> Listing {
     Listing {
         provider_id: provider_id(config),
         urls,

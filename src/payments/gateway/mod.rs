@@ -96,6 +96,17 @@ pub struct GatewayService {
     pub(crate) webhook_secret: String,
     pub(crate) db: Arc<Database>,
     pub settings: GatewaySettings,
+    api_key: String,
+    http: reqwest::Client,
+    usd_rate: tokio::sync::Mutex<Option<(std::time::Instant, f64)>>,
+}
+
+const RATE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+const RATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[derive(serde::Deserialize)]
+struct RatesResponse {
+    btc: std::collections::HashMap<String, f64>,
 }
 
 pub fn minor_units(amount: f64) -> Option<i64> {
@@ -125,7 +136,36 @@ impl GatewayService {
             webhook_secret: secrets.webhook_secret,
             db,
             settings,
+            api_key: secrets.api_key,
+            http: reqwest::Client::new(),
+            usd_rate: Default::default(),
         })
+    }
+
+    pub async fn btc_usd(&self) -> Option<f64> {
+        let mut cached = self.usd_rate.lock().await;
+        if let Some((at, rate)) = *cached {
+            if at.elapsed() < RATE_TTL {
+                return Some(rate);
+            }
+        }
+        match self.fetch_btc_usd().await {
+            Some(rate) => {
+                *cached = Some((std::time::Instant::now(), rate));
+                Some(rate)
+            }
+            None => None,
+        }
+    }
+
+    async fn fetch_btc_usd(&self) -> Option<f64> {
+        let url = format!("{}/v1/rates", self.settings.url.trim_end_matches('/'));
+        let response = self.http.get(url).bearer_auth(&self.api_key).timeout(RATE_TIMEOUT).send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let rates: RatesResponse = response.json().await.ok()?;
+        rates.btc.get("USD").copied().filter(|r| r.is_finite() && *r > 0.0)
     }
 
     pub fn mode(&self) -> &'static str {

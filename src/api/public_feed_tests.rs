@@ -6,7 +6,8 @@ use axum::http::Request;
 use serde_json::Value;
 use tower::util::ServiceExt;
 
-use super::tenant_tests::{tenancy_with_payments, Tenancy};
+use super::tenant_tests::{tenancy_with_gateway, tenancy_with_payments, Tenancy};
+use crate::payments::gateway::fake::FakeGateway;
 use crate::config::DefaultPricingConfig;
 use crate::db::{FiatPrices, NewModelPricing, NewProvider};
 use crate::providers::{ChatRequest, ListedModalities, Provider, ProviderError, StreamingChunk};
@@ -95,6 +96,17 @@ async fn production() -> Tenancy {
         max_output_tokens: 4096,
     })
     .await;
+    stock(t).await
+}
+
+async fn production_with_rates(btc_usd: Option<f64>) -> (Tenancy, FakeGateway) {
+    let gateway = FakeGateway::start().await;
+    gateway.state.lock().unwrap().btc_usd = btc_usd;
+    let t = tenancy_with_gateway(&gateway.url).await;
+    (stock(t).await, gateway)
+}
+
+async fn stock(t: Tenancy) -> Tenancy {
     let alice = t.state.db.get_user_by_username("alice").await.unwrap().unwrap();
     serve(&t, alice.id, Row { name: "dear", vision: true, input: 840, output: 840, request: 2, context: 512_000, max_output: 128_000 }).await;
     serve(&t, alice.id, Row { name: "cheap", vision: false, input: 420, output: 420, request: 1, context: 1_000_000, max_output: 256_000 }).await;
@@ -152,4 +164,47 @@ async fn authenticated_list_carries_the_same_pool_data() {
     assert_eq!(m["max_output_tokens"], 256_000);
     assert!(m["created"].as_i64().unwrap() > 1_600_000_000);
     assert_eq!(m["architecture"]["input_modalities"], serde_json::json!(["text", "image"]));
+}
+
+#[tokio::test]
+async fn public_feed_prices_in_usd_from_the_gateway_rate() {
+    let (t, gateway) = production_with_rates(Some(100_000.0)).await;
+    let feed = anonymous(&t).await;
+    let m = &feed["data"][0];
+    let usd = |v: &Value| (v.as_f64().unwrap() * 1e12).round() / 1e12;
+    assert_eq!(usd(&m["pricing"]["prompt"]), 0.00000042);
+    assert_eq!(usd(&m["pricing"]["completion"]), 0.00000042);
+    assert_eq!(usd(&m["pricing"]["request"]), 0.001);
+    assert_eq!(m["sats_pricing"]["prompt"], 0.00042);
+    anonymous(&t).await;
+    let rate_calls = gateway.state.lock().unwrap().rate_calls;
+    assert_eq!(rate_calls, 1);
+}
+
+#[tokio::test]
+async fn public_feed_leaves_usd_pricing_out_when_rates_are_unavailable() {
+    let (t, _gateway) = production_with_rates(None).await;
+    let feed = anonymous(&t).await;
+    let m = &feed["data"][0];
+    assert!(m.get("pricing").is_none(), "{m}");
+    assert_eq!(m["sats_pricing"]["prompt"], 0.00042);
+}
+
+#[tokio::test]
+async fn nostr_listing_carries_usd_beside_sats_when_a_rate_is_known() {
+    let (t, _gateway) = production_with_rates(Some(100_000.0)).await;
+    let config = crate::config::DiscoveryConfig {
+        enabled: true,
+        http_url: "https://yalr.v0l.io".into(),
+        onion_url: None,
+        extra_urls: vec![],
+        name: None,
+        about: None,
+        provider_id: None,
+        nsec: None,
+        relays: vec![],
+    };
+    let listing = crate::discovery::current_listing(&config, &t.state, vec!["https://yalr.v0l.io".into()]).await;
+    let usd = listing.models[0].usd_pricing.as_ref().unwrap();
+    assert!((usd.request - 0.001).abs() < 1e-12);
 }

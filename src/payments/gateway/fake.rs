@@ -31,6 +31,8 @@ pub struct FakeState {
     pub refuse_refunds: bool,
     pub decline_charges: bool,
     pub requests: Vec<String>,
+    pub btc_usd: Option<f64>,
+    pub rate_calls: usize,
 }
 
 #[derive(Clone)]
@@ -102,6 +104,15 @@ async fn get_payment(State((state, base)): State<Shared>, Path(id): Path<String>
     }
 }
 
+async fn rates(State((state, _)): State<Shared>) -> (StatusCode, Json<Value>) {
+    let mut s = state.lock().unwrap();
+    s.rate_calls += 1;
+    match s.btc_usd {
+        Some(usd) => (StatusCode::OK, Json(json!({"btc": {"USD": usd, "EUR": usd * 0.9}}))),
+        None => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "no rates"}))),
+    }
+}
+
 async fn saved(State((state, _)): State<Shared>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
     let s = state.lock().unwrap();
     let customer = q.get("customer_ref").cloned().unwrap_or_default();
@@ -160,6 +171,7 @@ impl FakeGateway {
             .route("/v1/payments/:id", get(get_payment))
             .route("/v1/payments/:id/attempts", post(attempt))
             .route("/v1/payments/:id/refund", post(refund))
+            .route("/v1/rates", get(rates))
             .route("/v1/saved-methods", get(saved))
             .route("/v1/saved-methods/:id", delete(delete_saved))
             .route("/v1/saved-methods/:id/charge", post(charge))
