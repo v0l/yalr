@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,9 +9,15 @@ const POLL_MS = 2500
 const FIAT_PRESETS = [10, 25, 50, 100]
 const SAT_PRESETS = [1000, 5000, 10000, 25000]
 
+const GATEWAY_EVENTS = ['pgw:paid', 'pgw:expired', 'pgw:cancelled']
+
+function paymentIdOf(url: string) {
+  return new URL(url).pathname.split('/').filter(Boolean).pop() ?? ''
+}
+
 function embedUrl(url: string) {
   const u = new URL(url)
-  u.searchParams.set('embed', '1')
+  u.pathname = `/embed/${paymentIdOf(url)}`
   return u.toString()
 }
 
@@ -31,19 +37,38 @@ export default function GatewayTopup({ config, currency, onPaid, onCancel }: Pro
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const frame = useRef<HTMLIFrameElement>(null)
+
+  const check = useCallback(async () => {
+    if (!order || order.status !== 'pending') return
+    try {
+      const current = await fiatApi.status(order.public_id)
+      if (current.status === 'pending') return
+      setOrder(current)
+      if (current.status === 'completed') onPaid()
+      else setError(current.failure_reason ?? `Payment ${current.status}`)
+    } catch { /* keep polling */ }
+  }, [order, onPaid])
+
   useEffect(() => {
     if (!order || order.status !== 'pending') return
-    const timer = setInterval(async () => {
-      try {
-        const current = await fiatApi.status(order.public_id)
-        if (current.status === 'pending') return
-        setOrder(current)
-        if (current.status === 'completed') onPaid()
-        else setError(current.failure_reason ?? `Payment ${current.status}`)
-      } catch { /* keep polling */ }
-    }, POLL_MS)
+    const timer = setInterval(check, POLL_MS)
     return () => clearInterval(timer)
-  }, [order, onPaid])
+  }, [order, check])
+
+  useEffect(() => {
+    if (!order?.pay_url || order.status !== 'pending') return
+    const origin = new URL(order.pay_url).origin
+    const paymentId = paymentIdOf(order.pay_url)
+    const listener = (ev: MessageEvent) => {
+      const m = ev.data
+      if (ev.origin !== origin || ev.source !== frame.current?.contentWindow) return
+      if (!m || m.source !== 'payment-gateway' || m.payment_id !== paymentId || !GATEWAY_EVENTS.includes(m.type)) return
+      void check()
+    }
+    window.addEventListener('message', listener)
+    return () => window.removeEventListener('message', listener)
+  }, [order, check])
 
   async function start(e: React.FormEvent) {
     e.preventDefault()
@@ -95,7 +120,7 @@ export default function GatewayTopup({ config, currency, onPaid, onCancel }: Pro
       {order && !done && (
         <div className="space-y-3">
           {config.mode === 'sandbox' && <div className="font-mono text-[11px] text-warning">Sandbox mode: payments are test payments</div>}
-          {order.pay_url && <iframe title="Payment" src={embedUrl(order.pay_url)} className="h-[560px] w-full border border-border bg-card" allow="payment" />}
+          {order.pay_url && <iframe ref={frame} title="Payment" src={embedUrl(order.pay_url)} className="h-[560px] w-full border border-border bg-card" allow="payment" />}
           <div className="font-mono text-[11px] text-muted-foreground">This page updates when it is paid.</div>
           {order.pay_url && <a href={order.pay_url} target="_blank" rel="noopener noreferrer" className={`${cancel} block text-center`}>Open in a new tab</a>}
           <div className="text-center"><button type="button" onClick={reset} className={cancel}>Cancel</button></div>
