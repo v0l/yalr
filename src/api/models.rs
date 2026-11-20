@@ -120,7 +120,7 @@ pub async fn models_entry(
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct PublicModel {
     pub id: String,
     pub name: String,
@@ -130,15 +130,30 @@ pub struct PublicModel {
     pub architecture: PublicArchitecture,
     pub pricing: PublicPricing,
     pub sats_pricing: PublicPricing,
+    pub top_provider: PublicTopProvider,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
+pub struct PublicTopProvider {
+    pub context_length: i32,
+    pub max_completion_tokens: Option<i32>,
+}
+
+fn describe(provider_count: Option<usize>) -> String {
+    match provider_count {
+        Some(1) => "Served by 1 provider on YALR".to_string(),
+        Some(n) => format!("Served by {n} providers on YALR"),
+        None => "Served on YALR".to_string(),
+    }
+}
+
+#[derive(Serialize, Clone)]
 pub struct PublicArchitecture {
     pub input_modalities: Vec<String>,
     pub output_modalities: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct PublicPricing {
     pub prompt: f64,
     pub completion: f64,
@@ -153,6 +168,10 @@ pub struct PublicModelsResponse {
 }
 
 pub async fn public_models(State(state): State<std::sync::Arc<AppState>>) -> Json<PublicModelsResponse> {
+    Json(PublicModelsResponse { data: public_model_list(&state).await })
+}
+
+pub async fn public_model_list(state: &std::sync::Arc<AppState>) -> Vec<PublicModel> {
     let pricings = state.db.list_model_pricings().await.unwrap_or_default();
     let for_sale: std::collections::HashSet<String> = pricings
         .iter()
@@ -160,9 +179,9 @@ pub async fn public_models(State(state): State<std::sync::Arc<AppState>>) -> Jso
         .map(|p| p.model_name.clone())
         .collect();
     let user = anonymous_viewer();
-    let listing = models_for(&state, &user).await;
+    let listing = models_for(state, &user).await;
 
-    let data = listing
+    listing
         .data
         .into_iter()
         .filter(|m| for_sale.contains(&m.id))
@@ -180,8 +199,12 @@ pub async fn public_models(State(state): State<std::sync::Arc<AppState>>) -> Jso
             PublicModel {
                 name: m.id.clone(),
                 created: m.created,
-                description: String::new(),
+                description: describe(m.provider_count),
                 context_length: m.context_length.unwrap_or(0),
+                top_provider: PublicTopProvider {
+                    context_length: m.context_length.unwrap_or(0),
+                    max_completion_tokens: m.max_output_tokens,
+                },
                 architecture: PublicArchitecture {
                     input_modalities: arch.map_or_else(|| vec!["text".to_string()], |a| a.input_modalities.clone()),
                     output_modalities: arch.map_or_else(|| vec!["text".to_string()], |a| a.output_modalities.clone()),
@@ -191,8 +214,7 @@ pub async fn public_models(State(state): State<std::sync::Arc<AppState>>) -> Jso
                 id: m.id,
             }
         })
-        .collect();
-    Json(PublicModelsResponse { data })
+        .collect()
 }
 
 fn anonymous_viewer() -> crate::db::User {

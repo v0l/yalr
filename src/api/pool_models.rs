@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::api::models::ModelEntry;
+use crate::api::models::{ModelEntry, ModelPricing};
+use crate::api::modalities::{provider_architecture, ModelArchitecture};
+use crate::db::ModelPricingRow;
+use crate::payments::pricing::ResolvedPricing;
 use crate::state::AppState;
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -50,6 +53,42 @@ pub async fn owned_slugs(state: &AppState) -> std::collections::HashSet<String> 
         .collect()
 }
 
+fn cheapest(options: &[ResolvedPricing]) -> Option<ModelPricing> {
+    options
+        .iter()
+        .filter(|p| p.is_sats() && p.is_advertised && !p.is_free)
+        .min_by_key(|p| (p.price_per_1m_input_sats + p.price_per_1m_output_sats, p.price_per_request_sats))
+        .map(|p| ModelPricing {
+            prompt: p.price_per_1m_input_sats,
+            completion: p.price_per_1m_output_sats,
+            cache_read: p.price_per_1m_cache_read_sats,
+            cache_write: p.price_per_1m_cache_write_sats,
+            request: p.price_per_request_sats,
+            unit: "1M tokens".to_string(),
+        })
+}
+
+async fn pool_architecture(state: &AppState, model: &str, slugs: &[&str]) -> Option<ModelArchitecture> {
+    let mut merged: Option<ModelArchitecture> = None;
+    for provider in state.config.router.get_providers().await {
+        if !slugs.contains(&provider.slug()) {
+            continue;
+        }
+        let Some(found) = provider_architecture(state, &provider, model).await else {
+            continue;
+        };
+        let all = merged.get_or_insert(ModelArchitecture { input_modalities: Vec::new(), output_modalities: Vec::new() });
+        for (into, more) in [(&mut all.input_modalities, found.input_modalities), (&mut all.output_modalities, found.output_modalities)] {
+            for modality in more {
+                if !into.contains(&modality) {
+                    into.push(modality);
+                }
+            }
+        }
+    }
+    merged
+}
+
 pub async fn pool_entries(
     state: &AppState,
     allowed: impl Fn(&str) -> bool,
@@ -64,19 +103,30 @@ pub async fn pool_entries(
         if members.is_empty() {
             continue;
         }
-        let ranges = match state.payments_state.as_ref() {
-            Some(ps) => price_ranges(&ps.pricing_resolver.options(&model).await),
+        let options = match state.payments_state.as_ref() {
+            Some(ps) => ps.pricing_resolver.options(&model).await,
             None => Vec::new(),
         };
+        let ranges = price_ranges(&options);
+        let member_ids: Vec<i64> = members.iter().map(|(_, id, _)| *id).collect();
+        let rows: Vec<ModelPricingRow> = state
+            .db
+            .list_model_pricings_by_name(&model)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.is_advertised && r.provider_id.is_some_and(|id| member_ids.contains(&id)))
+            .collect();
+        let slugs: Vec<&str> = members.iter().map(|(slug, _, _)| slug.as_str()).collect();
         entries.push(ModelEntry {
             id: model.clone(),
             object: "model".to_string(),
-            created: 0,
+            created: rows.iter().map(|r| r.created_at.timestamp()).min().unwrap_or(0),
             owned_by: "pool".to_string(),
-            pricing: None,
-            context_length: None,
-            max_output_tokens: None,
-            architecture: None,
+            pricing: cheapest(&options),
+            context_length: rows.iter().filter_map(|r| r.context_window).max(),
+            max_output_tokens: rows.iter().filter_map(|r| r.max_output_tokens).max(),
+            architecture: pool_architecture(state, &model, &slugs).await,
             provider_count: Some(members.len()),
             price_range: (!ranges.is_empty()).then_some(ranges),
         });

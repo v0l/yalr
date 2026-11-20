@@ -10,13 +10,17 @@ use nostr_sdk::Client;
 
 use crate::config::DiscoveryConfig;
 use crate::db::Database;
-use event::{is_public_url, Listing};
+use crate::state::AppState;
+use event::{is_public_url, Listing, ModelDetail, SatsPricing};
 
-pub(crate) const DEFAULT_RELAYS: [&str; 3] = [
+pub(crate) const DEFAULT_RELAYS: [&str; 5] = [
     "wss://relay.damus.io",
     "wss://purplepag.es",
     "wss://nos.lol",
+    "wss://relay.routstr.com",
+    "wss://relay.primal.net",
 ];
+const DEFAULT_ABOUT: &str = "OpenAI-compatible LLM router with uncensored and open-weight models, paid per request with Lightning or card. No account needed.";
 const REFRESH: Duration = Duration::from_secs(24 * 60 * 60);
 const POLL: Duration = Duration::from_secs(60);
 const RETRY: Duration = Duration::from_secs(15);
@@ -29,12 +33,12 @@ fn partial_retry_delay(attempt: u32) -> Duration {
         .map_or(PARTIAL_RETRY_MAX, |d| d.min(PARTIAL_RETRY_MAX))
 }
 
-pub fn spawn(config: DiscoveryConfig, db: Arc<Database>) {
+pub fn spawn(config: DiscoveryConfig, state: Arc<AppState>) {
     if !config.enabled {
         return;
     }
     tokio::spawn(async move {
-        if let Err(e) = run(config, db).await {
+        if let Err(e) = run(config, state).await {
             tracing::error!(error = %e, "Nostr discovery stopped");
         }
     });
@@ -86,40 +90,53 @@ fn urls(config: &DiscoveryConfig) -> Result<Vec<String>, String> {
         return Err(format!("discovery http_url {} is not publicly routable", config.http_url));
     }
     let mut urls = vec![config.http_url.trim_end_matches('/').to_string()];
+    for extra in config.extra_urls.iter().map(|u| u.trim().trim_end_matches('/')).filter(|u| !u.is_empty()) {
+        if !is_public_url(extra) {
+            return Err(format!("discovery extra url {extra} is not publicly routable"));
+        }
+        if !urls.iter().any(|u| u == extra) {
+            urls.push(extra.to_string());
+        }
+    }
     if let Some(onion) = config.onion_url.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
         urls.push(onion.to_string());
     }
     Ok(urls)
 }
 
-async fn advertised_models(db: &Database) -> Vec<String> {
-    let mut names: Vec<String> = db
-        .list_model_pricings()
+async fn advertised_models(state: &Arc<AppState>) -> Vec<ModelDetail> {
+    crate::api::models::public_model_list(state)
         .await
-        .unwrap_or_default()
         .into_iter()
-        .filter(|p| p.is_advertised)
-        .map(|p| p.model_name)
-        .collect();
-    names.sort();
-    names
+        .map(|m| ModelDetail {
+            vision: m.architecture.input_modalities.iter().any(|i| i == "image"),
+            id: m.id,
+            context_length: m.context_length,
+            max_output_tokens: m.top_provider.max_completion_tokens,
+            pricing: SatsPricing {
+                prompt: m.sats_pricing.prompt,
+                completion: m.sats_pricing.completion,
+                request: m.sats_pricing.request,
+                input_cache_read: m.sats_pricing.input_cache_read,
+                input_cache_write: m.sats_pricing.input_cache_write,
+            },
+        })
+        .collect()
 }
 
-async fn current_listing(config: &DiscoveryConfig, db: &Database, urls: Vec<String>) -> Listing {
+async fn current_listing(config: &DiscoveryConfig, state: &Arc<AppState>, urls: Vec<String>) -> Listing {
     Listing {
         provider_id: provider_id(config),
         urls,
-        models: advertised_models(db).await,
+        models: advertised_models(state).await,
         version: env!("CARGO_PKG_VERSION").to_string(),
         name: config.name.clone().unwrap_or_else(|| "YALR".to_string()),
-        about: config
-            .about
-            .clone()
-            .unwrap_or_else(|| "OpenAI-compatible LLM router paid over Lightning".to_string()),
+        about: config.about.clone().unwrap_or_else(|| DEFAULT_ABOUT.to_string()),
     }
 }
 
-async fn run(config: DiscoveryConfig, db: Arc<Database>) -> Result<(), String> {
+async fn run(config: DiscoveryConfig, state: Arc<AppState>) -> Result<(), String> {
+    let db = state.db.clone();
     let urls = urls(&config)?;
     let keys = load_keys(&config, &db).await?;
     let npub = keys.public_key().to_bech32().unwrap_or_default();
@@ -138,7 +155,7 @@ async fn run(config: DiscoveryConfig, db: Arc<Database>) -> Result<(), String> {
     let mut published: Option<(Listing, tokio::time::Instant)> = None;
     let mut partial_attempts: Option<u32> = None;
     loop {
-        let listing = current_listing(&config, &db, urls.clone()).await;
+        let listing = current_listing(&config, &state, urls.clone()).await;
         let due = match &published {
             Some((last, at)) => {
                 *last != listing
@@ -183,6 +200,7 @@ mod tests {
             enabled: true,
             http_url: "https://yalr.v0l.io/".into(),
             onion_url: None,
+            extra_urls: vec![],
             name: None,
             about: None,
             provider_id: None,
@@ -225,21 +243,33 @@ mod tests {
         assert_eq!(first.public_key(), second.public_key());
     }
 
+    #[test]
+    fn extra_urls_are_published_once_and_must_be_public() {
+        let mut c = config();
+        c.extra_urls = vec!["https://app.yalr.net/".into(), "https://yalr.v0l.io".into()];
+        assert_eq!(urls(&c).unwrap(), vec!["https://yalr.v0l.io", "https://app.yalr.net"]);
+        c.extra_urls = vec!["http://10.0.0.1".into()];
+        assert!(urls(&c).is_err());
+    }
+
+    #[test]
+    fn default_relays_include_routstr_and_primal() {
+        let defaults = relays(None);
+        assert!(defaults.contains(&"wss://relay.routstr.com".to_string()));
+        assert!(defaults.contains(&"wss://relay.primal.net".to_string()));
+    }
+
     #[tokio::test]
-    async fn only_priced_and_advertised_models_are_listed() {
-        let db = Database::test().await;
-        for (name, advertised) in [("b-model", true), ("a-model", true), ("secret", false)] {
-            db.price_model(name, advertised).await;
-        }
-        db.create_routing_config(crate::db::NewRoutingConfig {
-            name: "unpriced".into(),
-            strategy: "round_robin".into(),
-            health_check_enabled: false,
-            health_check_interval_seconds: 30,
-            health_check_timeout_seconds: 5,
-        })
-        .await
-        .unwrap();
-        assert_eq!(advertised_models(&db).await, vec!["a-model", "b-model"]);
+    async fn the_listing_uses_the_public_models_data() {
+        let state = crate::api::public_feed_tests::production_state().await;
+        let listing = current_listing(&config(), &state, vec!["https://yalr.v0l.io".into()]).await;
+        let public = crate::api::models::public_model_list(&state).await;
+        assert_eq!(listing.models.len(), public.len());
+        assert_eq!(listing.models[0].id, public[0].id);
+        assert_eq!(listing.models[0].context_length, 1_000_000);
+        assert_eq!(listing.models[0].pricing.prompt, public[0].sats_pricing.prompt);
+        assert!(listing.models[0].pricing.prompt > 0.0);
+        assert_eq!(listing.version, env!("CARGO_PKG_VERSION"));
+        assert!(listing.about.contains("Lightning") && listing.about.contains("uncensored"));
     }
 }

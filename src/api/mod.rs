@@ -41,6 +41,8 @@ mod public_models_tests;
 #[cfg(test)]
 mod public_models_prod_tests;
 #[cfg(test)]
+pub(crate) mod public_feed_tests;
+#[cfg(test)]
 mod public_models_names_tests;
 pub mod providers;
 pub mod request_log;

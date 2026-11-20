@@ -1,13 +1,43 @@
 use nostr::{Event, EventBuilder, Keys, Kind, Tag};
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 pub const PROVIDER_KIND: u16 = 38421;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SatsPricing {
+    pub prompt: f64,
+    pub completion: f64,
+    pub request: f64,
+    pub input_cache_read: f64,
+    pub input_cache_write: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelDetail {
+    pub id: String,
+    pub context_length: i32,
+    pub max_output_tokens: Option<i32>,
+    pub vision: bool,
+    pub pricing: SatsPricing,
+}
+
+impl ModelDetail {
+    fn capabilities(&self) -> String {
+        let mut parts = vec![format!("max_tokens:{}", self.context_length)];
+        if let Some(out) = self.max_output_tokens {
+            parts.push(format!("max_output:{out}"));
+        }
+        parts.push(format!("vision:{}", self.vision));
+        parts.join(",")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Listing {
     pub provider_id: String,
     pub urls: Vec<String>,
-    pub models: Vec<String>,
+    pub models: Vec<ModelDetail>,
     pub version: String,
     pub name: String,
     pub about: String,
@@ -17,25 +47,44 @@ pub struct Listing {
 struct Metadata<'a> {
     name: &'a str,
     about: &'a str,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    models: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pricing: BTreeMap<&'a str, &'a SatsPricing>,
 }
 
 impl Listing {
     fn tags(&self) -> Vec<Tag> {
         let mut tags = vec![vec!["d".to_string(), self.provider_id.clone()]];
         tags.extend(self.urls.iter().map(|u| vec!["u".to_string(), u.clone()]));
-        if !self.models.is_empty() {
+        let ids = self.model_ids();
+        if !ids.is_empty() {
             let mut models = vec!["models".to_string()];
-            models.extend(self.models.iter().cloned());
+            models.extend(ids);
             tags.push(models);
+        }
+        for model in self.unique_models() {
+            tags.push(vec!["model-cap".to_string(), model.id.clone(), model.capabilities()]);
         }
         tags.push(vec!["version".to_string(), self.version.clone()]);
         tags.into_iter().filter_map(|t| Tag::parse(t).ok()).collect()
+    }
+
+    fn unique_models(&self) -> Vec<&ModelDetail> {
+        let mut seen = std::collections::HashSet::new();
+        self.models.iter().filter(|m| seen.insert(m.id.as_str())).collect()
+    }
+
+    fn model_ids(&self) -> Vec<String> {
+        self.unique_models().into_iter().map(|m| m.id.clone()).collect()
     }
 
     pub fn sign(&self, keys: &Keys) -> Result<Event, nostr::event::builder::Error> {
         let content = serde_json::to_string(&Metadata {
             name: &self.name,
             about: &self.about,
+            models: self.model_ids(),
+            pricing: self.unique_models().into_iter().map(|m| (m.id.as_str(), &m.pricing)).collect(),
         })
         .unwrap_or_default();
         EventBuilder::new(Kind::from(PROVIDER_KIND), content)
@@ -65,11 +114,21 @@ pub fn is_public_url(url: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn detail(id: &str, context: i32, vision: bool) -> ModelDetail {
+        ModelDetail {
+            id: id.into(),
+            context_length: context,
+            max_output_tokens: Some(4096),
+            vision,
+            pricing: SatsPricing { prompt: 0.00042, completion: 0.00084, request: 1.0, input_cache_read: 0.000042, input_cache_write: 0.000042 },
+        }
+    }
+
     fn listing() -> Listing {
         Listing {
             provider_id: "yalr.v0l.io".into(),
             urls: vec!["https://yalr.v0l.io".into()],
-            models: vec!["gpt-4o".into(), "llama".into()],
+            models: vec![detail("gpt-4o", 128_000, true), detail("llama", 32_768, false), detail("gpt-4o", 128_000, true)],
             version: "0.1.0".into(),
             name: "YALR".into(),
             about: "LLM router".into(),
@@ -102,13 +161,53 @@ mod tests {
         assert_eq!(values(&event, "u"), vec![vec!["https://yalr.v0l.io"]]);
         assert_eq!(values(&event, "models"), vec![vec!["gpt-4o", "llama"]]);
         assert_eq!(values(&event, "version"), vec![vec!["0.1.0"]]);
+        assert_eq!(values(&event, "models").len(), 1);
         assert!(values(&event, "mint").is_empty());
     }
 
     #[test]
     fn content_is_profile_metadata() {
         let event = listing().sign(&Keys::generate()).unwrap();
-        assert_eq!(event.content, r#"{"name":"YALR","about":"LLM router"}"#);
+        let content: serde_json::Value = serde_json::from_str(&event.content).unwrap();
+        assert_eq!(content["name"], "YALR");
+        assert_eq!(content["about"], "LLM router");
+    }
+
+    #[test]
+    fn models_tag_is_deduplicated_in_order() {
+        let event = listing().sign(&Keys::generate()).unwrap();
+        assert_eq!(values(&event, "models"), vec![vec!["gpt-4o", "llama"]]);
+        assert_eq!(values(&event, "model-cap").len(), 2);
+    }
+
+    #[test]
+    fn model_cap_tags_carry_context_output_and_vision() {
+        let event = listing().sign(&Keys::generate()).unwrap();
+        assert_eq!(
+            values(&event, "model-cap"),
+            vec![
+                vec!["gpt-4o", "max_tokens:128000,max_output:4096,vision:true"],
+                vec!["llama", "max_tokens:32768,max_output:4096,vision:false"],
+            ]
+        );
+    }
+
+    #[test]
+    fn content_carries_per_model_sats_pricing_per_token() {
+        let event = listing().sign(&Keys::generate()).unwrap();
+        let content: serde_json::Value = serde_json::from_str(&event.content).unwrap();
+        assert_eq!(content["models"], serde_json::json!(["gpt-4o", "llama"]));
+        assert_eq!(content["pricing"]["gpt-4o"]["prompt"], 0.00042);
+        assert_eq!(content["pricing"]["llama"]["request"], 1.0);
+        assert_eq!(content["pricing"].as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn several_urls_become_several_u_tags() {
+        let mut l = listing();
+        l.urls = vec!["https://yalr.v0l.io".into(), "https://app.yalr.net".into()];
+        let event = l.sign(&Keys::generate()).unwrap();
+        assert_eq!(values(&event, "u"), vec![vec!["https://yalr.v0l.io"], vec!["https://app.yalr.net"]]);
     }
 
     #[test]

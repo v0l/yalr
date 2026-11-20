@@ -131,7 +131,7 @@ discovery:
     - wss://nos.lol
 ```
 
-`http_url` must be publicly routable. The signing key is generated on first start and kept in the `nostr_identity` table; set `nsec` to use your own. `onion_url`, `provider_id` and `relays` are optional (relays default to damus, nostr.band and nos.lol). The announcement lists routing configs not hidden via `model_pricing.is_advertised`, and is republished when they change and every 24 hours.
+`http_url` must be publicly routable. The signing key is generated on first start and kept in the `nostr_identity` table; set `nsec` to use your own. `onion_url`, `provider_id` and `relays` are optional (relays default to damus, purplepag.es, nos.lol, relay.routstr.com and relay.primal.net; `extra_urls` adds more `u` URLs). The announcement lists routing configs not hidden via `model_pricing.is_advertised`, and is republished when they change and every 24 hours.
 
 ## Default request body fields
 

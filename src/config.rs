@@ -178,6 +178,8 @@ pub struct DiscoveryConfig {
     #[serde(default)]
     pub onion_url: Option<String>,
     #[serde(default)]
+    pub extra_urls: Vec<String>,
+    #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub about: Option<String>,

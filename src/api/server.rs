@@ -140,7 +140,7 @@ pub async fn run_with_shutdown<F>(
     }
 
     if let Some(discovery) = config.discovery_config.clone() {
-        crate::discovery::spawn(discovery, state.db.clone());
+        crate::discovery::spawn(discovery, state.clone());
     }
 
     let warm = state.clone();
