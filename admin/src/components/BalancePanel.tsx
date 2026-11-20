@@ -63,7 +63,7 @@ export default function BalancePanel({ config, title, onPaid }: { config: FiatCo
       {config && topupCurrency && (
         <div className="panel space-y-3 p-4">
           <div className={tile}>Top up {topupCurrency.toUpperCase()}</div>
-          <GatewayTopup key={topupCurrency} config={config} currency={topupCurrency} hasSavedCard={cards.length > 0} onPaid={paid} onCancel={() => setTopupCurrency(null)} />
+          <GatewayTopup key={topupCurrency} config={config} currency={topupCurrency} onPaid={paid} onCancel={() => setTopupCurrency(null)} />
         </div>
       )}
       {config && <SavedCardsPanel config={config} cards={cards} onChanged={load} />}

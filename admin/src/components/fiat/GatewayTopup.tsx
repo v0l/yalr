@@ -1,35 +1,35 @@
 import { useEffect, useState } from 'react'
-import { QRCodeSVG } from 'qrcode.react'
-import { CheckIcon, CopyIcon } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { fiatApi, type FiatConfig, type FiatOrder } from '@/api/fiat'
-import { formatMilli } from '@/lib/money'
 
 const POLL_MS = 2500
 const FIAT_PRESETS = [10, 25, 50, 100]
 const SAT_PRESETS = [1000, 5000, 10000, 25000]
 
+function embedUrl(url: string) {
+  const u = new URL(url)
+  u.searchParams.set('embed', '1')
+  return u.toString()
+}
+
 interface Props {
   config: FiatConfig
   currency: string
-  hasSavedCard: boolean
   onPaid: () => void
   onCancel?: () => void
 }
 
-export default function GatewayTopup({ config, currency, hasSavedCard, onPaid, onCancel }: Props) {
+export default function GatewayTopup({ config, currency, onPaid, onCancel }: Props) {
   const lightning = currency === 'sats'
   const presets = lightning ? SAT_PRESETS : FIAT_PRESETS
   const [amount, setAmount] = useState(presets[1])
-  const [saveCard, setSaveCard] = useState(false)
   const [email, setEmail] = useState('')
   const [order, setOrder] = useState<FiatOrder | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     if (!order || order.status !== 'pending') return
@@ -49,21 +49,13 @@ export default function GatewayTopup({ config, currency, hasSavedCard, onPaid, o
     e.preventDefault()
     setBusy(true); setError(null)
     try {
-      const created = await fiatApi.create({ currency, amount, save_card: saveCard, email: email || undefined })
+      const created = await fiatApi.create({ currency, amount, email: email || undefined })
       setOrder(created)
-      if (!lightning && created.pay_url) window.open(created.pay_url, '_blank', 'noopener')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not start the payment')
     } finally {
       setBusy(false)
     }
-  }
-
-  async function copy() {
-    if (!order?.bolt11) return
-    await navigator.clipboard.writeText(order.bolt11)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
   }
 
   function reset() { setOrder(null); setError(null); setBusy(false); onCancel?.() }
@@ -94,36 +86,18 @@ export default function GatewayTopup({ config, currency, hasSavedCard, onPaid, o
                 <Label className={label}>Email for the receipt</Label>
                 <Input type="email" value={email} onChange={e => setEmail(e.target.value)} className="h-9 font-mono" />
               </div>
-              <label className="flex items-center gap-2 font-mono text-[12px]">
-                <input type="checkbox" checked={saveCard} onChange={e => setSaveCard(e.target.checked)} /> Save this card for auto-reload{hasSavedCard ? ' (adds another card)' : ''}
-              </label>
             </>
           )}
-          <Button type="submit" disabled={busy} className={primary}>{busy ? '...' : lightning ? 'Create invoice' : 'Continue to payment'}</Button>
+          <Button type="submit" disabled={busy} className={primary}>{busy ? '...' : 'Continue to payment'}</Button>
           {onCancel && <div className="text-center"><button type="button" onClick={reset} className={cancel}>Cancel</button></div>}
         </form>
       )}
-      {order && !done && lightning && order.bolt11 && (
+      {order && !done && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between font-mono text-[12px]">
-            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{order.status}</span>
-            <span className="tabular-nums text-brand">{formatMilli(order.amount_milli, 'sats')}</span>
-          </div>
-          <a href={`lightning:${order.bolt11}`} className={`mx-auto block w-fit bg-white p-3 ${order.status !== 'pending' ? 'opacity-30' : ''}`}>
-            <QRCodeSVG value={order.bolt11.toUpperCase()} size={208} />
-          </a>
-          <div className="flex gap-2">
-            <Input readOnly value={order.bolt11} className="bg-surface font-mono text-[11px] text-muted-foreground" />
-            <Button type="button" variant="outline" size="icon" onClick={copy} className="shrink-0 border-border">{copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}</Button>
-          </div>
-          <div className="text-center"><button type="button" onClick={reset} className={cancel}>Close</button></div>
-        </div>
-      )}
-      {order && !done && !lightning && (
-        <div className="space-y-3">
-          {config.mode === 'sandbox' && <div className="font-mono text-[11px] text-warning">Sandbox mode: use a Revolut test card</div>}
-          <div className="font-mono text-[13px]">Pay {formatMilli(order.amount_milli, order.currency)} on the secure payment page. This page updates when it is paid.</div>
-          {order.pay_url && <a href={order.pay_url} target="_blank" rel="noopener noreferrer" className={`${primary} flex items-center justify-center`}>Open payment page</a>}
+          {config.mode === 'sandbox' && <div className="font-mono text-[11px] text-warning">Sandbox mode: payments are test payments</div>}
+          {order.pay_url && <iframe title="Payment" src={embedUrl(order.pay_url)} className="h-[560px] w-full border border-border bg-card" allow="payment" />}
+          <div className="font-mono text-[11px] text-muted-foreground">This page updates when it is paid.</div>
+          {order.pay_url && <a href={order.pay_url} target="_blank" rel="noopener noreferrer" className={`${cancel} block text-center`}>Open in a new tab</a>}
           <div className="text-center"><button type="button" onClick={reset} className={cancel}>Cancel</button></div>
         </div>
       )}

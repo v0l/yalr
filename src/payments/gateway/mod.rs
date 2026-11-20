@@ -86,7 +86,7 @@ pub struct TopupRequest<'a> {
     pub purpose: Option<&'a str>,
     pub currency: &'a str,
     pub amount_milli: i64,
-    pub save_card: bool,
+    pub lightning: bool,
     pub email: Option<&'a str>,
     pub public_id: Option<&'a str>,
 }
@@ -201,9 +201,6 @@ impl GatewayService {
     }
 
     pub async fn create_topup(&self, request: TopupRequest<'_>) -> Result<GatewayPayment, GatewayError> {
-        if request.save_card && request.email.is_none() {
-            return Err(GatewayError::Invalid("An email address is needed to save a card".into()));
-        }
         let public_id = request.public_id.map_or_else(random_hex, str::to_string);
         let order = self
             .db
@@ -226,8 +223,6 @@ impl GatewayService {
     }
 
     async fn send_payment(&self, order: &GatewayPayment, request: &TopupRequest<'_>) -> Result<(), GatewayError> {
-        let lightning = order.currency == SATS;
-        let method = if lightning { "lightning" } else { "revolut" };
         let body = CreatePayment {
             reference: Some(order.public_id.clone()),
             amount: remote_amount(&order.currency, order.amount_milli) as u64,
@@ -238,20 +233,18 @@ impl GatewayService {
             description: Some(format!("YALR balance top-up {}", order.public_id)),
             success_url: self.settings.success_url.clone(),
             cancel_url: self.settings.cancel_url.clone(),
-            methods: Some(vec![method.to_string()]),
+            methods: request.lightning.then(|| vec!["lightning".to_string()]),
             ..Default::default()
         };
         let created = self.client.create_payment_with_key(&body, &order.public_id).await?;
-        let attempt = CreateAttempt { save_method: request.save_card && !lightning, ..CreateAttempt::new(method) };
-        let view = self.client.create_attempt(&created.id, &attempt).await?;
+        let view = if request.lightning { self.client.create_attempt(&created.id, &CreateAttempt::new("lightning")).await? } else { created };
         let (bolt11, payment_hash) = lightning_details(&view);
-        let pay_url = if lightning { Some(view.pay_url.clone()) } else { checkout_url(&view).or(Some(view.pay_url.clone())) };
         self.db
             .attach_remote_payment(
                 order.id,
                 RemotePayment {
                     gateway_payment_id: &view.id,
-                    pay_url: pay_url.as_deref(),
+                    pay_url: Some(&view.pay_url),
                     bolt11: bolt11.as_deref(),
                     payment_hash: payment_hash.as_deref(),
                     expires_at: expires(&view),
@@ -261,7 +254,11 @@ impl GatewayService {
         Ok(())
     }
 
-    pub async fn topup(&self, user_id: i64, currency: &str, amount_milli: i64, save_card: bool, email: Option<&str>) -> Result<GatewayPayment, GatewayError> {
-        self.create_topup(TopupRequest { user_id, kind: KIND_TOPUP, purpose: None, currency, amount_milli, save_card, email, public_id: None }).await
+    pub async fn topup(&self, user_id: i64, currency: &str, amount_milli: i64, email: Option<&str>) -> Result<GatewayPayment, GatewayError> {
+        self.create_topup(TopupRequest { user_id, kind: KIND_TOPUP, purpose: None, currency, amount_milli, lightning: false, email, public_id: None }).await
+    }
+
+    pub async fn lightning_topup(&self, user_id: i64, amount_milli: i64) -> Result<GatewayPayment, GatewayError> {
+        self.create_topup(TopupRequest { user_id, kind: KIND_TOPUP, purpose: None, currency: SATS, amount_milli, lightning: true, email: None, public_id: None }).await
     }
 }

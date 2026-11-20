@@ -46,28 +46,87 @@ async fn topup_routes_are_absent_without_the_gateway_section() {
 }
 
 #[tokio::test]
-async fn a_card_topup_returns_the_checkout_url_and_credits_nothing_yet() {
+async fn a_fiat_topup_is_created_by_amount_only_and_returns_the_pay_page() {
     let (fake, t) = setup().await;
     let (status, body) = topup(&t, r#"{"currency":"EUR","amount":10}"#).await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["status"], "pending");
     assert_eq!(body["currency"], "eur");
     assert_eq!(body["amount_milli"], 1_000_000);
-    assert!(body["pay_url"].as_str().unwrap().starts_with("https://checkout.example/"));
+    assert_eq!(body["pay_url"], format!("{}/pay/gw1", fake.url));
+    assert!(body["bolt11"].is_null());
     let sent = fake.payment("gw1");
-    assert_eq!((sent.amount, sent.currency.as_str(), sent.method.as_deref()), (1000, "EUR", Some("revolut")));
+    assert_eq!((sent.amount, sent.currency.as_str(), sent.method.as_deref(), sent.methods), (1000, "EUR", None, None));
     assert_eq!(sent.customer_ref, format!("user-{}", alice_id(&t).await));
+    assert_eq!(fake.state.lock().unwrap().requests, vec!["POST /v1/payments"]);
     assert_eq!(t.state.db.get_currency_balance(alice_id(&t).await, "eur").await.unwrap(), 0);
 }
 
 #[tokio::test]
-async fn a_lightning_topup_asks_the_gateway_for_btc_msats_and_returns_the_invoice() {
+async fn a_sats_topup_asks_for_btc_msats_without_a_method_or_attempt() {
     let (fake, t) = setup().await;
     let (status, body) = topup(&t, r#"{"currency":"sats","amount":2500}"#).await;
     assert_eq!(status, 200, "{body}");
-    assert_eq!(body["bolt11"], "lnbcrtgw1");
+    assert_eq!(body["pay_url"], format!("{}/pay/gw1", fake.url));
+    assert!(body["bolt11"].is_null() && body["payment_hash"].is_null());
     let sent = fake.payment("gw1");
-    assert_eq!((sent.amount, sent.currency.as_str(), sent.method.as_deref()), (2_500_000, "BTC", Some("lightning")));
+    assert_eq!((sent.amount, sent.currency.as_str(), sent.method.as_deref(), sent.methods), (2_500_000, "BTC", None, None));
+    assert_eq!(fake.state.lock().unwrap().requests, vec!["POST /v1/payments"]);
+}
+
+#[tokio::test]
+async fn a_topup_paid_on_chain_credits_once() {
+    let (fake, t) = setup().await;
+    topup(&t, r#"{"currency":"sats","amount":1000}"#).await;
+    fake.state.lock().unwrap().payments[0].method = Some("onchain".into());
+    assert_eq!(paid_webhook(&t, &fake, "gw1").await, 200);
+    assert_eq!(paid_webhook(&t, &fake, "gw1").await, 200);
+    let (header, body) = fake.event("payment.late_payment", "gw1");
+    assert_eq!(deliver(&t, &header, &body).await, 200);
+    assert_eq!(t.state.db.get_currency_balance(alice_id(&t).await, "sats").await.unwrap(), 1_000_000);
+}
+
+#[tokio::test]
+async fn a_pending_row_with_a_bolt11_from_before_still_settles() {
+    let (fake, t) = setup().await;
+    let user = alice_id(&t).await;
+    let order = t
+        .state
+        .db
+        .create_gateway_payment(crate::db::gateway_payments::NewGatewayPayment {
+            public_id: "old1",
+            user_id: user,
+            kind: "topup",
+            purpose: None,
+            currency: "sats",
+            amount_milli: 1_000_000,
+        })
+        .await
+        .unwrap();
+    t.state
+        .db
+        .attach_remote_payment(order.id, crate::db::gateway_payments::RemotePayment {
+            gateway_payment_id: "gw1",
+            pay_url: None,
+            bolt11: Some("lnbcold"),
+            payment_hash: Some("h"),
+            expires_at: None,
+        })
+        .await
+        .unwrap();
+    fake.state.lock().unwrap().payments.push(crate::payments::gateway::fake::FakePayment {
+        id: "gw1".into(),
+        amount: 1_000_000,
+        currency: "BTC".into(),
+        status: "pending".into(),
+        reference: "old1".into(),
+        customer_ref: format!("user-{user}"),
+        method: Some("lightning".into()),
+        methods: Some(vec!["lightning".into()]),
+        save_method: false,
+    });
+    assert_eq!(paid_webhook(&t, &fake, "gw1").await, 200);
+    assert_eq!(t.state.db.get_currency_balance(user, "sats").await.unwrap(), 1_000_000);
 }
 
 #[tokio::test]
@@ -80,7 +139,6 @@ async fn currency_and_amount_limits_are_enforced_before_any_payment_is_created()
         r#"{"currency":"eur","amount":10.005}"#,
         r#"{"currency":"eur","amount":-10}"#,
         r#"{"currency":"sats","amount":0.5}"#,
-        r#"{"currency":"eur","amount":10,"save_card":true}"#,
     ] {
         assert_eq!(topup(&t, body).await.0, 400, "{body}");
     }
@@ -159,6 +217,7 @@ async fn expired_and_unknown_payments_are_handled_quietly() {
         reference: "x".into(),
         customer_ref: "x".into(),
         method: None,
+        methods: None,
         save_method: false,
     });
     let (header, body) = fake.event("payment.paid", "other");

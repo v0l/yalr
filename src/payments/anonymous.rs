@@ -186,7 +186,7 @@ pub async fn create_invoice(
             purpose: Some(body.purpose.as_str()),
             currency: SATS,
             amount_milli: body.amount_sats as i64 * 1000,
-            save_card: false,
+            lightning: true,
             email: None,
             public_id: Some(&public_id),
         })

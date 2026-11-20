@@ -302,7 +302,7 @@ pub async fn create_lightning_invoice(
         Err(e) => return error_response(StatusCode::BAD_REQUEST, e.to_string()),
     };
 
-    match gateway.topup(user.id, crate::db::SATS, amount_milli, false, None).await {
+    match gateway.lightning_topup(user.id, amount_milli).await {
         Ok(payment) => {
             use crate::payments::instructions::{PaymentInstruction, ProviderInfo, TopupResponse};
             let (Some(bolt11), Some(payment_hash)) = (payment.bolt11.clone(), payment.payment_hash.clone()) else {

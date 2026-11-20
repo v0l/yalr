@@ -67,7 +67,7 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const fiatApi = {
   config: () => call<FiatConfig>('/account/topup/config'),
-  create: (body: { currency: string; amount: number; save_card: boolean; email?: string }) =>
+  create: (body: { currency: string; amount: number; email?: string }) =>
     call<FiatOrder>('/account/topup', { method: 'POST', body: JSON.stringify(body) }),
   status: (id: string) => call<FiatOrder>(`/account/topup/${id}`),
   history: () => call<FiatOrder[]>('/account/topup'),

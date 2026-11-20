@@ -61,8 +61,6 @@ pub async fn config(State(state): State<Arc<AppState>>, _user: UserExtractor) ->
 pub struct CreateTopup {
     pub currency: String,
     pub amount: f64,
-    #[serde(default)]
-    pub save_card: bool,
     pub email: Option<String>,
 }
 
@@ -75,7 +73,7 @@ pub async fn create_topup(
     let currency = normalize_currency(&req.currency).filter(|c| s.currency_allowed(c)).ok_or_else(|| bad_request("Unsupported currency"))?;
     let amount_milli = s.check_amount(&currency, req.amount).map_err(failed)?;
     let email = req.email.as_deref().map(str::trim).filter(|e| !e.is_empty());
-    let created = s.topup(auth.user.id, &currency, amount_milli, req.save_card, email).await.map_err(failed)?;
+    let created = s.topup(auth.user.id, &currency, amount_milli, email).await.map_err(failed)?;
     Ok(Json(created))
 }
 

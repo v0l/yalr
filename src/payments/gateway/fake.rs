@@ -19,6 +19,7 @@ pub struct FakePayment {
     pub reference: String,
     pub customer_ref: String,
     pub method: Option<String>,
+    pub methods: Option<Vec<String>>,
     pub save_method: bool,
 }
 
@@ -79,6 +80,7 @@ async fn create(State((state, base)): State<Shared>, headers: HeaderMap, Json(bo
         reference: body["reference"].as_str().unwrap_or_default().to_string(),
         customer_ref: body["customer_ref"].as_str().unwrap_or_default().to_string(),
         method: None,
+        methods: body["methods"].as_array().map(|m| m.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()),
         save_method: false,
     };
     s.idempotency.insert(key, id);
@@ -144,6 +146,7 @@ async fn charge(State((state, base)): State<Shared>, Path(_): Path<i64>, headers
         reference: body["reference"].as_str().unwrap_or_default().to_string(),
         customer_ref: body["customer_ref"].as_str().unwrap_or_default().to_string(),
         method: Some("revolut".into()),
+        methods: None,
         save_method: false,
     };
     s.idempotency.insert(key, id);
