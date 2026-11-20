@@ -1,0 +1,10 @@
+{
+  "currency": "eur",
+  "enabled": true,
+  "threshold_milli": 500000,
+  "amount_milli": 2000000,
+  "monthly_cap_milli": 10000000,
+  "payment_method_id": 4,
+  "consecutive_failures": 0,
+  "disabled_reason": null
+}

@@ -62,6 +62,8 @@ mod tenant_tests;
 #[cfg(test)]
 mod topup_tests;
 #[cfg(test)]
+mod ts_contract_tests;
+#[cfg(test)]
 mod approval_tenant_tests;
 pub mod usage;
 pub mod users;

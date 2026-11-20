@@ -4,7 +4,7 @@ import { BalanceAdjustDialog } from '@/components/BalanceAdjustDialog'
 import type { BalanceAdjustKind } from '../types'
 import { formatMilli, formatPrice } from '@/lib/money'
 import { api } from '../api/client'
-import type { UserBalanceEntry, BalanceTransaction, FailoverPenaltyTotal, LightningInvoice, ModelPricingEntry, Provider } from '../types'
+import type { UserBalanceEntry, BalanceTransaction, FailoverPenaltyTotal, GatewayPayment, ModelPricingEntry, Provider } from '../types'
 import { currentRole } from '@/lib/role'
 import BalancePanel from '@/components/BalancePanel'
 import FiatOrdersTable from '@/components/fiat/FiatOrdersTable'
@@ -62,16 +62,6 @@ function txTypeBadge(type: string) {
   return <Badge className="font-mono text-[9px] tracking-wider uppercase px-1.5 py-0" style={{ background: `${m.c}10`, color: m.t, borderColor: `${m.b}30` }}>{m.l}</Badge>
 }
 
-function invoiceStatusBadge(status: string) {
-  switch (status) {
-    case 'pending': return <Badge className="font-mono text-[10px] uppercase tracking-wider bg-warning/15 text-warning border-warning/30">PENDING</Badge>
-    case 'paid': return <Badge className="font-mono text-[10px] uppercase tracking-wider bg-brand/15 text-brand border-brand/30">PAID</Badge>
-    case 'expired': return <Badge className="font-mono text-[10px] uppercase tracking-wider bg-secondary text-muted-foreground border-border">EXPIRED</Badge>
-    case 'cancelled': return <Badge className="font-mono text-[10px] uppercase tracking-wider bg-secondary text-muted-foreground border-border">CANCELLED</Badge>
-    default: return <Badge className="font-mono text-[10px] uppercase tracking-wider bg-secondary text-muted-foreground border-border">{status.toUpperCase()}</Badge>
-  }
-}
-
 /* ═══════════════════════════════════════════════════════════════ */
 /*  Payments Page                                                 */
 /* ═══════════════════════════════════════════════════════════════ */
@@ -89,7 +79,7 @@ export default function Payments() {
   const [balances, setBalances] = useState<UserBalanceEntry[]>([])
   const [transactions, setTransactions] = useState<BalanceTransaction[]>([])
   const [failovers, setFailovers] = useState<FailoverPenaltyTotal[]>([])
-  const [invoices, setInvoices] = useState<LightningInvoice[]>([])
+  const [invoices, setInvoices] = useState<GatewayPayment[]>([])
   const [modelPricings, setModelPricings] = useState<ModelPricingEntry[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
   const { isAdmin } = currentRole()
@@ -392,38 +382,7 @@ export default function Payments() {
 
       {/* ══ Invoices ══════════════════════════════════════════════ */}
       {activeTab === 'invoices' && (
-        <div className="panel">
-          <div className="overflow-x-auto">
-            <table className="w-full table-scan">
-              <thead>
-                <tr className="border-b border-border/50 text-left">
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">User</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Amount</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Status</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Created</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Expires</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Paid At</th>
-                  <th className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground px-4 py-2.5 font-medium">Hash</th>
-                </tr>
-              </thead>
-              <tbody>
-                {invoices.length === 0 ? (
-                  <tr><td colSpan={7} className="px-4 py-16 text-center font-mono text-[13px] text-muted-foreground">{'>'} NO INVOICES</td></tr>
-                ) : invoices.map(inv => (
-                  <tr key={inv.id} className="border-b border-border/50 hover:bg-surface">
-                    <td className="px-4 py-3 font-mono text-[12px] text-muted-foreground">ID:{inv.user_id}</td>
-                    <td className="px-4 py-3 font-mono text-[13px] tabular-nums">{inv.amount_sats.toLocaleString()} sats</td>
-                    <td className="px-4 py-3">{invoiceStatusBadge(inv.status)}</td>
-                    <td className="px-4 py-3 font-mono text-[12px] text-muted-foreground">{formatDate(inv.created_at)}</td>
-                    <td className="px-4 py-3 font-mono text-[12px] text-muted-foreground">{inv.expires_at ? formatDate(inv.expires_at) : '—'}</td>
-                    <td className="px-4 py-3 font-mono text-[12px] text-muted-foreground">{inv.paid_at ? formatDate(inv.paid_at) : '—'}</td>
-                    <td className="px-4 py-3 font-mono text-[11px] text-muted-foreground truncate max-w-24" title={inv.payment_hash}>{inv.payment_hash.slice(0, 12)}…</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <FiatOrdersTable orders={invoices} showUser empty="NO INVOICES" />
       )}
 
       <BalanceAdjustDialog kind={adjustKind} onClose={() => setAdjustKind(null)} onDone={m => { setSuccessMessage(m); loadAll() }} onError={setError} />

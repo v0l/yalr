@@ -1,0 +1,1 @@
+{ "mode": "sandbox", "currencies": ["eur", "usd", "sats"], "min_amount": 5, "max_amount": 500 }

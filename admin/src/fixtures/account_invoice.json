@@ -1,0 +1,8 @@
+{
+  "invoice_id": "inv_abc123",
+  "purpose": "topup",
+  "amount_sats": 2100,
+  "status": "paid",
+  "created_at": "2025-01-02T03:04:05Z",
+  "paid_at": "2025-01-02T03:06:05Z"
+}
