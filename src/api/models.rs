@@ -344,10 +344,21 @@ async fn models_for(state: &std::sync::Arc<AppState>, user: &crate::db::User) ->
         } else {
             crate::api::limits::routing_limits(&state, &rc.name).await
         };
-        let context_length = configured_context.or(upstream.context_length.map(|v| v as i32));
-        let max_output_tokens = configured_output.or(upstream.max_output_tokens.map(|v| v as i32));
-        let pricing = match state.payments_state.as_ref() {
-            Some(ps) => {
+        let pool = if state.db.get_model_pricing(&rc.name).await.ok().flatten().is_none() {
+            crate::api::pool_models::pool_entry(&state, &rc.name).await
+        } else {
+            None
+        };
+        let context_length = configured_context
+            .or(upstream.context_length.map(|v| v as i32))
+            .or(pool.as_ref().and_then(|p| p.context_length));
+        let max_output_tokens = configured_output
+            .or(upstream.max_output_tokens.map(|v| v as i32))
+            .or(pool.as_ref().and_then(|p| p.max_output_tokens));
+        let pool_price = pool.and_then(|p| p.pricing);
+        let pricing = match (pool_price, state.payments_state.as_ref()) {
+            (Some(price), Some(_)) => Some(price),
+            (None, Some(ps)) => {
                 let p = ps.pricing_resolver.resolve(&rc.name).await;
                 Some(ModelPricing {
                     prompt: p.price_per_1m_input_sats,
@@ -358,7 +369,7 @@ async fn models_for(state: &std::sync::Arc<AppState>, user: &crate::db::User) ->
                     unit: "1M tokens".to_string(),
                 })
             }
-            None => None,
+            (_, None) => None,
         };
         all_models.push(ModelEntry {
             id: rc.name.clone(),

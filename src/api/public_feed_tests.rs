@@ -144,6 +144,28 @@ async fn public_feed_shows_the_cheapest_provider_price_and_the_largest_limits() 
 }
 
 #[tokio::test]
+async fn a_routing_config_named_like_a_pool_still_reports_the_cheapest_price_and_limits() {
+    let t = production().await;
+    t.state
+        .db
+        .create_routing_config(crate::db::NewRoutingConfig {
+            name: MODEL.into(),
+            strategy: "round_robin".into(),
+            health_check_enabled: false,
+            health_check_interval_seconds: 30,
+            health_check_timeout_seconds: 5,
+        })
+        .await
+        .unwrap();
+    let feed = anonymous(&t).await;
+    let m = &feed["data"][0];
+    assert_eq!(m["id"], MODEL);
+    assert_eq!(m["sats_pricing"]["prompt"], 0.00042);
+    assert_eq!(m["sats_pricing"]["request"], 1.0);
+    assert_eq!(m["context_length"], 1_000_000);
+}
+
+#[tokio::test]
 async fn public_feed_only_claims_image_input_when_a_provider_lists_it() {
     let t = production().await;
     t.state.config.router.remove_provider("dear").await;

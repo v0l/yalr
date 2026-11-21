@@ -93,45 +93,51 @@ pub async fn pool_entries(
     state: &AppState,
     allowed: impl Fn(&str) -> bool,
 ) -> Vec<ModelEntry> {
-    let router = &state.config.router;
     let mut entries = Vec::new();
-    for model in router.full_name_models().await {
+    for model in state.config.router.full_name_models().await {
         if !allowed(&model) {
             continue;
         }
-        let members = router.full_name_providers(&model).await;
-        if members.is_empty() {
-            continue;
+        if let Some(entry) = pool_entry(state, &model).await {
+            entries.push(entry);
         }
-        let options = match state.payments_state.as_ref() {
-            Some(ps) => ps.pricing_resolver.options(&model).await,
-            None => Vec::new(),
-        };
-        let ranges = price_ranges(&options);
-        let member_ids: Vec<i64> = members.iter().map(|(_, id, _)| *id).collect();
-        let rows: Vec<ModelPricingRow> = state
-            .db
-            .list_model_pricings_by_name(&model)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|r| r.is_advertised && r.provider_id.is_some_and(|id| member_ids.contains(&id)))
-            .collect();
-        let slugs: Vec<&str> = members.iter().map(|(slug, _, _)| slug.as_str()).collect();
-        entries.push(ModelEntry {
-            id: model.clone(),
-            object: "model".to_string(),
-            created: rows.iter().map(|r| r.created_at.timestamp()).min().unwrap_or(0),
-            owned_by: "pool".to_string(),
-            pricing: cheapest(&options),
-            context_length: rows.iter().filter_map(|r| r.context_window).max(),
-            max_output_tokens: rows.iter().filter_map(|r| r.max_output_tokens).max(),
-            architecture: pool_architecture(state, &model, &slugs).await,
-            provider_count: Some(members.len()),
-            price_range: (!ranges.is_empty()).then_some(ranges),
-        });
     }
     entries
+}
+
+pub async fn pool_entry(state: &AppState, model: &str) -> Option<ModelEntry> {
+    let router = &state.config.router;
+    let members = router.full_name_providers(model).await;
+    if members.is_empty() {
+        return None;
+    }
+    let options = match state.payments_state.as_ref() {
+        Some(ps) => ps.pricing_resolver.options(model).await,
+        None => Vec::new(),
+    };
+    let ranges = price_ranges(&options);
+    let member_ids: Vec<i64> = members.iter().map(|(_, id, _)| *id).collect();
+    let rows: Vec<ModelPricingRow> = state
+        .db
+        .list_model_pricings_by_name(model)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.is_advertised && r.provider_id.is_some_and(|id| member_ids.contains(&id)))
+        .collect();
+    let slugs: Vec<&str> = members.iter().map(|(slug, _, _)| slug.as_str()).collect();
+    Some(ModelEntry {
+        id: model.to_string(),
+        object: "model".to_string(),
+        created: rows.iter().map(|r| r.created_at.timestamp()).min().unwrap_or(0),
+        owned_by: "pool".to_string(),
+        pricing: cheapest(&options),
+        context_length: rows.iter().filter_map(|r| r.context_window).max(),
+        max_output_tokens: rows.iter().filter_map(|r| r.max_output_tokens).max(),
+        architecture: pool_architecture(state, model, &slugs).await,
+        provider_count: Some(members.len()),
+        price_range: (!ranges.is_empty()).then_some(ranges),
+    })
 }
 
 #[cfg(test)]
