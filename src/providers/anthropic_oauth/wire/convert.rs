@@ -213,14 +213,6 @@ fn mark_cache_breakpoint(message: &mut AnthropicMessage) {
     }
 }
 
-fn default_max_tokens(model: &str) -> u32 {
-    if model.contains("-5-5") {
-        32768
-    } else {
-        4096
-    }
-}
-
 pub fn build_request(
     request: &CreateChatCompletionRequest,
     stream: bool,
@@ -279,11 +271,7 @@ pub fn build_request(
     }
     MessagesRequest {
         model: request.model.clone(),
-        #[allow(deprecated)]
-        max_tokens: request
-            .max_completion_tokens
-            .or(request.max_tokens)
-            .unwrap_or_else(|| default_max_tokens(&request.model)),
+        max_tokens: crate::providers::request::required_max_tokens(request, None),
         messages,
         system,
         temperature: request.temperature,
@@ -845,9 +833,9 @@ mod tests {
     }
 
     #[test]
-    fn build_request_default_max_tokens_by_generation() {
+    fn build_request_without_max_tokens_sends_the_fallback() {
         let base = CreateChatCompletionRequest {
-            model: "claude-sonnet-5-5".into(),
+            model: "any-model".into(),
             messages: vec![ChatCompletionRequestMessage::User(
                 async_openai::types::chat::ChatCompletionRequestUserMessage {
                     content: ChatCompletionRequestUserMessageContent::Text("hi".into()),
@@ -856,11 +844,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        assert_eq!(build_request(&base, false, CLAUDE_CODE_VERSION).max_tokens, 32768);
-
-        let mut older = base.clone();
-        older.model = "claude-3-5-haiku-20241022".into();
-        assert_eq!(build_request(&older, false, CLAUDE_CODE_VERSION).max_tokens, 4096);
+        assert_eq!(build_request(&base, false, CLAUDE_CODE_VERSION).max_tokens, 128_000);
 
         let mut explicit = base.clone();
         explicit.max_completion_tokens = Some(128);
@@ -942,7 +926,7 @@ mod tests {
         };
         let body = build_request(&req, true, CLAUDE_CODE_VERSION);
         assert!(body.stream);
-        assert_eq!(body.max_tokens, 4096);
+        assert_eq!(body.max_tokens, 128_000);
         // system[0] is now the billing header; identity block follows.
         assert!(body.system[0].text.starts_with(BILLING_HEADER_MARKER));
         assert_eq!(body.system[1].text, CLAUDE_CODE_SYSTEM);

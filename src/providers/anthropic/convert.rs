@@ -269,6 +269,7 @@ pub(super) fn build_anthropic_request(
     system: Option<String>,
     mut messages: Vec<async_anthropic::types::Message>,
     request: &CreateChatCompletionRequest,
+    max_tokens: u32,
 ) -> async_anthropic::types::CreateMessagesRequest {
     let mut builder = async_anthropic::types::CreateMessagesRequestBuilder::default();
     builder.model(&request.model);
@@ -285,8 +286,6 @@ pub(super) fn build_anthropic_request(
     }
 
     builder.messages(messages);
-    #[allow(deprecated)]
-    let max_tokens = request.max_completion_tokens.or(request.max_tokens).unwrap_or(4096);
     builder.max_tokens(max_tokens as i32);
 
     if let Some(temp) = request.temperature {
@@ -543,7 +542,7 @@ mod tests {
         // the last content block of the last message gets a cache breakpoint
         // while earlier blocks do not.
         set_prompt_cache_enabled(true);
-        let built = build_anthropic_request(Some("You are helpful".to_string()), two_user_msgs(), &request);
+        let built = build_anthropic_request(Some("You are helpful".to_string()), two_user_msgs(), &request, 4096);
         match built.system.expect("system should be set") {
             async_anthropic::types::SystemPrompt::Blocks(blocks) => {
                 assert_eq!(blocks.len(), 1);
@@ -562,7 +561,7 @@ mod tests {
 
         // Disabled: system stays a plain string and no message is marked.
         set_prompt_cache_enabled(false);
-        let built = build_anthropic_request(Some("You are helpful".to_string()), two_user_msgs(), &request);
+        let built = build_anthropic_request(Some("You are helpful".to_string()), two_user_msgs(), &request, 4096);
         assert!(matches!(
             built.system,
             Some(async_anthropic::types::SystemPrompt::Text(_))
@@ -600,7 +599,7 @@ mod tests {
             ..Default::default()
         };
 
-        let built = build_anthropic_request(None, vec![], &request);
+        let built = build_anthropic_request(None, vec![], &request, 4096);
         let tools = built.tools.expect("tools should be set");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "get_weather");
@@ -618,7 +617,7 @@ mod tests {
         )
         .unwrap();
         let (system, messages) = convert_messages(&request.messages);
-        let body = serde_json::to_value(build_anthropic_request(system, messages, &request)).unwrap();
+        let body = serde_json::to_value(build_anthropic_request(system, messages, &request, request.required_max_tokens(None))).unwrap();
         assert_eq!(body["max_tokens"], 20);
         assert!(body.get("temperature").is_none());
 
@@ -627,8 +626,28 @@ mod tests {
         )
         .unwrap();
         let (system, messages) = convert_messages(&request.messages);
-        let body = serde_json::to_value(build_anthropic_request(system, messages, &request)).unwrap();
+        let body = serde_json::to_value(build_anthropic_request(system, messages, &request, request.required_max_tokens(None))).unwrap();
         assert!((body["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+    }
+
+    fn max_tokens_sent(body: &str, configured: Option<u32>) -> serde_json::Value {
+        let request: crate::providers::ChatRequest = serde_json::from_str(body).unwrap();
+        let request = request.with_model_max_output(configured);
+        let (system, messages) = convert_messages(&request.messages);
+        let max_tokens = request.required_max_tokens(None);
+        serde_json::to_value(build_anthropic_request(system, messages, &request, max_tokens)).unwrap()["max_tokens"].clone()
+    }
+
+    #[test]
+    fn missing_max_tokens_uses_the_model_maximum() {
+        let bare = r#"{"model":"any-model","messages":[{"role":"user","content":"hi"}]}"#;
+        assert_eq!(max_tokens_sent(bare, Some(128_000)), 128_000);
+        assert_eq!(max_tokens_sent(bare, None), 128_000);
+        let asked = r#"{"model":"any-model","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}"#;
+        assert_eq!(max_tokens_sent(asked, Some(128_000)), 20);
+        let above = r#"{"model":"any-model","max_completion_tokens":200000,"messages":[{"role":"user","content":"hi"}]}"#;
+        assert_eq!(max_tokens_sent(above, Some(128_000)), 200_000);
+        assert_eq!(max_tokens_sent(bare, Some(9_000)), 9_000);
     }
 
 }

@@ -35,6 +35,18 @@ pub struct ChatRequest {
     trace: Option<crate::request_log::Trace>,
     session_header: Option<String>,
     preference: Option<crate::router::preference::Preference>,
+    model_max_output: Option<u32>,
+}
+
+pub const FALLBACK_MAX_OUTPUT_TOKENS: u32 = 128_000;
+
+#[allow(deprecated)]
+pub fn required_max_tokens(request: &ChatCompletionRequest, model_max: Option<u32>) -> u32 {
+    request
+        .max_completion_tokens
+        .or(request.max_tokens)
+        .or(model_max)
+        .unwrap_or(FALLBACK_MAX_OUTPUT_TOKENS)
 }
 
 /// Fields pulled out before the typed parse because their client shapes are
@@ -114,6 +126,7 @@ impl ChatRequest {
             trace: None,
             session_header: None,
             preference,
+            model_max_output: None,
         })
     }
 
@@ -193,6 +206,7 @@ impl From<ChatCompletionRequest> for ChatRequest {
             trace: None,
             session_header: None,
             preference: None,
+            model_max_output: None,
         }
     }
 }
@@ -230,6 +244,20 @@ impl ChatRequest {
 
     pub fn body_defaults(&self) -> &Map<String, Value> {
         &self.body_defaults
+    }
+
+    #[allow(deprecated)]
+    pub fn client_max_tokens(&self) -> Option<u32> {
+        self.inner.max_completion_tokens.or(self.inner.max_tokens)
+    }
+
+    pub fn with_model_max_output(mut self, max_output: Option<u32>) -> Self {
+        self.model_max_output = max_output;
+        self
+    }
+
+    pub fn required_max_tokens(&self, listed: Option<u32>) -> u32 {
+        required_max_tokens(&self.inner, self.model_max_output.or(listed))
     }
 
     pub fn requested_effort(&self) -> Option<String> {

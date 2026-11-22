@@ -98,6 +98,10 @@ impl AnthropicOAuthProvider {
         }
     }
 
+    fn cached_max_output(&self, model: &str) -> Option<u32> {
+        self.limits.read().ok()?.get(model).and_then(|l| l.max_output_tokens)
+    }
+
     fn models_url(&self) -> String {
         let base = self.base_url.trim_end_matches('/');
         if base.ends_with("/v1") {
@@ -220,6 +224,7 @@ impl Provider for AnthropicOAuthProvider {
             .await
             .map_err(|e| ProviderError::Authentication(e.to_string()))?;
         let mut body = build_request(request, false, &self.cc_version);
+        body.max_tokens = request.required_max_tokens(self.cached_max_output(&request.model));
         apply_thinking(&mut body, request);
         sanitize(&mut body);
         let body_bytes = serde_json::to_vec(&body).map_err(|e| ProviderError::Other(e.into()))?;
@@ -314,6 +319,7 @@ impl Provider for AnthropicOAuthProvider {
     ) -> Result<BoxStream<'static, Result<StreamingChunk, ProviderError>>, ProviderError> {
         crate::providers::anthropic_media::check_media(&request.messages)?;
         let mut body = build_request(request, true, &self.cc_version);
+        body.max_tokens = request.required_max_tokens(self.cached_max_output(&request.model));
         apply_thinking(&mut body, request);
         sanitize(&mut body);
         let trace = request.trace().cloned();
@@ -667,6 +673,46 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
         let haiku = provider.listed_limits("claude-haiku-5-5").await.unwrap();
         assert_eq!((haiku.context_length, haiku.max_output_tokens), (Some(200_000), None));
         assert!(provider.listed_limits("claude-old").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn missing_max_tokens_sends_the_configured_then_listed_maximum() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "any-model", "type": "model", "max_input_tokens": 200_000, "max_tokens": 64_000}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"id":"msg_1","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":3}}"#,
+            ))
+            .mount(&server)
+            .await;
+        let provider = provider(&server).await;
+        provider.listed_limits("any-model").await;
+        let sent = |body: &str, configured: Option<u32>| {
+            let request: ChatRequest = serde_json::from_str(body).unwrap();
+            let trace = Trace::new();
+            trace.begin_attempt("Claude Max");
+            let request = request.with_model_max_output(configured).with_trace(trace.clone());
+            let provider = &provider;
+            async move {
+                provider.chat_completions(&request).await.unwrap();
+                let body = trace.upstream().request_body.unwrap();
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["max_tokens"].clone()
+            }
+        };
+        let bare = r#"{"model":"any-model","messages":[{"role":"user","content":"hi"}]}"#;
+        assert_eq!(sent(bare, Some(128_000)).await, 128_000);
+        assert_eq!(sent(bare, None).await, 64_000);
+        let asked = r#"{"model":"any-model","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}"#;
+        assert_eq!(sent(asked, Some(128_000)).await, 20);
+        let unknown = r#"{"model":"other-model","messages":[{"role":"user","content":"hi"}]}"#;
+        assert_eq!(sent(unknown, None).await, 128_000);
     }
 
     #[tokio::test]

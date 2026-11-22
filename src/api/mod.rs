@@ -18,6 +18,7 @@ pub mod topup;
 pub mod health;
 pub mod images;
 pub mod limits;
+pub mod max_output;
 pub mod metered;
 pub mod market;
 pub mod modalities;

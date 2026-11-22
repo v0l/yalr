@@ -775,6 +775,27 @@ mod tests {
     }
 
     #[test]
+    fn passthrough_sends_no_max_tokens_when_the_client_sent_none() {
+        let request = ChatRequest::from_value(serde_json::json!({
+            "model": "any-model",
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap()
+        .with_model_max_output(Some(128_000));
+        let value = to_wire_value(&request).unwrap();
+        assert!(value.get("max_tokens").is_none());
+        assert!(value.get("max_completion_tokens").is_none());
+
+        let value = wire(serde_json::json!({
+            "model": "any-model",
+            "max_tokens": 20,
+            "messages": [{"role": "user", "content": "hi"}]
+        }));
+        assert_eq!(value["max_tokens"], 20);
+        assert!(value.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
     fn v4_preserves_client_sent_reasoning_through_the_typed_round_trip() {
         let value = wire(serde_json::json!({
             "model": "deepseek/deepseek-v4-pro",

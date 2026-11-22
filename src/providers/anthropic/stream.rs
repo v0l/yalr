@@ -13,10 +13,11 @@ use super::response::map_anthropic_error;
 pub(super) fn chat_completions_stream(
     client: async_anthropic::Client,
     request: &CreateChatCompletionRequest,
+    max_tokens: u32,
 ) -> Result<BoxStream<'static, Result<StreamingChunk, ProviderError>>, ProviderError> {
     crate::providers::anthropic_media::check_media(&request.messages)?;
     let (system, messages) = convert_messages(&request.messages);
-    let mut anthropic_request = build_anthropic_request(system, messages, request);
+    let mut anthropic_request = build_anthropic_request(system, messages, request, max_tokens);
     anthropic_request.stream = true;
 
     let model_name = request.model.clone();

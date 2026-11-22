@@ -108,7 +108,7 @@ impl Provider for AnthropicProvider {
     ) -> Result<crate::providers::ChatResponse, ProviderError> {
         crate::providers::anthropic_media::check_media(&request.messages)?;
         let (system, messages) = convert_messages(&request.messages);
-        let anthropic_request = build_anthropic_request(system, messages, request);
+        let anthropic_request = build_anthropic_request(system, messages, request, request.required_max_tokens(None));
 
         let response = self
             .client
@@ -127,7 +127,7 @@ impl Provider for AnthropicProvider {
         BoxStream<'static, Result<StreamingChunk, ProviderError>>,
         ProviderError,
     > {
-        stream::chat_completions_stream(self.client.clone(), request)
+        stream::chat_completions_stream(self.client.clone(), request, request.required_max_tokens(None))
     }
 
     async fn listed_modalities(&self, model: &str) -> Option<ListedModalities> {

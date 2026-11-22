@@ -99,6 +99,7 @@ pub async fn chat_handler(
     crate::api::modalities::require_modalities(&state, &request.model, &input, &output).await?;
 
     let request = request.with_session_header(session_header(&headers));
+    let request = crate::api::max_output::with_configured_max_output(&state.db, request).await;
     let log = begin_log(&state, &headers, peer.map(|p| p.0), &authenticated_user, &request, &body);
 
     if request.stream.unwrap_or(false) {
