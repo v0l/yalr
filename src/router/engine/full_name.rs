@@ -12,11 +12,122 @@ pub(crate) struct IndexedModel {
     pub(crate) status: String,
 }
 
+#[derive(Clone)]
+pub(super) struct ProviderMeta {
+    provider_id: i64,
+    owner_user_id: Option<i64>,
+    status: String,
+}
+
+pub(super) type Metas = HashMap<String, ProviderMeta>;
+
+pub(super) fn metas(records: &[crate::db::Provider]) -> Metas {
+    records
+        .iter()
+        .map(|r| {
+            let meta = ProviderMeta { provider_id: r.id, owner_user_id: r.owner_user_id, status: r.status.clone() };
+            (r.slug.clone(), meta)
+        })
+        .collect()
+}
+
+struct Listing {
+    meta: ProviderMeta,
+    models: Vec<String>,
+}
+
 #[derive(Default)]
 pub(crate) struct FullNameIndex {
     models: HashMap<String, Vec<IndexedModel>>,
+    listings: std::collections::BTreeMap<String, Listing>,
     counters: HashMap<String, Arc<AtomicUsize>>,
     refreshed: Option<Instant>,
+}
+
+impl FullNameIndex {
+    fn apply_metas(&mut self, metas: &Metas) {
+        self.listings.retain(|slug, _| metas.contains_key(slug));
+        for (slug, listing) in self.listings.iter_mut() {
+            listing.meta = metas[slug].clone();
+        }
+        self.rebuild();
+    }
+
+    fn rebuild(&mut self) {
+        let mut models: HashMap<String, Vec<IndexedModel>> = HashMap::new();
+        for (slug, listing) in &self.listings {
+            for id in &listing.models {
+                models.entry(id.to_lowercase()).or_default().push(IndexedModel {
+                    slug: slug.clone(),
+                    model_id: id.clone(),
+                    provider_id: listing.meta.provider_id,
+                    owner_user_id: listing.meta.owner_user_id,
+                    status: listing.meta.status.clone(),
+                });
+            }
+        }
+        self.models = models;
+    }
+}
+
+pub(super) type Pending = Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+
+enum Listed {
+    Models(Vec<String>),
+    Failed(String),
+    TimedOut,
+}
+
+async fn list_one(provider: Arc<dyn Provider>, limit: Duration) -> (String, Arc<dyn Provider>, Duration, Listed) {
+    let started = Instant::now();
+    let listed = match tokio::time::timeout(limit, provider.list_models()).await {
+        Ok(Ok(models)) => Listed::Models(models.into_iter().map(|m| m.id).filter(|id| is_full_name(id)).collect()),
+        Ok(Err(e)) => Listed::Failed(e.to_string()),
+        Err(_) => Listed::TimedOut,
+    };
+    (provider.slug().to_string(), provider, started.elapsed(), listed)
+}
+
+pub(super) async fn relist(
+    providers: health::ProviderMap,
+    index: Arc<RwLock<FullNameIndex>>,
+    metas: Metas,
+    slugs: Vec<String>,
+    limit: Duration,
+    pending: Option<Pending>,
+) {
+    let started = Instant::now();
+    index.write().await.apply_metas(&metas);
+    let targets: Vec<Arc<dyn Provider>> = {
+        let loaded = providers.read().await;
+        slugs.iter().filter(|s| metas.contains_key(*s)).filter_map(|s| loaded.get(s).cloned()).collect()
+    };
+    let mut listing: futures::stream::FuturesUnordered<_> = targets.into_iter().map(|p| list_one(p, limit)).collect();
+    let mut report = Vec::new();
+    while let Some((slug, provider, took, listed)) = listing.next().await {
+        let current = providers.read().await.get(&slug).is_some_and(|p| Arc::ptr_eq(p, &provider));
+        let outcome = match &listed {
+            Listed::Models(models) => format!("{slug}={}ms/{}", took.as_millis(), models.len()),
+            Listed::Failed(e) => format!("{slug}={}ms failed: {e}", took.as_millis()),
+            Listed::TimedOut => format!("{slug}=timeout after {}ms", took.as_millis()),
+        };
+        report.push(outcome);
+        if let (true, Listed::Models(models), Some(meta)) = (current, listed, metas.get(&slug)) {
+            let mut index = index.write().await;
+            index.listings.insert(slug.clone(), Listing { meta: meta.clone(), models });
+            index.rebuild();
+        }
+        if let Some(pending) = pending.as_ref().filter(|_| current) {
+            pending.lock().unwrap().remove(&slug);
+        }
+    }
+    index.write().await.refreshed = Some(Instant::now());
+    tracing::info!(
+        listed = report.len(),
+        providers = %report.join(", "),
+        "full name index refreshed in {} ms",
+        started.elapsed().as_millis()
+    );
 }
 
 pub(crate) fn serves(owner_user_id: Option<i64>, status: &str, viewer: Option<i64>) -> bool {
@@ -62,35 +173,51 @@ impl Router {
     pub async fn refresh_full_name_index(&self) {
         let records = self.db.list_providers().await.unwrap_or_default();
         self.set_provider_access(&records);
-        let providers: Vec<(Arc<dyn Provider>, i64, Option<i64>, String)> = {
-            let loaded = self.providers.read().await;
-            records
-                .iter()
-                .filter_map(|r| loaded.get(&r.slug).map(|p| (p.clone(), r.id, r.owner_user_id, r.status.clone())))
-                .collect()
-        };
-        let limit = self.list_timeout;
-        let listings = futures::future::join_all(providers.into_iter().map(|(provider, id, owner, status)| async move {
-            let models = tokio::time::timeout(limit, provider.list_models()).await.ok().and_then(Result::ok);
-            (provider.slug().to_string(), id, owner, status, models.unwrap_or_default())
-        }))
-        .await;
+        let slugs = records.iter().map(|r| r.slug.clone()).collect();
+        relist(self.providers.clone(), self.full_names.clone(), metas(&records), slugs, self.list_timeout, None).await;
+    }
 
-        let mut models: HashMap<String, Vec<IndexedModel>> = HashMap::new();
-        for (slug, provider_id, owner_user_id, status, listed) in listings {
-            for model in listed.into_iter().filter(|m| is_full_name(&m.id)) {
-                models.entry(model.id.to_lowercase()).or_default().push(IndexedModel {
-                    slug: slug.clone(),
-                    model_id: model.id,
-                    provider_id,
-                    owner_user_id,
-                    status: status.clone(),
-                });
+    pub async fn refresh_provider_access(&self) {
+        let records = self.db.list_providers().await.unwrap_or_default();
+        self.set_provider_access(&records);
+        self.full_names.write().await.apply_metas(&metas(&records));
+    }
+
+    pub(super) fn schedule_relist(&self, metas: Metas, rebuilt: Vec<String>) {
+        let slugs: Vec<String> = {
+            let mut pending = self.pending_relist.lock().unwrap();
+            pending.retain(|s| metas.contains_key(s));
+            pending.extend(rebuilt);
+            pending.iter().cloned().collect()
+        };
+        let task = relist(
+            self.providers.clone(),
+            self.full_names.clone(),
+            metas,
+            slugs,
+            self.list_timeout,
+            Some(self.pending_relist.clone()),
+        );
+        let handle = tokio::spawn(task);
+        if let Some(old) = self.index_refresh.lock().unwrap().replace(handle) {
+            old.abort();
+        }
+    }
+
+    pub async fn settle_background(&self) {
+        loop {
+            let handle = self.index_refresh.lock().unwrap().take();
+            match handle {
+                Some(handle) => {
+                    let _ = handle.await;
+                }
+                None => break,
             }
         }
-        let mut index = self.full_names.write().await;
-        index.models = models;
-        index.refreshed = Some(Instant::now());
+    }
+
+    pub fn index_refreshes_running(&self) -> usize {
+        self.index_refresh.lock().unwrap().as_ref().map_or(0, |h| usize::from(!h.is_finished()))
     }
 
     async fn ensure_index_for(&self, model: &str) {

@@ -141,7 +141,7 @@ pub async fn verify_and_apply(db: &Arc<Database>, router: &Arc<Router>, provider
                 tracing::error!(error = %e, provider = %provider.slug, "Failed to update provider status");
             } else {
                 tracing::info!(provider = %provider.slug, status, "Provider verification applied");
-                router.refresh_full_name_index().await;
+                router.refresh_provider_access().await;
             }
         }
     }
@@ -154,7 +154,7 @@ pub async fn mark_changed(db: &Arc<Database>, router: &Arc<Router>, provider: &P
     }
     if provider.status == APPROVED && !provider.status_locked {
         let _ = db.set_provider_status(provider.id, PENDING, Some("changed, re-verifying"), false).await;
-        router.refresh_full_name_index().await;
+        router.refresh_provider_access().await;
     }
     if settings::background_enabled() {
         let (db, router, id) = (db.clone(), router.clone(), provider.id);

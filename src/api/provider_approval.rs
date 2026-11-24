@@ -81,7 +81,7 @@ pub async fn set_status(
         .set_provider_status(provider.id, status, reason.as_deref(), locked)
         .await
         .map_err(internal)?;
-    state.config.router.refresh_full_name_index().await;
+    state.config.router.refresh_provider_access().await;
     Ok(Json(view(&state, updated).await))
 }
 

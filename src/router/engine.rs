@@ -274,15 +274,18 @@ impl HealthCheckRouter {
 pub struct Router {
     db: Arc<Database>,
     pub(crate) metrics_store: MetricsStore,
-    providers: RwLock<HashMap<String, Arc<dyn Provider>>>,
+    providers: health::ProviderMap,
     routing_tables: RwLock<HashMap<String, RoutingTable>>,
     pub(crate) max_retries: u32,
     pub(crate) transient_retry: TransientRetry,
-    health_check_handles: RwLock<HashMap<String, tokio::task::JoinHandle<()>>>,
-    shutdown_tx: RwLock<Option<tokio::sync::broadcast::Sender<()>>>,
+    health: std::sync::Mutex<Option<health::HealthLoop>>,
+    provider_ids: Arc<std::sync::RwLock<HashMap<String, i64>>>,
+    fingerprints: reload::Fingerprints,
+    index_refresh: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pending_relist: full_name::Pending,
     sticky: StickySessions,
     provider_bodies: std::sync::RwLock<HashMap<String, crate::db::ExtraBody>>,
-    full_names: RwLock<full_name::FullNameIndex>,
+    full_names: Arc<RwLock<full_name::FullNameIndex>>,
     provider_access: std::sync::RwLock<HashMap<String, (Option<i64>, String)>>,
     provider_limits: std::sync::RwLock<HashMap<String, u32>>,
     provider_tuning: std::sync::RwLock<Arc<tuning::TuningMap>>,
@@ -299,15 +302,18 @@ impl Router {
         Self {
             db,
             metrics_store,
-            providers: RwLock::new(HashMap::new()),
+            providers: Arc::new(RwLock::new(HashMap::new())),
             routing_tables: RwLock::new(HashMap::new()),
             max_retries: 3,
             transient_retry: TransientRetry::default(),
-            health_check_handles: RwLock::new(HashMap::new()),
-            shutdown_tx: RwLock::new(None),
+            health: std::sync::Mutex::new(None),
+            provider_ids: Default::default(),
+            fingerprints: Default::default(),
+            index_refresh: std::sync::Mutex::new(None),
+            pending_relist: Default::default(),
             sticky: StickySessions::default(),
             provider_bodies: std::sync::RwLock::new(HashMap::new()),
-            full_names: RwLock::new(Default::default()),
+            full_names: Default::default(),
             provider_access: std::sync::RwLock::new(HashMap::new()),
             provider_limits: std::sync::RwLock::new(HashMap::new()),
             provider_tuning: std::sync::RwLock::new(Default::default()),
@@ -320,12 +326,6 @@ impl Router {
     pub fn with_list_timeout(mut self, timeout: Duration) -> Self {
         self.list_timeout = timeout;
         self
-    }
-
-    pub async fn settle_background(&self) {}
-
-    pub fn index_refreshes_running(&self) -> usize {
-        0
     }
 
     pub fn health_loops_started(&self) -> usize {
@@ -348,369 +348,6 @@ impl Router {
     pub(crate) fn untracked_candidate(&self, provider: Arc<dyn Provider>, model: String) -> Candidate {
         let body = self.provider_body(provider.as_ref());
         Candidate::untracked(provider, model, body)
-    }
-
-    pub async fn reload_config(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Send shutdown signal to health check loop first
-        {
-            let shutdown_tx = self.shutdown_tx.read().await;
-            if let Some(tx) = shutdown_tx.as_ref() {
-                let _ = tx.send(());
-            }
-        }
-        
-        let provider_records = self.db.list_providers().await?;
-        self.set_provider_access(&provider_records);
-        self.set_provider_tuning(&provider_records);
-
-        let mut providers = HashMap::new();
-        let mut provider_bodies: HashMap<String, crate::db::ExtraBody> = HashMap::new();
-        let mut id_to_slug: HashMap<i64, String> = HashMap::new();
-        let owned_ids: std::collections::HashSet<i64> =
-            provider_records.iter().filter(|r| r.owner_user_id.is_some()).map(|r| r.id).collect();
-        let provider_owner: HashMap<i64, (i64, bool)> = provider_records
-            .iter()
-            .filter_map(|r| r.owner_user_id.map(|owner| (r.id, (owner, r.status == crate::db::APPROVED))))
-            .collect();
-
-        for record in &provider_records {
-            let provider = match create_provider_from_record(record, self.db.clone()) {
-                Some(p) => p,
-                None => {
-                    tracing::warn!(
-                        provider = %record.name,
-                        base_url = %record.base_url,
-                        "Failed to construct provider, skipping"
-                    );
-                    continue;
-                }
-            };
-            self.metrics_store.register_provider(&record.name).await;
-            id_to_slug.insert(record.id, record.slug.clone());
-            if let Some(body) = record.extra_body_map() {
-                provider_bodies.insert(record.slug.clone(), body);
-            }
-            providers.insert(record.slug.clone(), provider);
-        }
-
-        let mut tables = HashMap::new();
-
-        // Track which provider slugs are actually configured for use
-        let mut configured_provider_slugs = std::collections::HashSet::new();
-
-        let routing_configs = self.db.list_routing_configs().await?;
-        for rc in &routing_configs {
-            let rcp_records = self.db.list_active_routing_config_providers(rc.id).await?;
-            let mut entries = Vec::new();
-            let mut children = Vec::new();
-
-            for rcp in &rcp_records {
-                if let Some(child_id) = rcp.child_config_id {
-                    if let Some(child) = routing_configs.iter().find(|c| c.id == child_id) {
-                        children.push(ChildEntry {
-                            config: child.name.clone(),
-                            model_override: rcp.model.clone(),
-                            weight: rcp.weight,
-                            extra_body: rcp.extra_body_map().unwrap_or_default(),
-                        });
-                    }
-                    continue;
-                }
-                if let Some((owner, approved)) = rcp.provider_id.and_then(|id| provider_owner.get(&id)) {
-                    let system_pool = rc.owner_user_id.is_none() && *approved;
-                    if rc.owner_user_id != Some(*owner) && !system_pool {
-                        continue;
-                    }
-                }
-                let slug = match rcp.provider_id.and_then(|id| id_to_slug.get(&id)) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                let provider = match providers.get(slug) {
-                    Some(p) => p,
-                    None => continue,
-                };
-                configured_provider_slugs.insert(slug.clone());
-                let mut extra_body = provider_bodies.get(slug).cloned().unwrap_or_default();
-                if let Some(entry_body) = rcp.extra_body_map() {
-                    crate::db::merge_extra_body(&mut extra_body, &entry_body);
-                }
-                entries.push(ProviderEntry {
-                    provider: provider.clone(),
-                    model_override: rcp.model.clone(),
-                    weight: rcp.weight,
-                    extra_body,
-                });
-            }
-
-            let entry_names: Vec<&str> = entries.iter().map(|e| e.provider.name()).collect();
-            tracing::info!(
-                routing_config = rc.name,
-                strategy = rc.strategy,
-                provider_count = entries.len(),
-                child_count = children.len(),
-                providers = ?entry_names,
-                "Loaded routing config"
-            );
-
-            tables.insert(
-                rc.name.clone(),
-                RoutingTable::with_children(entries, children, StrategyKind::from_str(&rc.strategy)),
-            );
-        }
-
-        let model_records = self.db.list_models().await?;
-        let mp_records = self.db.list_model_providers().await?;
-
-        let mut model_id_to_name: HashMap<i64, String> = HashMap::new();
-        for model in &model_records {
-            model_id_to_name.insert(model.id, model.name.clone());
-        }
-
-        // Track which provider slugs are actually configured for use
-        let mut configured_provider_slugs = std::collections::HashSet::new();
-
-        for mp in &mp_records {
-            if !mp.is_active {
-                continue;
-            }
-
-            let model_name = match model_id_to_name.get(&mp.model_id) {
-                Some(n) => n,
-                None => continue,
-            };
-
-            if tables.contains_key(model_name.as_str()) {
-                continue;
-            }
-
-            if owned_ids.contains(&mp.provider_id) {
-                continue;
-            }
-            let slug = match id_to_slug.get(&mp.provider_id) {
-                Some(s) => s,
-                None => continue,
-            };
-            let provider = match providers.get(slug) {
-                Some(p) => p,
-                None => continue,
-            };
-            
-            configured_provider_slugs.insert(slug.clone());
-
-            tables
-                .entry(model_name.clone())
-                .or_insert_with(|| RoutingTable::new(Vec::new()))
-                .entries.push(ProviderEntry {
-                    provider: provider.clone(),
-                    model_override: None,
-                    weight: mp.weight,
-                    extra_body: provider_bodies.get(slug).cloned().unwrap_or_default(),
-                });
-        }
-
-        // No default routing table - all routing must be explicitly configured
-
-        *self.providers.write().await = providers;
-        if let Ok(mut bodies) = self.provider_bodies.write() {
-            *bodies = provider_bodies;
-        }
-        *self.routing_tables.write().await = tables;
-
-        let provider_count = self.providers.read().await.len();
-        let table_names: Vec<String> = self.routing_tables.read().await.keys().cloned().collect();
-        tracing::info!(
-            providers_loaded = provider_count,
-            routing_tables = ?table_names,
-            "Router config reloaded"
-        );
-
-        self.refresh_full_name_index().await;
-
-        // Restart health checks with the new config
-        if let Err(e) = self.start_health_checks().await {
-            tracing::warn!(error = %e, "Failed to start health checks after config reload");
-        }
-
-        Ok(())
-    }
-
-    /// Start background health check tasks that cover all loaded providers.
-    /// The interval and timeout are taken from the first routing config that has
-    /// health checks enabled, falling back to 30s / 10s defaults.
-    pub async fn start_health_checks(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut handles = self.health_check_handles.write().await;
-        
-        // Cancel existing health check tasks
-        for (_, handle) in handles.drain() {
-            handle.abort();
-        }
-        
-        // Gather all loaded providers (deduplicated by name)
-        let provs = self.providers.read().await;
-        let mut all_providers = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for provider in provs.values() {
-            if seen.insert(provider.name().to_string()) {
-                all_providers.push(provider.clone());
-            }
-        }
-        drop(provs);
-
-        if all_providers.is_empty() {
-            tracing::warn!("No providers loaded - health checks will not start");
-            return Ok(());
-        }
-
-        // Pick interval/timeout from the first routing config with health checks enabled,
-        // or fall back to sensible defaults.
-        let routing_configs = self.db.list_routing_configs().await?;
-        let health_config = routing_configs.iter().find(|rc| rc.health_check_enabled);
-        // Clamp configured seconds to a positive value. A 0 (e.g. a routing
-        // config saved with a cleared field) would make `tokio::time::interval`
-        // panic and `tokio::time::timeout` elapse immediately, causing EVERY
-        // health check to report "Health check timeout" on every tick.
-        let interval = Duration::from_secs(
-            health_config.map_or(30, |rc| sane_health_secs(rc.health_check_interval_seconds, 30)),
-        );
-        let timeout = Duration::from_secs(
-            health_config.map_or(10, |rc| sane_health_secs(rc.health_check_timeout_seconds, 10)),
-        );
-
-        let has_health_config = health_config.is_some();
-        tracing::info!(
-            has_health_config = has_health_config,
-            interval_seconds = interval.as_secs(),
-            timeout_seconds = timeout.as_secs(),
-            "Health check configuration loaded"
-        );
-
-        let count = all_providers.len();
-        let provider_ids: Arc<HashMap<String, i64>> = Arc::new(
-            self.db.list_providers().await.unwrap_or_default().into_iter().map(|p| (p.name, p.id)).collect(),
-        );
-        let history_db = self.db.clone();
-        let router = HealthCheckRouter {
-            metrics_store: self.metrics_store.clone(),
-        };
-
-        // Create shutdown channel for graceful shutdown
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-        *self.shutdown_tx.write().await = Some(shutdown_tx.clone());
-
-        self.health_loops.fetch_add(1, Ordering::SeqCst);
-        let handle = tokio::spawn(async move {
-            let mut interval_tick = tokio::time::interval(interval);
-            interval_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-            loop {
-                tokio::select! {
-                    _ = interval_tick.tick() => {
-                        let health_check_tasks: Vec<_> = all_providers
-                            .iter()
-                            .map(|provider| {
-                                let provider_name = provider.name().to_string();
-                                let provider_clone = provider.clone();
-                                let router_clone = router.clone();
-                                let timeout_duration = timeout;
-                                let provider_ids = provider_ids.clone();
-                                let history_db = history_db.clone();
-
-                                tokio::spawn(async move {
-                                    // Fetch and emit balance snapshot with timeout
-                                    let balance_result = tokio::time::timeout(
-                                        Duration::from_secs(5),
-                                        provider_clone.fetch_balance()
-                                    ).await;
-                                    
-                                    match balance_result {
-                                        Ok(Some(amount)) => {
-                                            router_clone.metrics_store.emitter().emit_balance(&provider_name, amount, None);
-                                        }
-                                        Ok(None) => {
-                                            // Provider doesn't support balance tracking
-                                        }
-                                        Err(_) => {
-                                            tracing::debug!(provider = %provider_name, "Balance fetch timeout");
-                                        }
-                                    }
-
-                                    // Fetch and emit quota snapshot with timeout
-                                    let quota_result = tokio::time::timeout(
-                                        Duration::from_secs(5),
-                                        provider_clone.fetch_quota()
-                                    ).await;
-
-                                    match quota_result {
-                                        Ok(Some(quota)) => {
-                                            router_clone.metrics_store.emitter().emit_quota(&provider_name, quota, None);
-                                        }
-                                        Ok(None) => {
-                                            // Provider doesn't support quota tracking
-                                        }
-                                        Err(_) => {
-                                            tracing::debug!(provider = %provider_name, "Quota fetch timeout");
-                                        }
-                                    }
-
-                                    // Health check with timeout
-                                    let result = tokio::time::timeout(timeout_duration, provider_clone.health_check()).await;
-                                    if let Some(id) = provider_ids.get(&provider_name) {
-                                        let healthy = matches!(result, Ok(Ok(true)));
-                                        let _ = history_db
-                                            .record_health_check(*id, healthy, chrono::Utc::now().timestamp_millis())
-                                            .await;
-                                    }
-                                    match result {
-                                        Ok(Ok(true)) => {
-                                            let was_down = !router_clone.metrics_store.is_provider_available(&provider_name).await;
-                                            if was_down {
-                                                tracing::info!(provider = %provider_name, "Health check recovered");
-                                            }
-                                            router_clone.record_success(&provider_name).await;
-                                        }
-                                        Ok(Ok(false)) => {
-                                            tracing::warn!(provider = %provider_name, "Health check unhealthy");
-                                            router_clone.record_failure(
-                                                &provider_name,
-                                                crate::metrics::ErrorType::ServerError,
-                                                "Health check returned unhealthy",
-                                            ).await;
-                                        }
-                                        Ok(Err(e)) => {
-                                            tracing::warn!(provider = %provider_name, error = %e, "Health check error");
-                                            router_clone.record_failure(&provider_name, e.error_type(), &e.to_string()).await;
-                                        }
-                                        Err(_) => {
-                                            tracing::warn!(provider = %provider_name, "Health check timeout");
-                                            router_clone.record_failure(&provider_name, crate::metrics::ErrorType::Timeout, "Health check timed out").await;
-                                        }
-                                    }
-                                })
-                            })
-                            .collect();
-
-                        // Wait for all health checks to complete
-                        for task in health_check_tasks {
-                            let _ = tokio::time::timeout(Duration::from_secs(60), task).await;
-                        }
-                    }
-                    _ = shutdown_rx.recv() => {
-                        tracing::info!("Health check loop received shutdown signal");
-                        break;
-                    }
-                }
-            }
-        });
-
-        handles.insert("all-providers".to_string(), handle);
-        tracing::info!(
-            interval_seconds = interval.as_secs(),
-            total_providers = count,
-            "Started health check task for all providers"
-        );
-
-        Ok(())
     }
 
     pub async fn get_providers(&self) -> Vec<Arc<dyn Provider>> {
@@ -2132,6 +1769,8 @@ impl Clone for RouterError {
 }
 
 mod full_name;
+mod health;
+mod reload;
 mod tuning;
 mod prefer;
 #[cfg(test)]
