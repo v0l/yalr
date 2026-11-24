@@ -287,6 +287,8 @@ pub struct Router {
     provider_limits: std::sync::RwLock<HashMap<String, u32>>,
     provider_tuning: std::sync::RwLock<Arc<tuning::TuningMap>>,
     speeds: Arc<RwLock<prefer::SpeedBoard>>,
+    list_timeout: Duration,
+    health_loops: Arc<AtomicUsize>,
 }
 
 impl Router {
@@ -310,7 +312,24 @@ impl Router {
             provider_limits: std::sync::RwLock::new(HashMap::new()),
             provider_tuning: std::sync::RwLock::new(Default::default()),
             speeds: Arc::new(RwLock::new(Default::default())),
+            list_timeout: full_name::LIST_TIMEOUT,
+            health_loops: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    pub fn with_list_timeout(mut self, timeout: Duration) -> Self {
+        self.list_timeout = timeout;
+        self
+    }
+
+    pub async fn settle_background(&self) {}
+
+    pub fn index_refreshes_running(&self) -> usize {
+        0
+    }
+
+    pub fn health_loops_started(&self) -> usize {
+        self.health_loops.load(Ordering::SeqCst)
     }
 
     pub fn with_transient_retry(mut self, policy: TransientRetry) -> Self {
@@ -579,6 +598,7 @@ impl Router {
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
         *self.shutdown_tx.write().await = Some(shutdown_tx.clone());
 
+        self.health_loops.fetch_add(1, Ordering::SeqCst);
         let handle = tokio::spawn(async move {
             let mut interval_tick = tokio::time::interval(interval);
             interval_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -2118,6 +2138,8 @@ mod prefer;
 mod prefer_tests;
 #[cfg(test)]
 mod full_name_tests;
+#[cfg(test)]
+mod reload_tests;
 
 #[cfg(test)]
 mod nested_tests;

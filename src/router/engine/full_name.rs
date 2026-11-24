@@ -1,7 +1,7 @@
 use super::*;
 
 const INDEX_TTL: Duration = Duration::from_secs(60);
-const LIST_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const LIST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(crate) struct IndexedModel {
@@ -69,8 +69,9 @@ impl Router {
                 .filter_map(|r| loaded.get(&r.slug).map(|p| (p.clone(), r.id, r.owner_user_id, r.status.clone())))
                 .collect()
         };
+        let limit = self.list_timeout;
         let listings = futures::future::join_all(providers.into_iter().map(|(provider, id, owner, status)| async move {
-            let models = tokio::time::timeout(LIST_TIMEOUT, provider.list_models()).await.ok().and_then(Result::ok);
+            let models = tokio::time::timeout(limit, provider.list_models()).await.ok().and_then(Result::ok);
             (provider.slug().to_string(), id, owner, status, models.unwrap_or_default())
         }))
         .await;

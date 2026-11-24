@@ -54,6 +54,8 @@ mod routing_modalities;
 #[cfg(test)]
 mod extra_body_tests;
 #[cfg(test)]
+mod reload_speed_tests;
+#[cfg(test)]
 mod routing_nested_tests;
 pub mod shared;
 pub mod tenant;
