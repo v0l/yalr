@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 pub type EffortMap = BTreeMap<String, String>;
 
+pub const WILDCARD: &str = "*";
+
 pub fn parse_stored(raw: Option<&str>) -> Option<EffortMap> {
     let map: EffortMap = serde_json::from_str(raw?).ok()?;
     (!map.is_empty()).then_some(map)
@@ -38,5 +40,6 @@ mod tests {
         assert_eq!(validate(json!(null)), Ok(None));
         assert_eq!(validate(json!({})), Ok(None));
         assert!(validate(json!({"xhigh": "high"})).unwrap().is_some());
+        assert_eq!(validate(json!({"*": ""})).unwrap().unwrap()["*"], "");
     }
 }

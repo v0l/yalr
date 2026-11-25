@@ -24,8 +24,16 @@ struct ErrorDetail {
     message: String,
     #[serde(default, deserialize_with = "deserialize_optional_string_or_number")]
     code: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_metadata")]
     metadata: Option<ErrorMetadata>,
+}
+
+fn deserialize_lenient_metadata<'de, D>(deserializer: D) -> Result<Option<ErrorMetadata>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 /// Provider-specific error metadata (e.g. OpenRouter rate-limit hints)
@@ -1030,6 +1038,64 @@ mod tests {
         assert!(error.is_client_error(), "{error:?}");
         assert!(!error.is_transient(), "{error:?}");
         assert!(error.to_string().contains("Qwen3VLProcessor"), "{error}");
+    }
+
+    #[test]
+    fn wire_body_has_no_effort_key_after_the_wildcard_drop() {
+        let map: crate::providers::effort::EffortMap =
+            [("*".to_string(), String::new())].into_iter().collect();
+        let mut request = ChatRequest::from_value(serde_json::json!({
+            "model": "m", "messages": [], "reasoning_effort": "high"
+        }))
+        .unwrap();
+        request.map_reasoning_effort(&map);
+        let wire = to_wire_value(&request).unwrap();
+        assert!(wire.get("reasoning_effort").is_none(), "{wire}");
+    }
+
+    #[test]
+    fn wire_body_keeps_effort_without_a_map() {
+        let request = ChatRequest::from_value(serde_json::json!({
+            "model": "m", "messages": [], "reasoning_effort": "high"
+        }))
+        .unwrap();
+        assert_eq!(to_wire_value(&request).unwrap()["reasoning_effort"], "high");
+    }
+
+    #[tokio::test]
+    async fn numeric_code_error_body_surfaces_its_message() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let body = r#"{"error":{"message":"reasoning.effort is not supported by any endpoint for this model","code":400,"metadata":"upstream"}}"#;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(body, "application/json"))
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::new("numes", None, &format!("{}/v1", server.uri()), Some("k"));
+        let request: ChatRequest = serde_json::from_str(
+            r#"{"model":"code","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .unwrap();
+        let error = provider.chat_completions(&request).await.unwrap_err();
+        assert!(error.is_client_error(), "{error:?}");
+        assert!(error.to_string().contains("reasoning.effort is not supported by any endpoint for this model"), "{error}");
+        assert!(!error.to_string().contains("invalid type"), "{error}");
+    }
+
+    #[test]
+    fn error_detail_tolerates_odd_metadata_and_numeric_code() {
+        for body in [
+            r#"{"error":{"message":"m","code":400,"metadata":"x"}}"#,
+            r#"{"error":{"message":"m","code":"400","metadata":[1]}}"#,
+            r#"{"error":{"message":"m","code":400,"metadata":{"retry_after_seconds":"soon"}}}"#,
+        ] {
+            let detail = serde_json::from_str::<ErrorResponse>(body).unwrap().extract();
+            assert_eq!(detail.message, "m");
+            assert_eq!(detail.code.as_deref().map(|c| c.parse::<u16>().ok()), Some(Some(400)), "{body}");
+        }
     }
 
     #[tokio::test]

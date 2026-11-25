@@ -119,6 +119,10 @@ mod tests {
         assert_eq!(body["ttft_deadline_ms"], 1500);
         assert_eq!(body["reasoning_effort_map"]["xhigh"], "high");
 
+        let (status, body) = t.call(&t.alice, "PUT", &uri, r#"{"reasoning_effort_map":{"*":""}}"#).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["reasoning_effort_map"]["*"], "");
+
         let (status, body) = t.call(&t.alice, "PUT", &uri, r#"{"reasoning_effort_map":{"xhigh":3}}"#).await;
         assert_eq!(status, 400, "{body}");
 

@@ -275,10 +275,16 @@ impl ChatRequest {
     }
 
     pub fn map_reasoning_effort(&mut self, map: &crate::providers::effort::EffortMap) {
-        let Some(target) = self.requested_effort().and_then(|asked| map.get(&asked).cloned()) else {
+        let Some(target) = self.requested_effort().and_then(|asked| {
+            map.get(&asked).or_else(|| map.get(crate::providers::effort::WILDCARD)).cloned()
+        }) else {
             return;
         };
         self.inner.reasoning_effort = None;
+        if target.is_empty() {
+            self.extra_fields.remove("reasoning_effort");
+            return;
+        }
         self.extra_fields.insert("reasoning_effort".to_string(), Value::String(target));
     }
 
@@ -481,6 +487,49 @@ mod tests {
         request.map_reasoning_effort(&map);
         assert!(request.reasoning_effort.is_none());
         assert_eq!(request.extra_fields().get("reasoning_effort").unwrap(), "max");
+    }
+
+    fn effort_map(pairs: &[(&str, &str)]) -> crate::providers::effort::EffortMap {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn wildcard_empty_target_drops_reasoning_effort_for_any_level() {
+        for level in ["low", "high", "xhigh", "future"] {
+            let mut request = ChatRequest::from_value(serde_json::json!({
+                "model": "m", "messages": [], "reasoning_effort": level
+            }))
+            .unwrap();
+            request.map_reasoning_effort(&effort_map(&[("*", "")]));
+            assert!(request.extra_fields().get("reasoning_effort").is_none(), "{level}");
+            assert!(request.reasoning_effort.is_none(), "{level}");
+        }
+    }
+
+    #[test]
+    fn typed_effort_is_dropped_by_an_empty_target() {
+        let mut request = ChatRequest::from_value(serde_json::json!({"model": "m", "messages": []})).unwrap();
+        request.reasoning_effort = Some(async_openai::types::chat::ReasoningEffort::High);
+        request.map_reasoning_effort(&effort_map(&[("high", "")]));
+        assert!(request.reasoning_effort.is_none());
+        assert!(request.extra_fields().get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn exact_effort_key_beats_the_wildcard() {
+        let mut request = ChatRequest::from_value(serde_json::json!({
+            "model": "m", "messages": [], "reasoning_effort": "xhigh"
+        }))
+        .unwrap();
+        request.map_reasoning_effort(&effort_map(&[("*", ""), ("xhigh", "high")]));
+        assert_eq!(request.extra_fields().get("reasoning_effort").unwrap(), "high");
+    }
+
+    #[test]
+    fn wildcard_leaves_a_request_without_effort_alone() {
+        let mut request = ChatRequest::from_value(serde_json::json!({"model": "m", "messages": []})).unwrap();
+        request.map_reasoning_effort(&effort_map(&[("*", "")]));
+        assert!(request.extra_fields().get("reasoning_effort").is_none());
     }
 
     #[test]
