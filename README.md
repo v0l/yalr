@@ -137,6 +137,8 @@ discovery:
 
 A provider and each routing entry can carry an `extra_body` JSON object that is added to every outbound request on the OpenAI-compatible path (chat, streaming, responses, images). Set it in the admin UI (provider edit dialog, or the braces button on a routing entry) or through the admin API (`extra_body` on `/api/providers` and `/api/routing-configs/providers`). It must be a JSON object; an empty object clears it. Anthropic and other non-OpenAI wires ignore it.
 
+A provider can also carry a `reasoning_effort_map` (`reasoning_effort_map` on `/api/providers`, an object of strings) that rewrites the requested effort before sending, for example `{"xhigh": "high"}`. An empty string value drops `reasoning_effort` from the request, and the key `"*"` matches any effort without its own entry, so `{"*": ""}` makes a provider that rejects the parameter receive none at all.
+
 Merge order, later wins at the top level: provider, then each routing entry from the leaf up to the outermost config, then the client's own fields. Nothing is deep merged, so a client `provider` object replaces the configured one whole.
 
 OpenRouter and Numes pick the upstream endpoint from a `provider` object, so pinning one looks like this:

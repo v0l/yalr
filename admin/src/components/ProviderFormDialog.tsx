@@ -161,6 +161,11 @@ export function ProviderFormDialog({
             onChange={text => setForm({ ...form, extra_body: text })}
             hint="Fields always sent to this provider, such as an OpenRouter or Numes provider routing object. A routing entry overrides it, and the client's own fields win."
           />
+          {editingProvider && (
+            <p className="font-mono text-[10px] text-muted-foreground">
+              Reasoning effort map (API field reasoning_effort_map): an object of strings that rewrites the requested effort, such as {'{"xhigh": "high"}'}. An empty string drops reasoning_effort from the request, and the key "*" matches any effort without its own entry, so {'{"*": ""}'} suits a provider that rejects the parameter.
+            </p>
+          )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving} className="font-mono text-[12px] border-border text-muted-foreground">CANCEL</Button>
             <Button type="submit" disabled={saving || parseExtraBody(form.extra_body ?? '').error !== null} className="font-mono text-[12px] tracking-wider uppercase border border-brand/40 bg-brand/10 text-brand hover:bg-brand/20">
