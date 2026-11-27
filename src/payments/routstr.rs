@@ -545,13 +545,18 @@ mod tests {
 }
 
 #[cfg(test)]
+pub(crate) fn test_invoice(amount_msat: u64) -> String {
+    refund_tests::invoice(Some(amount_msat))
+}
+
+#[cfg(test)]
 mod refund_tests {
     use super::*;
 
     use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
     use secp256k1::{hashes::{sha256, Hash}, Secp256k1, SecretKey};
 
-    fn invoice(amount_msat: Option<u64>) -> String {
+    pub(super) fn invoice(amount_msat: Option<u64>) -> String {
         let key = SecretKey::from_slice(&[7u8; 32]).unwrap();
         let hash = sha256::Hash::from_slice(&[1u8; 32]).unwrap();
         let builder = InvoiceBuilder::new(Currency::Bitcoin)
