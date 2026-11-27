@@ -125,6 +125,17 @@ impl Egress {
 pub struct Caller {
     pub user_id: i64,
     pub is_admin: bool,
+    pub verify: bool,
+}
+
+impl Caller {
+    pub fn user(user_id: i64, is_admin: bool) -> Self {
+        Self { user_id, is_admin, verify: false }
+    }
+
+    pub fn verification(owner: i64) -> Self {
+        Self { user_id: owner, is_admin: false, verify: true }
+    }
 }
 
 tokio::task_local! {

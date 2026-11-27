@@ -179,9 +179,13 @@ pub(super) fn convert_messages(
 pub(super) fn build_client(
     base_url: &str,
     api_key: Option<&str>,
+    http: Option<reqwest_openai::Client>,
 ) -> async_anthropic::Client {
     // Simplify: build client chaining setters inline
     let mut builder = async_anthropic::Client::builder();
+    if let Some(http) = http {
+        builder.http_client(http);
+    }
     // The builder's field-level `#[builder(default)]` falls back to the field
     // type's Default (empty String), NOT the struct's `impl Default`. Without an
     // explicit version the `anthropic-version` header is empty and Anthropic

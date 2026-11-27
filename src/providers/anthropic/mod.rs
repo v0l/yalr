@@ -51,7 +51,7 @@ impl AnthropicProvider {
             .replace(' ', "-")
             .replace('_', "-");
 
-        let client = build_client(base_url, api_key);
+        let client = build_client(base_url, api_key, None);
 
         Self {
             name: name.to_string(),
@@ -62,6 +62,13 @@ impl AnthropicProvider {
             api_key: api_key.unwrap_or("").to_string(),
             models_cache: ModelsCache::new(),
         }
+    }
+
+    pub fn with_clients(mut self, clients: &crate::providers::egress::Clients) -> Self {
+        let key = Some(self.api_key.as_str()).filter(|k| !k.is_empty());
+        self.client = build_client(&self.base_url, key, Some(clients.api.clone()));
+        self.http_client = clients.http.clone();
+        self
     }
 
 }

@@ -86,6 +86,12 @@ pub struct PpqProvider {
 }
 
 impl PpqProvider {
+    pub fn with_clients(mut self, clients: &crate::providers::egress::Clients) -> Self {
+        self.inner = self.inner.with_clients(clients);
+        self.http_client = clients.http.clone();
+        self
+    }
+
     pub fn new(name: &str, slug: Option<&str>, base_url: &str, api_key: Option<&str>) -> Self {
         let base_url = Url::parse(base_url).expect("Invalid PPQ base URL");
 

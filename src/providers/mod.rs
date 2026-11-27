@@ -139,15 +139,32 @@ pub fn create_provider(
     api_key: Option<&str>,
     provider_type: ProviderType,
 ) -> Option<Arc<dyn Provider>> {
+    build_provider(name, slug, base_url, api_key, provider_type, None)
+}
+
+fn build_provider(
+    name: &str,
+    slug: Option<&str>,
+    base_url: &str,
+    api_key: Option<&str>,
+    provider_type: ProviderType,
+    pinned: Option<&egress::Clients>,
+) -> Option<Arc<dyn Provider>> {
+    fn pin<P>(provider: P, pinned: Option<&egress::Clients>, with: fn(P, &egress::Clients) -> P) -> P {
+        match pinned {
+            Some(clients) => with(provider, clients),
+            None => provider,
+        }
+    }
     Some(match provider_type {
-        ProviderType::OpenAi => Arc::new(OpenAiProvider::new(name, slug, base_url, api_key)),
-        ProviderType::LlamaCpp => Arc::new(LlamaCppProvider::new(name, slug, base_url, api_key).ok()?),
-        ProviderType::Vllm => Arc::new(VllmProvider::new(name, slug, base_url, api_key)?),
-        ProviderType::Ollama => Arc::new(OllamaProvider::new(name, slug, base_url, api_key).ok()?),
-        ProviderType::Routstr => Arc::new(RoutstrProvider::new(name, slug, base_url, api_key)),
-        ProviderType::OpenRouter => Arc::new(OpenRouterProvider::new(name, slug, base_url, api_key)),
-        ProviderType::Anthropic => Arc::new(AnthropicProvider::new(name, slug, base_url, api_key)),
-        ProviderType::Ppq => Arc::new(PpqProvider::new(name, slug, base_url, api_key)),
+        ProviderType::OpenAi => Arc::new(pin(OpenAiProvider::new(name, slug, base_url, api_key), pinned, OpenAiProvider::with_clients)),
+        ProviderType::LlamaCpp => Arc::new(pin(LlamaCppProvider::new(name, slug, base_url, api_key).ok()?, pinned, LlamaCppProvider::with_clients)),
+        ProviderType::Vllm => Arc::new(pin(VllmProvider::new(name, slug, base_url, api_key)?, pinned, VllmProvider::with_clients)),
+        ProviderType::Ollama => Arc::new(pin(OllamaProvider::new(name, slug, base_url, api_key).ok()?, pinned, OllamaProvider::with_clients)),
+        ProviderType::Routstr => Arc::new(pin(RoutstrProvider::new(name, slug, base_url, api_key), pinned, RoutstrProvider::with_clients)),
+        ProviderType::OpenRouter => Arc::new(pin(OpenRouterProvider::new(name, slug, base_url, api_key), pinned, OpenRouterProvider::with_clients)),
+        ProviderType::Anthropic => Arc::new(pin(AnthropicProvider::new(name, slug, base_url, api_key), pinned, AnthropicProvider::with_clients)),
+        ProviderType::Ppq => Arc::new(pin(PpqProvider::new(name, slug, base_url, api_key), pinned, PpqProvider::with_clients)),
         ProviderType::AnthropicOauth | ProviderType::OpenAiOauth => {
             panic!("OAuth providers must be created via create_provider_from_record")
         }
@@ -163,7 +180,44 @@ pub fn create_provider_from_record(
     record: &ProviderRecord,
     db: Arc<Database>,
 ) -> Option<Arc<dyn Provider>> {
-    let provider = match record.provider_type {
+    let access: guarded::Access = Default::default();
+    if let Ok(mut map) = access.write() {
+        map.insert(record.slug.clone(), (record.owner_user_id, record.status.clone()));
+    }
+    create_provider_with_egress(record, db, &egress::Egress::default(), access)
+}
+
+pub fn create_user_provider(
+    record: &ProviderRecord,
+    egress: &egress::Egress,
+    access: guarded::Access,
+) -> Option<Arc<dyn Provider>> {
+    if record.provider_type.is_oauth() {
+        tracing::warn!(provider = %record.name, "User owned OAuth provider refused");
+        return None;
+    }
+    let clients = egress.clients();
+    let provider = build_provider(
+        &record.name,
+        Some(&record.slug),
+        &record.base_url,
+        record.api_key.as_deref(),
+        record.provider_type,
+        Some(&clients),
+    )?;
+    Some(guarded::GuardedProvider::wrap(provider, record, egress, access))
+}
+
+pub fn create_provider_with_egress(
+    record: &ProviderRecord,
+    db: Arc<Database>,
+    egress: &egress::Egress,
+    access: guarded::Access,
+) -> Option<Arc<dyn Provider>> {
+    if record.owner_user_id.is_some() {
+        return create_user_provider(record, egress, access);
+    }
+    match record.provider_type {
         ProviderType::AnthropicOauth => Some(Arc::new(AnthropicOAuthProvider::new(record, db)) as Arc<dyn Provider>),
         ProviderType::OpenAiOauth => Some(Arc::new(OpenAiOAuthProvider::new(record, db)) as Arc<dyn Provider>),
         other => create_provider(
@@ -173,11 +227,7 @@ pub fn create_provider_from_record(
             record.api_key.as_deref(),
             other,
         ),
-    }?;
-    if record.owner_user_id.is_some() {
-        return Some(guarded::GuardedProvider::wrap(provider, &record.base_url));
     }
-    Some(provider)
 }
 
 /// Auto-detect provider type by trying each implementation's get_runtime_info

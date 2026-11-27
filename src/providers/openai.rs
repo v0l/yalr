@@ -282,6 +282,12 @@ impl OpenAiProvider {
             cache_hint: crate::providers::cache_key::CacheHint::for_base_url(base_url),
         }
     }
+
+    pub fn with_clients(mut self, clients: &crate::providers::egress::Clients) -> Self {
+        self.client = self.client.with_http_client(clients.api.clone());
+        self.http_client = clients.http.clone();
+        self
+    }
 }
 
 #[async_trait::async_trait]

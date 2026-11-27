@@ -1,6 +1,6 @@
 use crate::db::Database;
 use crate::metrics::{MetricsStore, MetricsUser};
-use crate::providers::{create_provider_from_record, ChatRequest, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
+use crate::providers::{create_provider_with_egress, ChatRequest, Provider, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent};
 use crate::router::errors::{keep_useful, FailureLog};
 use crate::router::failover_note::{failover_note, response_hashes, turn_hashes, FailedAttempt};
 use crate::router::transient::{RetryRounds, TransientRetry};
@@ -286,12 +286,13 @@ pub struct Router {
     sticky: StickySessions,
     provider_bodies: std::sync::RwLock<HashMap<String, crate::db::ExtraBody>>,
     full_names: Arc<RwLock<full_name::FullNameIndex>>,
-    provider_access: std::sync::RwLock<HashMap<String, (Option<i64>, String)>>,
+    provider_access: crate::providers::guarded::Access,
     provider_limits: std::sync::RwLock<HashMap<String, u32>>,
     provider_tuning: std::sync::RwLock<Arc<tuning::TuningMap>>,
     speeds: Arc<RwLock<prefer::SpeedBoard>>,
     list_timeout: Duration,
     health_loops: Arc<AtomicUsize>,
+    egress: crate::providers::egress::Egress,
 }
 
 impl Router {
@@ -314,13 +315,19 @@ impl Router {
             sticky: StickySessions::default(),
             provider_bodies: std::sync::RwLock::new(HashMap::new()),
             full_names: Default::default(),
-            provider_access: std::sync::RwLock::new(HashMap::new()),
+            provider_access: Default::default(),
             provider_limits: std::sync::RwLock::new(HashMap::new()),
             provider_tuning: std::sync::RwLock::new(Default::default()),
             speeds: Arc::new(RwLock::new(Default::default())),
             list_timeout: full_name::LIST_TIMEOUT,
             health_loops: Arc::new(AtomicUsize::new(0)),
+            egress: Default::default(),
         }
+    }
+
+    pub fn with_egress(mut self, egress: crate::providers::egress::Egress) -> Self {
+        self.egress = egress;
+        self
     }
 
     pub fn with_list_timeout(mut self, timeout: Duration) -> Self {

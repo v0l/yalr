@@ -33,6 +33,12 @@ pub struct VllmProvider {
 }
 
 impl VllmProvider {
+    pub fn with_clients(mut self, clients: &crate::providers::egress::Clients) -> Self {
+        self.inner = self.inner.with_clients(clients);
+        self.http_client = clients.http.clone();
+        self
+    }
+
     /// Returns `None` if `base_url` is not a valid URL. Callers skip the
     /// provider rather than panicking, so a typo'd base URL in the admin UI
     /// can't 500 the config-reload / provider-create request.

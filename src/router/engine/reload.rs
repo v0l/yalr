@@ -44,7 +44,7 @@ impl Router {
             let kept = current.get(&record.slug).filter(|_| known.get(&record.slug) == Some(&print)).cloned();
             let provider = match kept {
                 Some(p) => p,
-                None => match create_provider_from_record(record, self.db.clone()) {
+                None => match create_provider_with_egress(record, self.db.clone(), &self.egress, self.provider_access.clone()) {
                     Some(p) => {
                         built.rebuilt.push(p.clone());
                         p
@@ -75,6 +75,7 @@ impl Router {
         let db_ms = started.elapsed().as_millis();
 
         let built_at = Instant::now();
+        self.set_provider_access(&records);
         let built = self.build_providers(&records).await;
         let provider_bodies: HashMap<String, crate::db::ExtraBody> =
             records.iter().filter_map(|r| r.extra_body_map().map(|b| (r.slug.clone(), b))).collect();
@@ -82,7 +83,6 @@ impl Router {
         let build_ms = built_at.elapsed().as_millis();
 
         let swap_at = Instant::now();
-        self.set_provider_access(&records);
         self.set_provider_tuning(&records);
         self.set_provider_ids(&records);
         let any_providers = !built.providers.is_empty();

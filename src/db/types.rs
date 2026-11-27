@@ -117,6 +117,36 @@ pub struct Provider {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[cfg(test)]
+impl Provider {
+    pub fn blank_for_tests() -> Self {
+        Self {
+            id: 0,
+            name: String::new(),
+            slug: String::new(),
+            base_url: String::new(),
+            api_key: None,
+            provider_type: ProviderType::OpenAi,
+            oauth_access_token: None,
+            oauth_refresh_token: None,
+            oauth_expires_at: None,
+            oauth_account_id: None,
+            client_version: None,
+            extra_body: None,
+            owner_user_id: None,
+            status: super::APPROVED.to_string(),
+            status_reason: None,
+            status_locked: false,
+            is_reference: false,
+            max_concurrency: None,
+            ttft_deadline_ms: None,
+            reasoning_effort_map: None,
+            created_at: Default::default(),
+            updated_at: Default::default(),
+        }
+    }
+}
+
 /// OAuth credentials persisted for an OAuth-backed provider.
 #[derive(Clone, Debug)]
 pub struct OAuthCredentials {

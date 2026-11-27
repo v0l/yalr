@@ -106,6 +106,18 @@ pub fn is_connection_failure_text(message: &str) -> bool {
     CONNECTION_PATTERNS.iter().any(|n| lowered.contains(n))
 }
 
+const KEPT_PHRASES: &[&str] = &["overloaded", "credential validation failed"];
+
+pub fn request_error_phrase(message: &str) -> Option<&'static str> {
+    let lowered = message.to_lowercase();
+    REQUEST_ERROR_PATTERNS
+        .iter()
+        .flat_map(|(_, needles)| needles.iter())
+        .chain(KEPT_PHRASES.iter())
+        .find(|n| lowered.contains(*n))
+        .copied()
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AttemptInfo {
     pub prompt_tokens: Option<u32>,

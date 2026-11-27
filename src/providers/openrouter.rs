@@ -48,6 +48,12 @@ pub struct OpenRouterProvider {
 }
 
 impl OpenRouterProvider {
+    pub fn with_clients(mut self, clients: &crate::providers::egress::Clients) -> Self {
+        self.inner = self.inner.with_clients(clients);
+        self.http_client = clients.http.clone();
+        self
+    }
+
     /// Create a new OpenRouter provider instance
     /// 
     /// # Arguments
