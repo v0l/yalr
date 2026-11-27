@@ -3,7 +3,8 @@ use crate::auth::admin::{AdminExtractor, UserExtractor};
 use crate::db::auto_reload::{AutoReload, AutoReloadSettings};
 use crate::db::gateway_payments::{GatewayPayment, GatewayPaymentWithUser, PENDING};
 use crate::db::normalize_currency;
-use crate::payments::gateway::{GatewayError, GatewayService};
+use crate::payments::gateway::GatewayService;
+use crate::payments::provider::{PaymentError, PaymentProvider, CARDS_NEED_GATEWAY};
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
@@ -16,26 +17,35 @@ use std::sync::Arc;
 const HISTORY_LIMIT: i64 = 100;
 const MILLI_PER_UNIT: f64 = 100_000.0;
 
+fn provider(state: &AppState) -> Result<Arc<dyn PaymentProvider>, TenantError> {
+    state
+        .payments_state
+        .as_ref()
+        .and_then(|p| p.provider())
+        .ok_or_else(|| not_found("Top-ups are not enabled"))
+}
+
 fn service(state: &AppState) -> Result<Arc<GatewayService>, TenantError> {
+    provider(state)?;
     state
         .payments_state
         .as_ref()
         .and_then(|p| p.gateway.clone())
-        .ok_or_else(|| not_found("Top-ups are not enabled"))
+        .ok_or_else(|| not_found(CARDS_NEED_GATEWAY))
 }
 
-fn failed(e: GatewayError) -> TenantError {
+fn failed(e: PaymentError) -> TenantError {
     match e {
-        GatewayError::Invalid(m) => bad_request(&m),
-        GatewayError::Rejected(m) => {
-            tracing::warn!(error = %m, "Payment gateway rejected a request");
+        PaymentError::Invalid(m) => bad_request(&m),
+        PaymentError::Rejected(m) => {
+            tracing::warn!(error = %m, "Payment provider rejected a request");
             (StatusCode::BAD_REQUEST, m)
         }
-        GatewayError::Upstream(m) => {
-            tracing::warn!(error = %m, "Payment gateway request failed");
-            (StatusCode::BAD_GATEWAY, "The payment gateway could not be reached".to_string())
+        PaymentError::Upstream(m) => {
+            tracing::warn!(error = %m, "Payment provider request failed");
+            (StatusCode::BAD_GATEWAY, "The payment provider could not be reached".to_string())
         }
-        GatewayError::Database(e) => internal(e),
+        PaymentError::Database(e) => internal(e),
     }
 }
 
@@ -45,15 +55,20 @@ pub struct TopupConfig {
     pub currencies: Vec<String>,
     pub min_amount: i64,
     pub max_amount: i64,
+    pub provider: &'static str,
+    pub cards: bool,
 }
 
 pub async fn config(State(state): State<Arc<AppState>>, _user: UserExtractor) -> Result<Json<TopupConfig>, TenantError> {
-    let s = service(&state)?;
+    let s = provider(&state)?;
+    let (min_amount, max_amount) = s.amount_range();
     Ok(Json(TopupConfig {
         mode: s.mode(),
-        currencies: s.settings.currencies.clone(),
-        min_amount: s.settings.min_amount,
-        max_amount: s.settings.max_amount,
+        currencies: s.currencies(),
+        min_amount,
+        max_amount,
+        provider: s.kind().as_str(),
+        cards: s.kind() == crate::payments::provider::ProviderKind::Gateway,
     }))
 }
 
@@ -69,11 +84,23 @@ pub async fn create_topup(
     UserExtractor(auth): UserExtractor,
     Json(req): Json<CreateTopup>,
 ) -> Result<Json<GatewayPayment>, TenantError> {
-    let s = service(&state)?;
+    let s = provider(&state)?;
     let currency = normalize_currency(&req.currency).filter(|c| s.currency_allowed(c)).ok_or_else(|| bad_request("Unsupported currency"))?;
     let amount_milli = s.check_amount(&currency, req.amount).map_err(failed)?;
     let email = req.email.as_deref().map(str::trim).filter(|e| !e.is_empty());
-    let created = s.topup(auth.user.id, &currency, amount_milli, email).await.map_err(failed)?;
+    let created = s
+        .create_topup(crate::payments::provider::TopupRequest {
+            user_id: auth.user.id,
+            kind: crate::db::gateway_payments::KIND_TOPUP,
+            purpose: None,
+            currency: &currency,
+            amount_milli,
+            lightning: false,
+            email,
+            public_id: None,
+        })
+        .await
+        .map_err(failed)?;
     Ok(Json(created))
 }
 
@@ -82,26 +109,21 @@ pub async fn topup_status(
     UserExtractor(auth): UserExtractor,
     Path(id): Path<String>,
 ) -> Result<Json<GatewayPayment>, TenantError> {
-    let s = service(&state)?;
+    let s = provider(&state)?;
     let payment = state.db.gateway_payment(&id).await.map_err(internal)?.filter(|p| p.user_id == auth.user.id).ok_or_else(|| not_found("Payment not found"))?;
     if payment.status == PENDING {
-        if let Some(remote) = payment.gateway_payment_id.as_deref() {
-            let _ = s.reconcile(remote).await;
-            if let Some(fresh) = state.db.gateway_payment(&id).await.map_err(internal)? {
-                return Ok(Json(fresh));
-            }
-        }
+        return Ok(Json(s.refresh(&payment).await.map_err(failed)?));
     }
     Ok(Json(payment))
 }
 
 pub async fn history(State(state): State<Arc<AppState>>, UserExtractor(auth): UserExtractor) -> Result<Json<Vec<GatewayPayment>>, TenantError> {
-    service(&state)?;
+    provider(&state)?;
     Ok(Json(state.db.list_user_gateway_payments(auth.user.id, HISTORY_LIMIT).await.map_err(internal)?))
 }
 
 pub async fn admin_payments(State(state): State<Arc<AppState>>, _admin: AdminExtractor) -> Result<Json<Vec<GatewayPaymentWithUser>>, TenantError> {
-    service(&state)?;
+    provider(&state)?;
     Ok(Json(state.db.list_all_gateway_payments(500).await.map_err(internal)?))
 }
 
@@ -209,6 +231,6 @@ pub async fn save_auto_reload(
 }
 
 pub async fn webhook(State(state): State<Arc<AppState>>, headers: HeaderMap, body: axum::body::Bytes) -> StatusCode {
-    let Ok(s) = service(&state) else { return StatusCode::NOT_FOUND };
+    let Ok(s) = provider(&state) else { return StatusCode::NOT_FOUND };
     s.handle_webhook(&headers, &body).await
 }

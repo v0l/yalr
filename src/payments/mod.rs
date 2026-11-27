@@ -6,6 +6,7 @@ pub mod gateway;
 pub mod guard;
 pub mod instructions;
 pub mod pricing;
+pub mod provider;
 pub mod routstr;
 #[cfg(test)]
 mod failover_billing_tests;
@@ -15,6 +16,7 @@ mod settlement_tests;
 use std::sync::Arc;
 use crate::db::Database;
 use crate::config::PaymentsConfig;
+use provider::PaymentProvider;
 
 #[derive(Clone)]
 pub struct PaymentsState {
@@ -52,5 +54,9 @@ impl PaymentsState {
         };
 
         Ok(Self { config: payments_config, balance_service, pricing_resolver, gateway })
+    }
+
+    pub fn provider(&self) -> Option<Arc<dyn PaymentProvider>> {
+        self.gateway.clone().map(|g| g as Arc<dyn PaymentProvider>)
     }
 }

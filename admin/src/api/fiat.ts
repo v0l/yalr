@@ -2,10 +2,12 @@ import type { GatewayPayment } from '@/types'
 import { API_BASE_URL } from './client'
 
 export interface FiatConfig {
-  mode: 'sandbox' | 'prod'
+  mode: 'sandbox' | 'prod' | 'mainnet' | 'testnet' | 'regtest'
   currencies: string[]
   min_amount: number
   max_amount: number
+  provider?: 'gateway' | 'lnd'
+  cards?: boolean
 }
 
 export type FiatOrder = GatewayPayment & { username?: string }

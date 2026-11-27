@@ -136,7 +136,7 @@ pub async fn routstr_info(State(state): State<Arc<AppState>>) -> axum::response:
     let lightning = state
         .payments_state
         .as_ref()
-        .is_some_and(|p| p.gateway.as_ref().is_some_and(|g| g.currency_allowed(crate::db::SATS)));
+        .is_some_and(|p| p.provider().is_some_and(|g| g.currency_allowed(crate::db::SATS)));
 
     Json(RoutstrInfoResponse {
         name: discovery.and_then(|d| d.name.clone()).unwrap_or_else(|| "yalr".to_string()),
@@ -201,7 +201,7 @@ pub async fn balance_refund(
         None => return payments_disabled(),
     };
 
-    let Some(gateway) = payments.gateway.clone() else {
+    let Some(gateway) = payments.provider() else {
         return error_response(StatusCode::NOT_FOUND, "Lightning payments not configured on this node");
     };
 
@@ -235,9 +235,9 @@ pub async fn balance_refund(
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to process refund");
     }
 
-    match refund_against_deposits(&state, &gateway, user.id, amount_msat, &body.invoice).await {
+    match gateway.refund(user.id, amount_msat, &body.invoice).await {
         Ok(payment_hash) => {
-            tracing::info!(user_id = user.id, refunded_msat = amount_msat, "Balance refunded via the gateway");
+            tracing::info!(user_id = user.id, refunded_msat = amount_msat, provider = gateway.kind().as_str(), "Balance refunded");
             Json(RefundResponse { refunded_msat: amount_msat, refunded_sats: amount_msat / 1000, payment_hash }).into_response()
         }
         Err(message) => {
@@ -246,29 +246,6 @@ pub async fn balance_refund(
             error_response(StatusCode::BAD_REQUEST, format!("Refund payment failed: {message}"))
         }
     }
-}
-
-async fn refund_against_deposits(
-    state: &AppState,
-    gateway: &crate::payments::gateway::GatewayService,
-    user_id: i64,
-    amount_msat: i64,
-    invoice: &str,
-) -> Result<String, String> {
-    let deposits = state
-        .db
-        .recent_completed_gateway_payments(user_id, crate::db::SATS, 20)
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut last = "no Lightning deposit is large enough to refund from".to_string();
-    for deposit in deposits.into_iter().filter(|d| d.amount_milli >= amount_msat) {
-        let Some(remote) = deposit.gateway_payment_id.as_deref() else { continue };
-        match gateway.client.refund_payment(remote, &payment_gateway_client::RefundInput { amount: Some(amount_msat as u64), destination: Some(invoice.to_string()), attempt_id: None }).await {
-            Ok(_) => return Ok(deposit.payment_hash.unwrap_or_default()),
-            Err(e) => last = e.to_string(),
-        }
-    }
-    Err(last)
 }
 
 fn invoice_amount_msat(invoice: &str) -> Result<i64, &'static str> {
@@ -294,7 +271,7 @@ pub async fn create_lightning_invoice(
         None => return payments_disabled(),
     };
 
-    let Some(gateway) = payments.gateway.clone() else {
+    let Some(gateway) = payments.provider() else {
         return error_response(StatusCode::NOT_FOUND, "Lightning payments not configured on this node");
     };
     let amount_milli = match gateway.check_amount(crate::db::SATS, body.amount_sats as f64) {
@@ -302,11 +279,21 @@ pub async fn create_lightning_invoice(
         Err(e) => return error_response(StatusCode::BAD_REQUEST, e.to_string()),
     };
 
-    match gateway.lightning_topup(user.id, amount_milli).await {
+    let request = crate::payments::provider::TopupRequest {
+        user_id: user.id,
+        kind: crate::db::gateway_payments::KIND_TOPUP,
+        purpose: None,
+        currency: crate::db::SATS,
+        amount_milli,
+        lightning: true,
+        email: None,
+        public_id: None,
+    };
+    match gateway.create_topup(request).await {
         Ok(payment) => {
             use crate::payments::instructions::{PaymentInstruction, ProviderInfo, TopupResponse};
             let (Some(bolt11), Some(payment_hash)) = (payment.bolt11.clone(), payment.payment_hash.clone()) else {
-                return error_response(StatusCode::BAD_GATEWAY, "The gateway did not return a Lightning invoice");
+                return error_response(StatusCode::BAD_GATEWAY, "The payment provider did not return a Lightning invoice");
             };
             (
                 StatusCode::CREATED,
@@ -343,7 +330,7 @@ pub async fn check_lightning_invoice(
         None => return payments_disabled(),
     };
 
-    let Some(gateway) = payments.gateway.clone() else {
+    let Some(gateway) = payments.provider() else {
         return error_response(StatusCode::NOT_FOUND, "Lightning payments not configured on this node");
     };
 
@@ -356,10 +343,7 @@ pub async fn check_lightning_invoice(
     };
     if let Some(mut payment) = found {
         if payment.status == "pending" {
-            if let Some(remote) = payment.gateway_payment_id.clone() {
-                let _ = gateway.reconcile(&remote).await;
-                payment = state.db.gateway_payment(&payment.public_id).await.ok().flatten().unwrap_or(payment);
-            }
+            payment = gateway.refresh(&payment).await.unwrap_or(payment);
         }
         let expired = payment.status == "pending" && payment.expires_at.is_some_and(|t| chrono::Utc::now() > t);
         let status = match payment.status.as_str() {

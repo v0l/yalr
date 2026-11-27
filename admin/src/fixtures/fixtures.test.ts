@@ -21,7 +21,7 @@ const reload: Keys<AutoReload> = {
   currency: true, enabled: true, threshold_milli: true, amount_milli: true, monthly_cap_milli: true,
   payment_method_id: true, consecutive_failures: true, disabled_reason: true,
 }
-const config: Keys<FiatConfig> = { mode: true, currencies: true, min_amount: true, max_amount: true }
+const config: Keys<FiatConfig> = { mode: true, currencies: true, min_amount: true, max_amount: true, provider: true, cards: true }
 
 const sorted = (o: object) => Object.keys(o).sort()
 

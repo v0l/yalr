@@ -1,14 +1,16 @@
 mod cards;
 #[cfg(test)]
 pub mod fake;
+mod provider;
 mod runner;
 mod settle;
 
 use crate::config::GatewaySettings;
-use crate::db::gateway_payments::{GatewayPayment, NewGatewayPayment, RemotePayment, KIND_TOPUP};
+use crate::db::gateway_payments::{GatewayPayment, NewGatewayPayment, RemotePayment};
 use crate::db::{random_hex, Database, SATS};
 use std::sync::Arc;
 
+pub use crate::payments::provider::TopupRequest;
 pub use payment_gateway_client::{Payment as RemotePaymentView, SavedMethod as RemoteSavedMethod};
 pub use runner::spawn_runner;
 
@@ -16,8 +18,8 @@ use payment_gateway_client::{CreateAttempt, CreatePayment, Gateway};
 
 const MILLI_PER_MINOR: i64 = 1_000;
 const PAYMENT_TTL_SECS: u32 = 3600;
-const SATS_MIN: i64 = 1;
-const SATS_MAX: i64 = 10_000_000;
+pub const SATS_MIN: i64 = 1;
+pub const SATS_MAX: i64 = 10_000_000;
 
 #[derive(Clone)]
 pub struct GatewaySecrets {
@@ -32,30 +34,7 @@ impl GatewaySecrets {
     }
 }
 
-#[derive(Debug)]
-pub enum GatewayError {
-    Invalid(String),
-    Rejected(String),
-    Upstream(String),
-    Database(sqlx::Error),
-}
-
-impl std::fmt::Display for GatewayError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            GatewayError::Invalid(m) | GatewayError::Rejected(m) | GatewayError::Upstream(m) => f.write_str(m),
-            GatewayError::Database(e) => write!(f, "database error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for GatewayError {}
-
-impl From<sqlx::Error> for GatewayError {
-    fn from(e: sqlx::Error) -> Self {
-        GatewayError::Database(e)
-    }
-}
+pub type GatewayError = crate::payments::provider::PaymentError;
 
 impl From<payment_gateway_client::Error> for GatewayError {
     fn from(e: payment_gateway_client::Error) -> Self {
@@ -80,17 +59,6 @@ pub(crate) fn expires(payment: &RemotePaymentView) -> Option<crate::db::Timestam
     payment.expires.as_deref().and_then(|e| chrono::DateTime::parse_from_rfc3339(e).ok()).map(|t| t.with_timezone(&chrono::Utc))
 }
 
-pub struct TopupRequest<'a> {
-    pub user_id: i64,
-    pub kind: &'a str,
-    pub purpose: Option<&'a str>,
-    pub currency: &'a str,
-    pub amount_milli: i64,
-    pub lightning: bool,
-    pub email: Option<&'a str>,
-    pub public_id: Option<&'a str>,
-}
-
 pub struct GatewayService {
     pub(crate) client: Gateway,
     pub(crate) webhook_secret: String,
@@ -107,6 +75,14 @@ const RATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 #[derive(serde::Deserialize)]
 struct RatesResponse {
     btc: std::collections::HashMap<String, f64>,
+}
+
+pub fn check_sats(amount: f64) -> Result<i64, GatewayError> {
+    let sats = amount.round() as i64;
+    if (amount - sats as f64).abs() > 1e-9 || !(SATS_MIN..=SATS_MAX).contains(&sats) {
+        return Err(GatewayError::Invalid(format!("Amount must be a whole number of sats between {SATS_MIN} and {SATS_MAX}")));
+    }
+    Ok(sats * MILLI_PER_MINOR)
 }
 
 pub fn minor_units(amount: f64) -> Option<i64> {
@@ -182,11 +158,7 @@ impl GatewayService {
 
     pub fn check_amount(&self, currency: &str, amount: f64) -> Result<i64, GatewayError> {
         if currency == SATS {
-            let sats = amount.round() as i64;
-            if (amount - sats as f64).abs() > 1e-9 || !(SATS_MIN..=SATS_MAX).contains(&sats) {
-                return Err(GatewayError::Invalid(format!("Amount must be a whole number of sats between {SATS_MIN} and {SATS_MAX}")));
-            }
-            return Ok(sats * MILLI_PER_MINOR);
+            return check_sats(amount);
         }
         let minor = minor_units(amount)
             .ok_or_else(|| GatewayError::Invalid("Amount must be a positive number with at most 2 decimals".into()))?;
@@ -252,13 +224,5 @@ impl GatewayService {
             )
             .await?;
         Ok(())
-    }
-
-    pub async fn topup(&self, user_id: i64, currency: &str, amount_milli: i64, email: Option<&str>) -> Result<GatewayPayment, GatewayError> {
-        self.create_topup(TopupRequest { user_id, kind: KIND_TOPUP, purpose: None, currency, amount_milli, lightning: false, email, public_id: None }).await
-    }
-
-    pub async fn lightning_topup(&self, user_id: i64, amount_milli: i64) -> Result<GatewayPayment, GatewayError> {
-        self.create_topup(TopupRequest { user_id, kind: KIND_TOPUP, purpose: None, currency: SATS, amount_milli, lightning: true, email: None, public_id: None }).await
     }
 }

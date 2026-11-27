@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 pub fn api(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let router = public().merge(tenant(state.clone())).merge(admin(state.clone()));
-    if state.payments_state.as_ref().is_some_and(|p| p.gateway.is_some()) {
+    if state.payments_state.as_ref().is_some_and(|p| p.provider().is_some()) {
         return router.merge(topup(state));
     }
     router
