@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::auth::api_key::{get_last_four, hash_api_key};
 use crate::db::gateway_payments::KIND_ANONYMOUS;
 use crate::db::{random_hex, Database, NewApiKey, NewUser, PublicInvoice, UserType, SATS};
-use crate::payments::gateway::{GatewayService, TopupRequest};
+use crate::payments::provider::{PaymentProvider, TopupRequest};
 use crate::state::AppState;
 
 const MIN_SATS: u64 = 100;
@@ -140,8 +140,8 @@ async fn topup_user(state: &AppState, headers: &HeaderMap) -> Result<i64, Respon
     Ok(key.user_id)
 }
 
-fn gateway(state: &AppState) -> Option<Arc<GatewayService>> {
-    state.payments_state.as_ref().and_then(|p| p.gateway.clone())
+fn gateway(state: &AppState) -> Option<Arc<dyn PaymentProvider>> {
+    state.payments_state.as_ref().and_then(|p| p.provider())
 }
 
 pub async fn create_invoice(
@@ -205,7 +205,7 @@ pub async fn create_invoice(
         if created_user {
             let _ = state.db.delete_user(user_id).await;
         }
-        return error(StatusCode::INTERNAL_SERVER_ERROR, "The gateway did not return a Lightning invoice");
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "The payment provider did not return a Lightning invoice");
     };
 
     (
@@ -225,9 +225,7 @@ async fn status_for(state: &AppState, mut row: PublicInvoice) -> Response {
     if row.status == "pending" {
         if let Some(gateway) = gateway(state) {
             if let Ok(Some(payment)) = state.db.gateway_payment(&row.public_id).await {
-                if let Some(remote) = payment.gateway_payment_id.as_deref() {
-                    let _ = gateway.reconcile(remote).await;
-                }
+                let _ = gateway.refresh(&payment).await;
             }
             if let Ok(Some(fresh)) = state.db.public_invoice(&row.public_id).await {
                 row = fresh;

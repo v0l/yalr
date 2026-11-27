@@ -47,6 +47,11 @@ hex = "0.4"
 aes-gcm = "0.10"
 hmac = "0.12"
 payment-gateway-client = { git = "https://github.com/v0l/payment-gateway", rev = "399ddd6" }
+payments-rs = { git = "https://github.com/v0l/payments-rs", rev = "32b36eb722af3bac8325611b5617e689b4d32d48", default-features = false, features = [
+  "method-lnd",
+  "tls-ring",
+] }
+fedimint-tonic-lnd = { version = "0.4", default-features = false, features = ["lightningrpc", "invoicesrpc", "routerrpc"] }
 lightning-invoice = { version = "0.34", features = ["std"] }
 bytes = "1"
 flate2 = "1"

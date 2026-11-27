@@ -186,7 +186,7 @@ impl PublicPricing {
 }
 
 async fn usd_per_btc(state: &AppState) -> Option<f64> {
-    state.payments_state.as_ref()?.gateway.as_ref()?.btc_usd().await
+    state.payments_state.as_ref()?.provider()?.btc_usd().await
 }
 
 pub async fn public_model_list(state: &std::sync::Arc<AppState>) -> Vec<PublicModel> {

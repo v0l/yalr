@@ -9,6 +9,8 @@ pub const EXPIRED: &str = "expired";
 pub const KIND_TOPUP: &str = "topup";
 pub const KIND_AUTO_RELOAD: &str = "auto_reload";
 pub const KIND_ANONYMOUS: &str = "anonymous";
+pub const PROVIDER_GATEWAY: &str = "gateway";
+pub const PROVIDER_LND: &str = "lnd";
 
 const COLUMNS: &str = "id, public_id, gateway_payment_id, user_id, kind, purpose, currency, amount_milli, status, \
     bolt11, payment_hash, pay_url, failure_reason, created_at, updated_at, expires_at, completed_at";
@@ -61,8 +63,12 @@ pub struct RemotePayment<'a> {
 
 impl Database {
     pub async fn create_gateway_payment(&self, new: NewGatewayPayment<'_>) -> Result<GatewayPayment, sqlx::Error> {
+        self.insert_payment(new, PROVIDER_GATEWAY).await
+    }
+
+    pub(super) async fn insert_payment(&self, new: NewGatewayPayment<'_>, provider: &str) -> Result<GatewayPayment, sqlx::Error> {
         sqlx::query(
-            "INSERT INTO gateway_payments (public_id, user_id, kind, purpose, currency, amount_milli) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO gateway_payments (public_id, user_id, kind, purpose, currency, amount_milli, provider) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(new.public_id)
         .bind(new.user_id)
@@ -70,6 +76,7 @@ impl Database {
         .bind(new.purpose)
         .bind(new.currency)
         .bind(new.amount_milli)
+        .bind(provider)
         .execute(&self.pool)
         .await?;
         Ok(self.gateway_payment(new.public_id).await?.expect("payment just inserted"))
@@ -147,7 +154,7 @@ impl Database {
 
     pub async fn stale_pending_gateway_payments(&self, older_than_secs: i64, limit: i64) -> Result<Vec<GatewayPayment>, sqlx::Error> {
         sqlx::query_as(&format!(
-            "SELECT {COLUMNS} FROM gateway_payments WHERE status = 'pending' AND gateway_payment_id IS NOT NULL \
+            "SELECT {COLUMNS} FROM gateway_payments WHERE status = 'pending' AND gateway_payment_id IS NOT NULL AND provider = 'gateway' \
              AND created_at < UTC_TIMESTAMP(3) - INTERVAL ? SECOND ORDER BY id LIMIT ?"
         ))
         .bind(older_than_secs)
@@ -220,7 +227,7 @@ impl Database {
     pub async fn recent_completed_gateway_payments(&self, user_id: i64, currency: &str, limit: i64) -> Result<Vec<GatewayPayment>, sqlx::Error> {
         sqlx::query_as(&format!(
             "SELECT {COLUMNS} FROM gateway_payments WHERE user_id = ? AND currency = ? AND status = 'completed' \
-             AND gateway_payment_id IS NOT NULL ORDER BY id DESC LIMIT ?"
+             AND gateway_payment_id IS NOT NULL AND provider = 'gateway' ORDER BY id DESC LIMIT ?"
         ))
         .bind(user_id)
         .bind(currency)

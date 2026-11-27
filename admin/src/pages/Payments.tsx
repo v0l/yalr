@@ -9,6 +9,7 @@ import { currentRole } from '@/lib/role'
 import BalancePanel from '@/components/BalancePanel'
 import FiatOrdersTable from '@/components/fiat/FiatOrdersTable'
 import { fiatApi, type FiatConfig, type FiatOrder } from '@/api/fiat'
+import { cardsEnabled } from '@/lib/topupView'
 import { paymentTabs, paymentsSubtitle, type PaymentTabId } from '@/lib/paymentTabs'
 import WithdrawPanel from '@/components/payouts/WithdrawPanel'
 import { Button } from '@/components/ui/button'
@@ -238,7 +239,7 @@ export default function Payments() {
           </div>
           {fiat && (
             <>
-              <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">All card payments</div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">{cardsEnabled(fiat) ? 'All card payments' : 'All Lightning top-ups'}</div>
               <FiatOrdersTable orders={adminOrders} showUser />
             </>
           )}

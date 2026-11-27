@@ -7,6 +7,7 @@ import SavedCardsPanel from '@/components/fiat/SavedCardsPanel'
 import { fiatApi, type FiatConfig, type FiatOrder, type SavedCard } from '@/api/fiat'
 import { tenantApi } from '@/api/tenantApi'
 import { formatMilli } from '@/lib/money'
+import { cardsEnabled } from '@/lib/topupView'
 import type { Balances } from '@/types/providerStats'
 
 export function balanceCurrencies(balances: Balances | null, config: FiatConfig | null): string[] {
@@ -32,7 +33,7 @@ export default function BalancePanel({ config, title, onPaid }: { config: FiatCo
   const load = useCallback(() => {
     tenantApi.myBalances().then(setBalances).catch(() => undefined)
     if (!config) return
-    fiatApi.cards().then(setCards).catch(() => undefined)
+    if (cardsEnabled(config)) fiatApi.cards().then(setCards).catch(() => undefined)
     fiatApi.history().then(setOrders).catch(() => undefined)
   }, [config])
 
@@ -66,7 +67,7 @@ export default function BalancePanel({ config, title, onPaid }: { config: FiatCo
           <GatewayTopup key={topupCurrency} config={config} currency={topupCurrency} onPaid={paid} onCancel={() => setTopupCurrency(null)} />
         </div>
       )}
-      {config && <SavedCardsPanel config={config} cards={cards} onChanged={load} />}
+      {config && cardsEnabled(config) && <SavedCardsPanel config={config} cards={cards} onChanged={load} />}
       {config && (
         <>
           <div className={tile}>Your top-ups</div>

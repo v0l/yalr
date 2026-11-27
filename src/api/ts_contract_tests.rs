@@ -71,5 +71,5 @@ fn saved_card_auto_reload_and_config_json_match_the_admin_fixtures() {
             disabled_reason: None,
         },
     );
-    assert_matches("topup_config", &TopupConfig { mode: "sandbox", currencies: vec!["eur".into(), "usd".into(), "sats".into()], min_amount: 5, max_amount: 500 });
+    assert_matches("topup_config", &TopupConfig { mode: "sandbox", currencies: vec!["eur".into(), "usd".into(), "sats".into()], min_amount: 5, max_amount: 500, provider: "gateway", cards: true });
 }

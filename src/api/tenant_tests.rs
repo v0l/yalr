@@ -18,19 +18,27 @@ pub(super) struct Tenancy {
 }
 
 pub(super) async fn tenancy() -> Tenancy {
-    build_tenancy(None, None).await
+    build_tenancy(None, None, None).await
 }
 
 pub(super) async fn tenancy_with_gateway(url: &str) -> Tenancy {
     let settings = crate::config::GatewaySettings { url: url.to_string(), sandbox: true, ..Default::default() };
-    build_tenancy(Some(Default::default()), Some(settings)).await
+    build_tenancy(Some(Default::default()), Some(settings), None).await
+}
+
+pub(super) async fn tenancy_with_lnd(node: Arc<crate::payments::lnd::fake::FakeLnd>) -> Tenancy {
+    build_tenancy(Some(Default::default()), None, Some(node)).await
 }
 
 pub(super) async fn tenancy_with_payments(defaults: crate::config::DefaultPricingConfig) -> Tenancy {
-    build_tenancy(Some(defaults), None).await
+    build_tenancy(Some(defaults), None, None).await
 }
 
-async fn build_tenancy(defaults: Option<crate::config::DefaultPricingConfig>, gateway: Option<crate::config::GatewaySettings>) -> Tenancy {
+async fn build_tenancy(
+    defaults: Option<crate::config::DefaultPricingConfig>,
+    gateway: Option<crate::config::GatewaySettings>,
+    lnd: Option<Arc<crate::payments::lnd::fake::FakeLnd>>,
+) -> Tenancy {
     let db = Arc::new(Database::test().await);
     let payments_state = defaults.map(|d| {
         Arc::new(crate::payments::PaymentsState {
@@ -43,6 +51,10 @@ async fn build_tenancy(defaults: Option<crate::config::DefaultPricingConfig>, ga
                     webhook_secret: crate::payments::gateway::fake::WEBHOOK_SECRET.into(),
                 };
                 Arc::new(crate::payments::gateway::GatewayService::new(settings, secrets, db.clone()).unwrap())
+            }),
+            lnd: lnd.map(|node| {
+                let settings = crate::config::LndSettings::new("https://lnd.test", "cert", "macaroon");
+                Arc::new(crate::payments::lnd::LndService::new(node, db.clone(), settings))
             }),
         })
     });

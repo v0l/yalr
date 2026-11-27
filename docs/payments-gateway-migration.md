@@ -13,6 +13,9 @@ units (msats for `BTC`, cents for `EUR` and `USD`). Webhooks carry
 
 ## Config
 
+The gateway is one of two payment providers now; see
+[payment-providers.md](payment-providers.md) for direct LND.
+
 ```yaml
 payments:
   enabled: true
