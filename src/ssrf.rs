@@ -12,6 +12,21 @@ pub enum UrlRejected {
     Unresolved,
     #[error("base_url resolves to a non-public address ({0})")]
     NonPublic(IpAddr),
+    #[error("base_url must not contain a user name or password")]
+    Credentials,
+    #[error("base_url must not contain a fragment")]
+    Fragment,
+    #[error("base_url port {0} is not allowed")]
+    Port(u16),
+}
+
+const SERVICE_PORTS: &[u16] = &[
+    2049, 2375, 2376, 2379, 2380, 3306, 4369, 5432, 5672, 5984, 6379, 6443, 8500, 9042, 9092, 9200, 9300, 10250,
+    10255, 11211, 15672, 25672, 27017, 28017,
+];
+
+pub fn is_allowed_port(port: u16) -> bool {
+    port == 80 || port == 443 || (port >= 1024 && !SERVICE_PORTS.contains(&port))
 }
 
 pub fn is_public_ip(ip: IpAddr) -> bool {
@@ -53,29 +68,45 @@ pub fn parse_public_url(raw: &str) -> Result<(url::Url, String, u16), UrlRejecte
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(UrlRejected::Scheme);
     }
-    let host = parsed.host_str().ok_or(UrlRejected::NoHost)?.to_string();
+    if parsed.fragment().is_some() || raw.contains('#') {
+        return Err(UrlRejected::Fragment);
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() || raw.contains('@') {
+        return Err(UrlRejected::Credentials);
+    }
+    let host = parsed.host_str().ok_or(UrlRejected::NoHost)?;
+    let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
     let port = parsed.port_or_known_default().ok_or(UrlRejected::Invalid)?;
+    if !is_allowed_port(port) {
+        return Err(UrlRejected::Port(port));
+    }
     Ok((parsed, host, port))
+}
+
+pub fn checked_addrs(addrs: Vec<IpAddr>) -> Result<Vec<IpAddr>, UrlRejected> {
+    if addrs.is_empty() {
+        return Err(UrlRejected::Unresolved);
+    }
+    match addrs.iter().find(|ip| !is_public_ip(**ip)) {
+        Some(ip) => Err(UrlRejected::NonPublic(*ip)),
+        None => Ok(addrs),
+    }
+}
+
+pub async fn system_lookup(host: &str, port: u16) -> Result<Vec<IpAddr>, UrlRejected> {
+    match host.parse::<IpAddr>() {
+        Ok(ip) => Ok(vec![ip]),
+        Err(_) => Ok(tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|_| UrlRejected::Unresolved)?
+            .map(|a| a.ip())
+            .collect()),
+    }
 }
 
 pub async fn check_public_url(raw: &str) -> Result<(), UrlRejected> {
     let (_, host, port) = parse_public_url(raw)?;
-    let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
-    let addrs: Vec<IpAddr> = match host.parse::<IpAddr>() {
-        Ok(ip) => vec![ip],
-        Err(_) => tokio::net::lookup_host((host.as_str(), port))
-            .await
-            .map_err(|_| UrlRejected::Unresolved)?
-            .map(|a| a.ip())
-            .collect(),
-    };
-    if addrs.is_empty() {
-        return Err(UrlRejected::Unresolved);
-    }
-    match addrs.into_iter().find(|ip| !is_public_ip(*ip)) {
-        Some(ip) => Err(UrlRejected::NonPublic(ip)),
-        None => Ok(()),
-    }
+    checked_addrs(system_lookup(&host, port).await?).map(|_| ())
 }
 
 #[cfg(test)]
@@ -140,6 +171,50 @@ mod tests {
         assert!(check_public_url("http://[2606:4700:4700::1111]/v1").await.is_ok());
         assert!(check_public_url("http://100.63.255.255/").await.is_ok());
         assert!(check_public_url("http://172.32.0.1/").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn parser_confusion_tricks_are_refused() {
+        assert_eq!(check_public_url("https://example.com#@127.0.0.1/v1").await, Err(UrlRejected::Fragment));
+        assert_eq!(check_public_url("https://8.8.8.8/v1#x").await, Err(UrlRejected::Fragment));
+        for url in [
+            "https://user@8.8.8.8/v1",
+            "https://user:pw@8.8.8.8/v1",
+            "http://example.com@127.0.0.1/",
+            "http://8.8.8.8:80@10.0.0.1/",
+            "http://127.0.0.1%2f@8.8.8.8/",
+        ] {
+            assert_eq!(check_public_url(url).await, Err(UrlRejected::Credentials), "{url}");
+        }
+    }
+
+    #[tokio::test]
+    async fn service_and_low_ports_are_refused() {
+        for (url, port) in [
+            ("https://example.com:22/v1", 22),
+            ("http://8.8.8.8:6379/v1", 6379),
+            ("http://8.8.8.8:5432/", 5432),
+            ("http://8.8.8.8:3306/", 3306),
+            ("http://8.8.8.8:11211/", 11211),
+            ("http://8.8.8.8:9200/", 9200),
+            ("http://8.8.8.8:2375/", 2375),
+            ("http://8.8.8.8:10250/", 10250),
+            ("http://8.8.8.8:25/", 25),
+            ("http://0a2a0005.8ac540d4.rbndr.us:6379/v1", 6379),
+        ] {
+            assert_eq!(check_public_url(url).await, Err(UrlRejected::Port(port)), "{url}");
+        }
+        for port in [80, 443, 1234, 8000, 8080, 11434] {
+            assert!(is_allowed_port(port), "{port}");
+        }
+        assert!(check_public_url("http://8.8.8.8:8000/v1").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn numeric_host_spellings_of_loopback_are_blocked() {
+        for url in ["http://2130706433/", "http://0x7f000001/", "http://0177.0.0.1/", "http://127.1/", "http://0/"] {
+            assert!(rejected(url).await, "{url}");
+        }
     }
 
     #[tokio::test]
