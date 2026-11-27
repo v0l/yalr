@@ -4973,6 +4973,7 @@ dependencies = [
  "futures",
  "hex",
  "hmac",
+ "hyper 0.14.32",
  "indexmap",
  "lightning-invoice",
  "nostr",

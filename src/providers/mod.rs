@@ -29,6 +29,7 @@ pub mod cache_key;
 pub mod compress;
 pub mod decision;
 pub mod effort;
+pub mod egress;
 pub mod guarded;
 pub mod image;
 pub mod llamacpp;
