@@ -293,6 +293,7 @@ pub struct Router {
     list_timeout: Duration,
     health_loops: Arc<AtomicUsize>,
     egress: crate::providers::egress::Egress,
+    pub abuse_limits: crate::api::abuse::ProviderLimits,
 }
 
 impl Router {
@@ -322,6 +323,7 @@ impl Router {
             list_timeout: full_name::LIST_TIMEOUT,
             health_loops: Arc::new(AtomicUsize::new(0)),
             egress: Default::default(),
+            abuse_limits: Default::default(),
         }
     }
 

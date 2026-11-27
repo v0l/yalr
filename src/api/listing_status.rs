@@ -47,12 +47,18 @@ pub async fn provider_listing(
     State(state): State<Arc<AppState>>,
     user: UserExtractor,
 ) -> Result<Json<ListingReport>, TenantError> {
-    let record = Scope::from(user).provider(&state, &slug).await?;
+    let scope = Scope::from(user);
+    let record = scope.provider(&state, &slug).await?;
     let live = state.config.router.get_providers().await;
     let provider = live.iter().find(|p| p.slug() == slug).ok_or_else(|| not_found("Provider not found"))?;
-    let listed = match tokio::time::timeout(std::time::Duration::from_secs(5), provider.list_models()).await {
-        Ok(Ok(models)) => models,
-        _ => state.model_cache.get(&slug).await.unwrap_or_default(),
+    let held = record.owner_user_id.is_some() && record.status != crate::db::APPROVED;
+    let listed = match held {
+        true => None,
+        false => tokio::time::timeout(std::time::Duration::from_secs(5), provider.list_models()).await.ok().and_then(Result::ok),
+    };
+    let listed = match listed {
+        Some(models) => models,
+        None => state.model_cache.get(&slug).await.unwrap_or_default(),
     };
     let pricings = state.db.list_model_pricings().await.map_err(internal)?;
     let owned = record.owner_user_id.is_some();

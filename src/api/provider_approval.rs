@@ -105,7 +105,13 @@ pub async fn verify(
 ) -> ApiResult<ApprovalView> {
     let scope = Scope::from(user);
     let provider = scope.provider(&state, &slug).await?;
-    crate::verify::verify_and_apply(&state.db, &state.config.router, provider.id).await;
+    crate::api::abuse::owner_contact(
+        &state,
+        &scope,
+        &provider,
+        crate::verify::verify_and_apply(&state.db, &state.config.router, provider.id),
+    )
+    .await?;
     let fresh = scope.provider(&state, &slug).await?;
     Ok(Json(view(&state, fresh).await))
 }

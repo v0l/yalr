@@ -233,6 +233,8 @@ pub async fn list_providers(State(state): State<Arc<AppState>>, user: UserExtrac
 
 pub async fn create_provider(
     State(state): State<Arc<AppState>>,
+    peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
+    headers: axum::http::HeaderMap,
     user: UserExtractor,
     Json(request): Json<ProviderCreateRequest>,
 ) -> ApiResult<ProviderCreateResponse> {
@@ -241,6 +243,20 @@ pub async fn create_provider(
     let provider_type = scope.provider_type(&request.provider_type)?;
     let slug = scope.provider_slug(&request.slug)?;
     let extra_body = crate::api::shared::parse_extra_body(request.extra_body.clone())?;
+    if let Some(owner) = scope.owner() {
+        let (recent, pending) = state.db.owned_provider_counts(owner).await.map_err(internal)?;
+        if recent >= crate::api::abuse::CREATES_PER_DAY as i64 {
+            return Err((StatusCode::TOO_MANY_REQUESTS, "You can add 5 providers a day, try again tomorrow".to_string()));
+        }
+        if pending >= crate::api::abuse::PENDING_PER_USER {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "You have 3 providers waiting for approval. Verify or delete one first".to_string(),
+            ));
+        }
+        let ip = crate::api::abuse::client_ip(&headers, peer.map(|p| p.0));
+        state.config.router.abuse_limits.create(owner, &ip)?;
+    }
     let name = match scope.owner() {
         None => request.name.trim().to_string(),
         Some(_) => format!("{}/{}", scope.handle(), request.name.trim()),

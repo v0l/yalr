@@ -66,7 +66,7 @@ impl AnthropicProvider {
 
     pub fn with_clients(mut self, clients: &crate::providers::egress::Clients) -> Self {
         let key = Some(self.api_key.as_str()).filter(|k| !k.is_empty());
-        self.client = build_client(&self.base_url, key, Some(clients.api.clone()));
+        self.client = build_client(&self.base_url, key, Some(clients.api.clone())).with_backoff(crate::providers::egress::no_retry());
         self.http_client = clients.http.clone();
         self
     }

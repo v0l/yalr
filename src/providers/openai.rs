@@ -284,7 +284,7 @@ impl OpenAiProvider {
     }
 
     pub fn with_clients(mut self, clients: &crate::providers::egress::Clients) -> Self {
-        self.client = self.client.with_http_client(clients.api.clone());
+        self.client = self.client.with_http_client(clients.api.clone()).with_backoff(crate::providers::egress::no_retry());
         self.http_client = clients.http.clone();
         self
     }

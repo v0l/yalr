@@ -121,6 +121,10 @@ impl Egress {
     }
 }
 
+pub fn no_retry() -> backoff::ExponentialBackoff {
+    backoff::ExponentialBackoff { max_elapsed_time: Some(Duration::ZERO), ..Default::default() }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Caller {
     pub user_id: i64,

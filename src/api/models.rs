@@ -391,7 +391,9 @@ async fn models_for(state: &std::sync::Arc<AppState>, user: &crate::db::User) ->
     // Providers the health checker has already marked down are not dialled at
     // all; their last good listing is served instead.
     let state_ref = &state;
-    let listings = futures::future::join_all(providers.iter().map(|provider| async move {
+    let owned = crate::api::pool_models::owned_slugs(&state).await;
+    let platform: Vec<_> = providers.iter().filter(|p| !owned.contains(p.slug())).collect();
+    let listings = futures::future::join_all(platform.into_iter().map(|provider| async move {
         let provider_slug = provider.slug();
 
         if !state_ref
@@ -447,7 +449,6 @@ async fn models_for(state: &std::sync::Arc<AppState>, user: &crate::db::User) ->
     }))
     .await;
 
-    let owned = crate::api::pool_models::owned_slugs(&state).await;
     let configured: std::collections::HashSet<String> = routing_configs.iter().map(|rc| rc.name.to_lowercase()).collect();
     for entry in crate::api::pool_models::pool_entries(&state, |id| model_allowed(id) && !configured.contains(&id.to_lowercase())).await {
         all_models.push(entry);
@@ -626,15 +627,17 @@ pub async fn list_provider_models(
     State(state): State<std::sync::Arc<AppState>>,
     user: crate::auth::admin::UserExtractor,
 ) -> Result<Json<ProviderModelsResponse>, (axum::http::StatusCode, String)> {
-    crate::api::tenant::Scope::from(user).provider(&state, &provider_slug).await?;
+    let scope = crate::api::tenant::Scope::from(user);
+    let record = scope.provider(&state, &provider_slug).await?;
     let providers = state.config.router.get_providers().await;
     let provider = providers
         .iter()
         .find(|p| p.slug() == provider_slug)
         .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, format!("Provider '{}' not found", provider_slug)))?;
 
-    match provider.list_models().await {
+    match crate::api::abuse::owner_contact(&state, &scope, &record, provider.list_models()).await? {
         Ok(models) => {
+            state.model_cache.put(&provider_slug, models.clone()).await;
             let model_items: Vec<ProviderModelItem> = models
                 .into_iter()
                 .map(|m| ProviderModelItem {

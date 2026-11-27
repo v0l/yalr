@@ -1,4 +1,5 @@
 pub mod account_routing;
+pub mod abuse;
 pub mod audio;
 pub mod body_limit;
 pub mod retry_after;
@@ -68,6 +69,8 @@ mod topup_tests;
 mod ts_contract_tests;
 #[cfg(test)]
 mod approval_tenant_tests;
+#[cfg(test)]
+mod abuse_tests;
 pub mod usage;
 pub mod users;
 pub mod verification_view;

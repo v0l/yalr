@@ -27,6 +27,17 @@ impl Database {
             .await
     }
 
+    pub async fn owned_provider_counts(&self, owner_user_id: i64) -> Result<(i64, i64), sqlx::Error> {
+        let (recent, pending): (i64, i64) = sqlx::query_as(
+            "SELECT CAST(COALESCE(SUM(created_at > DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 DAY)), 0) AS SIGNED), \
+             CAST(COALESCE(SUM(status = 'pending'), 0) AS SIGNED) FROM providers WHERE owner_user_id = ?",
+        )
+        .bind(owner_user_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((recent, pending))
+    }
+
     pub async fn provider_owner_username(&self, owner_user_id: i64) -> Result<Option<String>, sqlx::Error> {
         Ok(self.get_user_by_id(owner_user_id).await?.map(|u| u.shown_name()).filter(|n| !n.is_empty()))
     }

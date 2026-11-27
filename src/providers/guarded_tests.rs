@@ -141,7 +141,7 @@ async fn a_pending_provider_is_contacted_only_by_its_owner_or_a_verification() {
 async fn the_upstream_body_never_reaches_the_owner() {
     const SECRET: &str = "redis_version:7.2.4 INTERNAL-ONLY-BANNER";
     let server = MockServer::start().await;
-    for status in [400u16, 401, 404] {
+    for status in [400u16, 401, 404, 429, 500, 502] {
         Mock::given(method("POST")).and(path(format!("/s{status}/chat/completions")))
             .respond_with(ResponseTemplate::new(status).set_body_raw(format!(r#"{{"error":{{"message":"{SECRET}"}}}}"#), "application/json"))
             .mount(&server)
@@ -156,7 +156,7 @@ async fn the_upstream_body_never_reaches_the_owner() {
         .mount(&server)
         .await;
     let port = server.address().port();
-    for prefix in ["s400", "s401", "s404", "plain"] {
+    for prefix in ["s400", "s401", "s404", "s429", "s500", "s502", "plain"] {
         let url = format!("http://leak.invalid:{port}/{prefix}");
         for kind in KINDS {
             let p = build(&url, "approved", *kind, flipping(&["127.0.0.1"]));
@@ -179,6 +179,20 @@ async fn the_upstream_body_never_reaches_the_owner() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn a_failing_user_provider_is_not_retried_inside_the_client() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(503)).mount(&server).await;
+    let url = format!("http://flaky.invalid:{}/v1", server.address().port());
+    for kind in [crate::db::ProviderType::OpenAi, crate::db::ProviderType::Anthropic] {
+        let p = build(&url, "approved", kind, flipping(&["127.0.0.1"]));
+        let started = std::time::Instant::now();
+        assert!(p.chat_completions(&chat()).await.is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{kind:?}");
+    }
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
 
 #[test]

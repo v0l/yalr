@@ -71,7 +71,8 @@ pub async fn check(
     user: UserExtractor,
     Path(slug): Path<String>,
 ) -> Result<Json<ProviderCheck>, TenantError> {
-    Scope::from(user).provider(&state, &slug).await?;
+    let scope = Scope::from(user);
+    let record = scope.provider(&state, &slug).await?;
     let live = state
         .config
         .router
@@ -80,6 +81,6 @@ pub async fn check(
         .into_iter()
         .find(|p| p.slug() == slug)
         .ok_or((StatusCode::BAD_GATEWAY, "Provider is not loaded".to_string()))?;
-    let result = live.health_check().await;
+    let result = crate::api::abuse::owner_contact(&state, &scope, &record, live.health_check()).await?;
     Ok(Json(ProviderCheck { healthy: matches!(result, Ok(true)), error: result.err().map(|e| e.to_string()) }))
 }

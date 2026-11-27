@@ -47,7 +47,10 @@ async fn build_tenancy(defaults: Option<crate::config::DefaultPricingConfig>, ga
         })
     });
     let metrics_store = Arc::new(MetricsStore::new(100));
-    let router = Arc::new(crate::router::engine::Router::new((*metrics_store).clone(), db.clone()));
+    let router = Arc::new(
+        crate::router::engine::Router::new((*metrics_store).clone(), db.clone())
+            .with_egress(crate::providers::egress::Egress::loopback_for_tests()),
+    );
     let sessions = Arc::new(crate::auth::admin::SessionStore::new());
     let state = Arc::new(AppState {
         config: crate::config::AppConfig {
