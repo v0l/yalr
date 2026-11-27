@@ -116,6 +116,30 @@ yalr-cli import-sqlite data/llm_router.db --database-url mysql://yalr:yalr@db:33
 The import brings the SQLite file up to date with `migrations-sqlite/` first, keeps every id,
 and refuses to run against a database that already has rows.
 
+### Self-hosting payments
+
+YALR takes money through one provider, set with `payments.provider`:
+
+- `lnd`: Lightning top-ups, anonymous keys, refunds and Lightning payouts straight from
+  your own LND node. Sats only, no cards. Needs the node's `tls.cert` and a macaroon.
+- `gateway`: the Apex payment gateway, for Lightning, cards (EUR, USD), saved cards,
+  auto-reload and on-chain through its pay page. Needs a gateway tenant.
+
+```yaml
+payments:
+  enabled: true
+  provider: lnd
+  lnd:
+    url: https://127.0.0.1:10009
+    tls_cert_path: /lnd/tls.cert
+    macaroon_path: /lnd/admin.macaroon
+```
+
+Without `provider` the section present decides, and the gateway wins when both are there.
+A bad payments section stops the server at start with the reason. See
+[docs/payment-providers.md](docs/payment-providers.md) for what each one supports and how
+LND settlement resumes after a restart.
+
 ### Routstr Discovery
 
 Publishes a Routstr RIP-02 provider announcement (kind 38421) so Routstr clients can find the node. Lightning only, no Cashu `mint` tag.
