@@ -48,7 +48,7 @@ export default function ProviderDetail() {
       {error && <div className="panel p-3 font-mono text-[12px] text-destructive">{error}</div>}
       <ProviderListingPanel slug={slug} />
       <ProviderVerificationPanel slug={slug} />
-      <div className="flex gap-1">
+      <div className="flex gap-1 flex-wrap">
         {RANGES.map(r => (
           <button
             key={r}

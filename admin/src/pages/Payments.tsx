@@ -173,12 +173,12 @@ export default function Payments() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-0 border-b border-border/50">
+      <div className="flex gap-0 border-b border-border/50 overflow-x-auto">
         {tabs.map(tab => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`inline-flex items-center gap-1.5 px-4 py-2.5 font-mono text-[12px] tracking-wider uppercase border-b-[1.5px] -mb-[1px] transition-colors ${
+            className={`inline-flex shrink-0 items-center gap-1.5 px-4 py-2.5 font-mono text-[12px] tracking-wider uppercase border-b-[1.5px] -mb-[1px] transition-colors ${
               activeTab === tab.id ? 'border-brand text-brand' : 'border-transparent text-muted-foreground hover:text-foreground/80'
             }`}
           >

@@ -47,7 +47,7 @@ export default function ProviderVerificationPanel({ slug }: { slug: string }) {
           {provider.is_reference && <span className="font-mono text-[10px] uppercase tracking-wider text-brand">reference</span>}
           {provider.status_locked && <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">decided by admin</span>}
         </div>
-        <div className="flex gap-1">
+        <div className="flex gap-1 flex-wrap">
           <Button size="xs" variant="outline" disabled={busy} onClick={() => act(() => tenantApi.verifyProvider(slug))} className="border-border font-mono text-[10px] uppercase">
             {busy ? 'Verifying' : 'Verify now'}
           </Button>
