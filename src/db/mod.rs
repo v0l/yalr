@@ -11,6 +11,7 @@ pub mod auto_reload;
 mod extra_body;
 pub mod gateway_payments;
 mod import;
+mod lnd_payments;
 mod metrics_history;
 mod modalities;
 mod nesting;
