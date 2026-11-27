@@ -4,6 +4,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { fiatApi, type FiatConfig, type FiatOrder } from '@/api/fiat'
+import { isTestMode, topupView } from '@/lib/topupView'
+import InlineInvoice from './InlineInvoice'
 
 const POLL_MS = 2500
 const FIAT_PRESETS = [10, 25, 50, 100]
@@ -119,8 +121,9 @@ export default function GatewayTopup({ config, currency, onPaid, onCancel }: Pro
       )}
       {order && !done && (
         <div className="space-y-3">
-          {config.mode === 'sandbox' && <div className="font-mono text-[11px] text-warning">Sandbox mode: payments are test payments</div>}
-          {order.pay_url && <iframe ref={frame} title="Payment" src={embedUrl(order.pay_url)} className="h-[560px] w-full border border-border bg-card" allow="payment" />}
+          {isTestMode(config.mode) && <div className="font-mono text-[11px] text-warning">{config.mode === 'sandbox' ? 'Sandbox mode: payments are test payments' : `${config.mode} network: payments are test payments`}</div>}
+          {topupView(order) === 'embed' && order.pay_url && <iframe ref={frame} title="Payment" src={embedUrl(order.pay_url)} className="h-[560px] w-full border border-border bg-card" allow="payment" />}
+          {topupView(order) === 'invoice' && order.bolt11 && <InlineInvoice bolt11={order.bolt11} amountSats={Math.round(order.amount_milli / 1000)} />}
           <div className="font-mono text-[11px] text-muted-foreground">This page updates when it is paid.</div>
           {order.pay_url && <a href={order.pay_url} target="_blank" rel="noopener noreferrer" className={`${cancel} block text-center`}>Open in a new tab</a>}
           <div className="text-center"><button type="button" onClick={reset} className={cancel}>Cancel</button></div>
