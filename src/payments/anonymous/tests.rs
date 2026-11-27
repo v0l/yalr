@@ -13,6 +13,7 @@ async fn app() -> (Arc<AppState>, axum::Router) {
         balance_service: Arc::new(BalanceService::new(db.clone())),
         pricing_resolver: Arc::new(PricingResolver::new(db.clone(), DefaultPricingConfig::default())),
         gateway: None,
+        lnd: None,
     };
     let state = Arc::new(AppState {
         config: AppConfig {

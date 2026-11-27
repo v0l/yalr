@@ -44,6 +44,7 @@ async fn build_tenancy(defaults: Option<crate::config::DefaultPricingConfig>, ga
                 };
                 Arc::new(crate::payments::gateway::GatewayService::new(settings, secrets, db.clone()).unwrap())
             }),
+            lnd: None,
         })
     });
     let metrics_store = Arc::new(MetricsStore::new(100));

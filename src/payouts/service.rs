@@ -63,7 +63,11 @@ impl PayoutService {
 
     pub fn from_state(state: &AppState) -> Self {
         let config = super::settings::get();
-        let lightning = None;
+        let lightning = state
+            .payments_state
+            .as_ref()
+            .and_then(|p| p.lnd.clone())
+            .map(|l| l as Arc<dyn InvoicePayer>);
         let revolut = config.revolut.as_ref().filter(|r| !r.api_key.is_empty()).map(RevolutBusiness::new);
         Self::new(state.db.clone(), config, lightning, revolut)
     }

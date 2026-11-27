@@ -35,6 +35,7 @@ async fn harness(model: &str) -> Harness {
         balance_service: balance_service.clone(),
         pricing_resolver: Arc::new(PricingResolver::new(db.clone(), DefaultPricingConfig::default())),
         gateway: None,
+        lnd: None,
     };
     let state = Arc::new(AppState {
         config: AppConfig {
