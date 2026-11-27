@@ -191,90 +191,8 @@ pub struct DiscoveryConfig {
     pub relays: Vec<String>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-#[derive(Default)]
-pub struct PaymentsConfig {
-    pub enabled: bool,
-    #[serde(default)]
-    pub default_pricing: DefaultPricingConfig,
-    pub gateway: Option<GatewaySettings>,
-    #[serde(default)]
-    pub provider_fee_ppm: i64,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct GatewaySettings {
-    pub url: String,
-    #[serde(default = "GatewaySettings::default_currencies")]
-    pub currencies: Vec<String>,
-    #[serde(default = "GatewaySettings::default_min_amount")]
-    pub min_amount: i64,
-    #[serde(default = "GatewaySettings::default_max_amount")]
-    pub max_amount: i64,
-    #[serde(default = "GatewaySettings::default_reconcile_after_secs")]
-    pub reconcile_after_secs: i64,
-    #[serde(default = "GatewaySettings::default_cooldown_secs")]
-    pub auto_reload_cooldown_secs: i64,
-    pub success_url: Option<String>,
-    pub cancel_url: Option<String>,
-    #[serde(default)]
-    pub sandbox: bool,
-}
-
-impl GatewaySettings {
-    fn default_currencies() -> Vec<String> { vec!["sats".to_string(), "eur".to_string(), "usd".to_string()] }
-    fn default_min_amount() -> i64 { 5 }
-    fn default_max_amount() -> i64 { 500 }
-    fn default_reconcile_after_secs() -> i64 { 120 }
-    fn default_cooldown_secs() -> i64 { 3600 }
-}
-
-impl Default for GatewaySettings {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            currencies: Self::default_currencies(),
-            min_amount: Self::default_min_amount(),
-            max_amount: Self::default_max_amount(),
-            reconcile_after_secs: Self::default_reconcile_after_secs(),
-            auto_reload_cooldown_secs: Self::default_cooldown_secs(),
-            success_url: None,
-            cancel_url: None,
-            sandbox: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct DefaultPricingConfig {
-    #[serde(default)]
-    pub price_per_1m_input_sats: i64,
-    #[serde(default)]
-    pub price_per_1m_output_sats: i64,
-    #[serde(default)]
-    pub price_per_request_sats: i64,
-    #[serde(default = "DefaultPricingConfig::default_context_window")]
-    pub context_window: i32,
-    #[serde(default = "DefaultPricingConfig::default_max_output_tokens")]
-    pub max_output_tokens: i32,
-}
-
-impl Default for DefaultPricingConfig {
-    fn default() -> Self {
-        Self {
-            price_per_1m_input_sats: 0,
-            price_per_1m_output_sats: 0,
-            price_per_request_sats: 0,
-            context_window: Self::default_context_window(),
-            max_output_tokens: Self::default_max_output_tokens(),
-        }
-    }
-}
-
-impl DefaultPricingConfig {
-    fn default_context_window() -> i32 { 8192 }
-    fn default_max_output_tokens() -> i32 { 4096 }
-}
+mod payments;
+pub use payments::{DefaultPricingConfig, GatewaySettings, LndSettings, PaymentsConfig};
 
 #[derive(Clone)]
 pub struct AppConfig {
@@ -304,6 +222,10 @@ impl AppConfig {
             .add_source(config::File::with_name("config").required(false).format(config::FileFormat::Yaml))
             .build()?
             .try_deserialize()?;
+
+        if let Some(payments) = config.payments.as_ref() {
+            payments.validate().map_err(|e| format!("Invalid payments config: {e}"))?;
+        }
 
         let database_url = std::env::var("DATABASE_URL").unwrap_or(config.database.url.clone());
         let db = Arc::new(Database::new(&database_url).await?);
