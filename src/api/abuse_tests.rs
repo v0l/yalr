@@ -110,6 +110,28 @@ async fn the_owner_check_is_rate_limited_and_never_shows_the_upstream_body() {
 }
 
 #[tokio::test]
+async fn the_routstr_invoice_route_is_admin_only_and_never_reaches_a_user_provider() {
+    let t = tenancy().await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500).set_body_string(LEAK)).mount(&server).await;
+    let url = local(&server);
+    let owned = format!(r#"{{"name":"r","slug":"r","base_url":"{url}","provider_type":"routstr"}}"#);
+    let (_, reply) = t.call(&t.alice, "POST", "/api/providers", &owned).await;
+    let slug = reply["slug"].as_str().unwrap().to_string();
+    let invoice = r#"{"amount_sats":1000}"#;
+    assert_eq!(t.call(&t.alice, "POST", &format!("/providers/{slug}/lightning/invoice"), invoice).await.0, 403);
+    assert_eq!(t.call(&t.admin, "POST", &format!("/providers/{slug}/lightning/invoice"), invoice).await.0, 404);
+
+    let platform = format!(r#"{{"name":"plat-r","slug":"plat-r","base_url":"{}","provider_type":"routstr"}}"#, server.uri());
+    assert_eq!(t.call(&t.admin, "POST", "/api/providers", &platform).await.0, 200);
+    let (status, reply) = t.call(&t.admin, "POST", "/providers/plat-r/lightning/invoice", invoice).await;
+    assert_eq!(status, 502, "{reply}");
+    assert!(!reply.to_string().contains("redis_version"), "{reply}");
+    let invoices = server.received_requests().await.unwrap().iter().filter(|r| r.url.path().ends_with("/lightning/invoice")).count();
+    assert_eq!(invoices, 1);
+}
+
+#[tokio::test]
 async fn the_owners_model_list_error_does_not_echo_the_upstream() {
     let t = tenancy().await;
     let server = leaking_upstream().await;

@@ -58,7 +58,7 @@ impl PayoutService {
         lightning: Option<Arc<dyn InvoicePayer>>,
         revolut: Option<RevolutBusiness>,
     ) -> Self {
-        Self { db, config, lightning, revolut, http: reqwest::Client::new() }
+        Self { db, config, lightning, revolut, http: crate::providers::egress::Egress::default().http() }
     }
 
     pub fn from_state(state: &AppState) -> Self {

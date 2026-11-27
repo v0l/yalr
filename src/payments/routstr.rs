@@ -400,16 +400,20 @@ pub async fn check_lightning_invoice(
 /// an invoice for topping up the provider's balance.
 pub async fn create_provider_invoice(
     State(state): State<Arc<AppState>>,
-    Extension(_authenticated_user): Extension<AuthenticatedUser>, // Admin authentication
+    Extension(authenticated_user): Extension<AuthenticatedUser>,
     Path(slug): Path<String>,
     Json(body): Json<CreateInvoiceRequest>,
 ) -> axum::response::Response {
     use reqwest::Client;
 
+    if !authenticated_user.user.is_admin {
+        return error_response(StatusCode::FORBIDDEN, "Admin access required");
+    }
+
     // Find the provider
     let provider = match state.db.get_provider_by_slug(&slug).await {
-        Ok(Some(p)) => p,
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Provider not found"),
+        Ok(Some(p)) if p.owner_user_id.is_none() => p,
+        Ok(_) => return error_response(StatusCode::NOT_FOUND, "Provider not found"),
         Err(e) => {
             tracing::error!(slug = %slug, error = %e, "Failed to get provider");
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to get provider");
@@ -466,7 +470,7 @@ pub async fn create_provider_invoice(
             if !status.is_success() {
                 let error_text = resp.text().await.unwrap_or_default();
                 tracing::error!(slug = %slug, status = %status, error = %error_text, "Upstream invoice creation failed");
-                return error_response(StatusCode::BAD_REQUEST, format!("Upstream error: {}", error_text));
+                return error_response(StatusCode::BAD_GATEWAY, format!("Upstream returned HTTP {}", status.as_u16()));
             }
 
             let upstream_invoice: UpstreamInvoiceResponse = match resp.json().await {
