@@ -67,7 +67,10 @@ impl GuardedProvider {
         self.permitted()?;
         let (_, host, _) =
             crate::ssrf::parse_public_url(&self.base_url).map_err(|e| ProviderError::Other(e.to_string().into()))?;
-        self.egress.pinned().checked(&host).await.map_err(|e| ProviderError::Other(e.to_string().into()))?;
+        if let Err(e) = self.egress.pinned().checked(&host).await {
+            tracing::warn!(provider = %self.slug, host = %host, reason = ?e, "User provider refused by the egress guard");
+            return Err(ProviderError::Other(e.to_string().into()));
+        }
         Ok(())
     }
 }

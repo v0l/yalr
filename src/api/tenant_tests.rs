@@ -178,6 +178,23 @@ async fn tenants_cannot_take_over_slugs_owners_or_private_urls() {
         let body = format!(r#"{{"name":"p","slug":"p","base_url":"{url}","provider_type":"openai"}}"#);
         assert_eq!(t.call(&t.alice, "POST", "/api/providers", &body).await.0, 400, "{url}");
     }
+    for (url, why) in [
+        ("https://example.com#@127.0.0.1/v1", "fragment"),
+        ("https://example.com:22/v1", "port 22"),
+        ("http://0a2a0005.8ac540d4.rbndr.us:6379/v1", "port 6379"),
+        ("https://user:pw@8.8.8.8/v1", "user name"),
+        ("http://8.8.8.8@127.0.0.1/v1", "user name"),
+        ("http://8.8.8.8:5432/v1", "port 5432"),
+    ] {
+        let body = format!(r#"{{"name":"p","slug":"p","base_url":"{url}","provider_type":"openai"}}"#);
+        let (status, reply) = t.call(&t.alice, "POST", "/api/providers", &body).await;
+        assert_eq!(status, 400, "{url}");
+        assert!(reply.to_string().contains(why), "{url}: {reply}");
+        let (status, _) = t.call(&t.alice, "PUT", &format!("/api/providers/{slug}"), &format!(r#"{{"base_url":"{url}"}}"#)).await;
+        assert_eq!(status, 400, "update {url}");
+    }
+    let (_, private) = t.call(&t.alice, "POST", "/api/providers", r#"{"name":"p","slug":"p","base_url":"http://10.42.0.5/v1"}"#).await;
+    assert!(!private.to_string().contains("10.42"), "{private}");
     let oauth = r#"{"name":"p","slug":"p","base_url":"https://api.anthropic.com","provider_type":"anthropic-oauth"}"#;
     assert_eq!(t.call(&t.alice, "POST", "/api/providers", oauth).await.0, 400);
 }

@@ -237,7 +237,7 @@ pub async fn create_provider(
     Json(request): Json<ProviderCreateRequest>,
 ) -> ApiResult<ProviderCreateResponse> {
     let scope = Scope::from(user);
-    scope.check_url(&request.base_url).await?;
+    scope.check_url(&state, &request.base_url).await?;
     let provider_type = scope.provider_type(&request.provider_type)?;
     let slug = scope.provider_slug(&request.slug)?;
     let extra_body = crate::api::shared::parse_extra_body(request.extra_body.clone())?;
@@ -297,7 +297,7 @@ pub async fn update_provider(
     let scope = Scope::from(user);
     let provider = scope.provider(&state, &slug).await?;
     if let Some(url) = request.base_url.as_deref() {
-        scope.check_url(url).await?;
+        scope.check_url(&state, url).await?;
     }
     let provider_type = match request.provider_type.as_deref() {
         Some(raw) => Some(scope.provider_type(raw)?),

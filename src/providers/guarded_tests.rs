@@ -73,7 +73,8 @@ const KINDS: &[crate::db::ProviderType] = &[
 async fn requests_to_a_private_host_never_leave() {
     let p = build("http://10.1.2.3:8080/v1", "approved", crate::db::ProviderType::OpenAi, flipping(&["10.1.2.3"]));
     let err = p.list_models().await.unwrap_err().to_string();
-    assert!(err.contains("non-public"), "{err}");
+    assert_eq!(err, "base_url host did not resolve to a public address");
+    assert!(!err.contains("10.1.2.3"));
     assert!(p.health_check().await.is_err());
 }
 

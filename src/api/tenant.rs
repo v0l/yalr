@@ -60,11 +60,11 @@ impl Scope {
         Ok(kind)
     }
 
-    pub async fn check_url(&self, base_url: &str) -> Result<(), TenantError> {
+    pub async fn check_url(&self, state: &AppState, base_url: &str) -> Result<(), TenantError> {
         if self.is_admin() {
             return Ok(());
         }
-        crate::ssrf::check_public_url(base_url).await.map_err(|e| bad_request(&e.to_string()))
+        state.config.router.check_user_url(base_url.trim()).await.map_err(|e| bad_request(&e.to_string()))
     }
 
     pub async fn provider(&self, state: &AppState, slug: &str) -> Result<Provider, TenantError> {

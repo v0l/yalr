@@ -330,6 +330,11 @@ impl Router {
         self
     }
 
+    pub async fn check_user_url(&self, base_url: &str) -> Result<(), crate::ssrf::UrlRejected> {
+        let (_, host, _) = crate::ssrf::parse_public_url(base_url)?;
+        self.egress.pinned().checked(&host).await.map(|_| ())
+    }
+
     pub fn with_list_timeout(mut self, timeout: Duration) -> Self {
         self.list_timeout = timeout;
         self

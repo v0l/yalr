@@ -8,9 +8,9 @@ pub enum UrlRejected {
     Scheme,
     #[error("base_url has no host")]
     NoHost,
-    #[error("base_url host did not resolve")]
+    #[error("base_url host did not resolve to a public address")]
     Unresolved,
-    #[error("base_url resolves to a non-public address ({0})")]
+    #[error("base_url host did not resolve to a public address")]
     NonPublic(IpAddr),
     #[error("base_url must not contain a user name or password")]
     Credentials,
