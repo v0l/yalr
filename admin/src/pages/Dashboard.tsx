@@ -312,9 +312,9 @@ export default function Dashboard() {
 
       {/* Provider Management */}
       <div>
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
           <h2 className="section-header mb-0">Providers</h2>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {isAdmin && (
               <Button onClick={() => { setOauthReauth(undefined); setOauthOpen(true) }} className="font-mono text-[12px] tracking-wider uppercase border border-border bg-transparent text-muted-foreground hover:text-brand hover:border-brand/40">
                 <ShieldCheckIcon className="size-3.5" /> Connect Subscription

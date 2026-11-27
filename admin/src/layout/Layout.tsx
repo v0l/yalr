@@ -1,11 +1,13 @@
+import { useEffect, useState } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useTheme } from '../context/ThemeContext'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { mainClass, shellClass, sidebarClass, topBarClass } from './shellClasses'
 import {
   LayoutDashboardIcon, SlidersIcon, ActivityIcon,
   UsersIcon, CreditCardIcon, MessageSquareIcon, SunIcon, MoonIcon,
-  LogOutIcon, ChevronRightIcon, ScrollTextIcon, ShieldCheckIcon, StoreIcon, KeyRoundIcon
+  LogOutIcon, ChevronRightIcon, MenuIcon, XIcon, ScrollTextIcon, ShieldCheckIcon, StoreIcon, KeyRoundIcon
 } from 'lucide-react'
 
 const navigation: { name: string; path: string; icon: typeof SunIcon; adminOnly: boolean; userOnly?: boolean }[] = [
@@ -26,6 +28,8 @@ export default function Layout() {
   const location = useLocation()
   const navigate = useNavigate()
   const { theme, toggleTheme } = useTheme()
+  const [open, setOpen] = useState(false)
+  useEffect(() => setOpen(false), [location.pathname])
   const user = JSON.parse(localStorage.getItem('user') || '{}')
 
   function handleLogout() {
@@ -35,9 +39,16 @@ export default function Layout() {
   }
 
   return (
-    <div className="min-h-screen flex bg-background">
+    <div className={shellClass}>
+      <div className={topBarClass}>
+        <Button variant="ghost" size="icon-sm" onClick={() => setOpen(o => !o)} aria-label="Menu">
+          {open ? <XIcon className="size-4" /> : <MenuIcon className="size-4" />}
+        </Button>
+        <div className="font-display text-lg leading-none tracking-wider text-foreground">YALR</div>
+      </div>
+      {open && <div className="fixed inset-0 z-30 bg-black/50 md:hidden" onClick={() => setOpen(false)} />}
       {/* ── SIDEBAR ─────────────────────────────────────────── */}
-      <aside className="fixed inset-y-0 left-0 z-40 flex w-56 flex-col bg-sidebar border-r border-border/50">
+      <aside className={sidebarClass(open)}>
         {/* Logo */}
         <div className="flex items-center gap-2.5 px-5 py-4 border-b border-border/50">
           <div className="flex items-center justify-center w-8 h-8 bg-surface border border-border">
@@ -127,7 +138,7 @@ export default function Layout() {
       </aside>
 
       {/* ── MAIN CONTENT ────────────────────────────────────── */}
-      <main className="flex-1 ml-56 min-h-screen bg-background">
+      <main className={mainClass}>
         <Outlet />
       </main>
     </div>
