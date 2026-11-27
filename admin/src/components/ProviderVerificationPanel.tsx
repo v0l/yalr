@@ -68,7 +68,7 @@ export default function ProviderVerificationPanel({ slug }: { slug: string }) {
       {error && <p className="font-mono text-[12px] text-destructive">{error}</p>}
       {userOwned && status === 'pending' && (
         <p className="font-mono text-[11px] text-muted-foreground">
-          Pending: the owner can route to it now. It joins the shared pool once every model it prices passes verification against a reference provider.
+          Pending: YALR does not call it and it serves no requests yet. Press Verify now (5 checks an hour); it goes live once every model it prices passes verification against a reference provider.
         </p>
       )}
       {status === 'suspended' && <p className="font-mono text-[11px] text-destructive">Suspended and out of the shared pool.</p>}

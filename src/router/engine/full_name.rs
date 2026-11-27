@@ -250,7 +250,7 @@ impl Router {
         indexed
             .into_iter()
             .filter(|m| m.owner_user_id.is_none() || priced.contains(&m.provider_id))
-            .filter(|m| visible_to(m))
+            .filter(visible_to)
             .filter_map(|m| providers.get(&m.slug).cloned().map(|p| (m, p)))
             .collect()
     }
