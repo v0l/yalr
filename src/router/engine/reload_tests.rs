@@ -165,3 +165,46 @@ async fn reloading_one_provider_keeps_the_running_health_loop() {
     assert_eq!(model_calls(&b).await, 1);
     assert_eq!(model_calls(&a).await, 2);
 }
+
+#[tokio::test]
+async fn a_pending_user_provider_is_never_polled_in_the_background() {
+    let db = Arc::new(Database::test().await);
+    let router = Router::new(MetricsStore::new(100), db.clone())
+        .with_list_timeout(full_name::LIST_TIMEOUT)
+        .with_egress(crate::providers::egress::Egress::loopback_for_tests());
+    let alice = db.add_test_user("alice", false).await;
+    db.create_routing_config(crate::db::NewRoutingConfig {
+        name: "fast".into(),
+        strategy: "round_robin".into(),
+        health_check_enabled: true,
+        health_check_interval_seconds: 1,
+        health_check_timeout_seconds: 1,
+    })
+    .await
+    .unwrap();
+    let catcher = backend(&["acme/a"], Duration::ZERO).await;
+    let platform = backend(&["acme/b"], Duration::ZERO).await;
+    let url = format!("http://callback-catcher.invalid:{}/v1", catcher.address().port());
+    let record = db
+        .create_owned_provider(
+            alice.id,
+            NewProvider { name: "alice/probe", slug: "u1-probe", base_url: &url, api_key: None, provider_type: Some(ProviderType::OpenAi) },
+        )
+        .await
+        .unwrap();
+    assert_eq!(record.status, crate::db::PENDING);
+    add(&db, "plat", &platform).await;
+
+    router.reload_config().await.unwrap();
+    router.settle_background().await;
+    router.refresh_full_name_index().await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(platform.received_requests().await.unwrap().len() >= 2);
+    assert_eq!(catcher.received_requests().await.unwrap().len(), 0);
+
+    db.set_provider_status(record.id, crate::db::APPROVED, None, false).await.unwrap();
+    router.reload_config().await.unwrap();
+    router.settle_background().await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(catcher.received_requests().await.unwrap().len() >= 2);
+}

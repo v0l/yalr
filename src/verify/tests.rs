@@ -351,7 +351,20 @@ async fn the_schedule_reverifies_and_suspends_a_provider_that_regressed() {
 
     assert_eq!(run_due(&w.db, &w.router).await, 0);
     w.db.execute_raw("UPDATE provider_verifications SET created_at = UTC_TIMESTAMP(3) - INTERVAL 2 DAY").await.unwrap();
+    assert_eq!(run_due(&w.db, &w.router).await, 0);
+    w.db.set_provider_status(id, APPROVED, None, false).await.unwrap();
     assert_eq!(run_due(&w.db, &w.router).await, 1);
+}
+
+#[tokio::test]
+async fn the_schedule_never_contacts_a_pending_provider() {
+    let w = world().await;
+    let alice = w.db.add_test_user("alice", false).await;
+    w.reference(Fake::new("ref", Behaviour::Faithful)).await;
+    let fake = Fake::new("alice-p", Behaviour::Faithful);
+    let id = w.user_provider(alice.id, fake, PENDING).await;
+    assert_eq!(run_due(&w.db, &w.router).await, 0);
+    assert!(w.db.latest_verifications(id).await.unwrap().is_empty());
 }
 
 #[tokio::test]

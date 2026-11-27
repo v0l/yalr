@@ -253,7 +253,7 @@ fn as_user(id: i64) -> Option<crate::metrics::MetricsUser> {
 }
 
 #[tokio::test]
-async fn a_pending_provider_serves_its_owner_but_not_other_users() {
+async fn a_pending_provider_serves_nobody_until_it_is_approved() {
     let w = world().await;
     let alice = w.db.add_test_user("alice", false).await;
     let bob = w.db.add_test_user("bob", false).await;
@@ -293,13 +293,14 @@ async fn a_pending_provider_serves_its_owner_but_not_other_users() {
     assert!(matches!(anonymous, Err(RouterError::NoAvailableProvider)));
     assert_eq!(pending.calls(), 0);
 
-    w.router.chat_completions(&chat("acme/m-1", &Trace::new()), as_user(alice.id)).await.unwrap();
-    assert_eq!(pending.calls(), 1);
+    let owner = w.router.chat_completions(&chat("acme/m-1", &Trace::new()), as_user(alice.id)).await;
+    assert!(matches!(owner, Err(RouterError::NoAvailableProvider)));
+    assert_eq!(pending.calls(), 0);
 
     w.db.set_provider_status(record.id, crate::db::APPROVED, None, false).await.unwrap();
     w.router.refresh_full_name_index().await;
     w.router.chat_completions(&chat("acme/m-1", &Trace::new()), as_user(bob.id)).await.unwrap();
-    assert_eq!(pending.calls(), 2);
+    assert_eq!(pending.calls(), 1);
 
     w.db.set_provider_status(record.id, crate::db::SUSPENDED, Some("failed"), false).await.unwrap();
     w.router.refresh_full_name_index().await;

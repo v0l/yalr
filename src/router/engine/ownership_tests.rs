@@ -126,17 +126,19 @@ async fn approval_status_and_owner_configs_both_gate_a_user_provider() {
         }
     };
 
-    assert_eq!(routed("alice/fast", Some(alice.id)).await, vec!["u-alice-gpu"]);
+    assert!(routed("alice/fast", Some(alice.id)).await.is_empty());
     assert!(routed("alice/fast", Some(bob.id)).await.is_empty());
     assert!(routed("alice/fast", None).await.is_empty());
     assert!(routed("bob/fast", Some(bob.id)).await.is_empty());
     assert!(routed("bob/fast", Some(alice.id)).await.is_empty());
-    assert_eq!(routed("u-alice-gpu/m-1", Some(alice.id)).await, vec!["u-alice-gpu"]);
+    assert!(routed("u-alice-gpu/m-1", Some(alice.id)).await.is_empty());
     assert!(routed("u-alice-gpu/m-1", Some(bob.id)).await.is_empty());
 
     db.set_provider_status(provider.id, crate::db::APPROVED, None, false).await.unwrap();
     router.reload_config().await.unwrap();
     router.add_provider(Arc::new(Echo("u-alice-gpu"))).await;
+    assert_eq!(routed("alice/fast", Some(alice.id)).await, vec!["u-alice-gpu"]);
+    assert_eq!(routed("u-alice-gpu/m-1", Some(alice.id)).await, vec!["u-alice-gpu"]);
     assert_eq!(routed("alice/fast", Some(bob.id)).await, vec!["u-alice-gpu"]);
     assert!(routed("bob/fast", Some(bob.id)).await.is_empty());
 

@@ -100,7 +100,6 @@ impl Default for VerificationConfig {
     }
 }
 
-static BACKGROUND: RwLock<bool> = RwLock::new(false);
 static SETTINGS: RwLock<Option<VerificationConfig>> = RwLock::new(None);
 
 pub fn set(config: VerificationConfig) {
@@ -111,14 +110,4 @@ pub fn set(config: VerificationConfig) {
 
 pub fn get() -> VerificationConfig {
     SETTINGS.read().ok().and_then(|g| g.clone()).unwrap_or_default()
-}
-
-pub fn enable_background() {
-    if let Ok(mut flag) = BACKGROUND.write() {
-        *flag = true;
-    }
-}
-
-pub fn background_enabled() -> bool {
-    BACKGROUND.read().map(|f| *f).unwrap_or(false) && get().enabled
 }

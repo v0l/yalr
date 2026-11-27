@@ -133,7 +133,8 @@ pub async fn verify_and_apply(db: &Arc<Database>, router: &Arc<Router>, provider
         return vec![];
     };
     let config = settings::get();
-    let reports = run_models(db, router, &provider, &config).await;
+    let caller = crate::providers::egress::Caller::verification(provider.owner_user_id.unwrap_or_default());
+    let reports = crate::providers::egress::as_caller(caller, run_models(db, router, &provider, &config)).await;
     store(db, &provider, &reports).await;
     if let Some((status, reason)) = decide(&provider, &reports) {
         if status != provider.status || reason != provider.status_reason {
@@ -153,14 +154,8 @@ pub async fn mark_changed(db: &Arc<Database>, router: &Arc<Router>, provider: &P
         return;
     }
     if provider.status == APPROVED && !provider.status_locked {
-        let _ = db.set_provider_status(provider.id, PENDING, Some("changed, re-verifying"), false).await;
+        let _ = db.set_provider_status(provider.id, PENDING, Some("changed, verify it to rejoin the pool"), false).await;
         router.refresh_provider_access().await;
-    }
-    if settings::background_enabled() {
-        let (db, router, id) = (db.clone(), router.clone(), provider.id);
-        tokio::spawn(async move {
-            verify_and_apply(&db, &router, id).await;
-        });
     }
 }
 
@@ -174,7 +169,6 @@ pub async fn run_due(db: &Arc<Database>, router: &Arc<Router>) -> usize {
 }
 
 pub fn spawn_scheduler(db: Arc<Database>, router: Arc<Router>) {
-    settings::enable_background();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(SCHEDULER_TICK);
         loop {

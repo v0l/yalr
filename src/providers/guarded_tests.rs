@@ -129,11 +129,11 @@ async fn a_pending_provider_is_contacted_only_by_its_owner_or_a_verification() {
     assert!(p.health_check().await.is_err());
     assert!(p.chat_completions_stream(&chat()).is_err());
     assert!(as_caller(Caller::user(8, false), p.list_models()).await.is_err());
-    assert!(as_caller(Caller::user(8, true), p.list_models()).await.is_err());
     assert!(server.received_requests().await.unwrap().is_empty());
     assert!(as_caller(Caller::user(7, false), p.list_models()).await.is_ok());
     assert!(as_caller(Caller::verification(7), p.health_check()).await.is_ok());
-    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    assert!(as_caller(Caller::user(1, true), p.health_check()).await.is_ok());
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
 }
 
 #[tokio::test]

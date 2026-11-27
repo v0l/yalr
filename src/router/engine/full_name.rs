@@ -100,7 +100,11 @@ pub(super) async fn relist(
     index.write().await.apply_metas(&metas);
     let targets: Vec<Arc<dyn Provider>> = {
         let loaded = providers.read().await;
-        slugs.iter().filter(|s| metas.contains_key(*s)).filter_map(|s| loaded.get(s).cloned()).collect()
+        slugs
+            .iter()
+            .filter(|s| metas.get(*s).is_some_and(|m| m.owner_user_id.is_none() || m.status == crate::db::APPROVED))
+            .filter_map(|s| loaded.get(s).cloned())
+            .collect()
     };
     let mut listing: futures::stream::FuturesUnordered<_> = targets.into_iter().map(|p| list_one(p, limit)).collect();
     let mut report = Vec::new();
@@ -130,16 +134,12 @@ pub(super) async fn relist(
     );
 }
 
-pub(crate) fn serves(owner_user_id: Option<i64>, status: &str, viewer: Option<i64>) -> bool {
-    match status {
-        "approved" => true,
-        "pending" => owner_user_id.is_some() && owner_user_id == viewer,
-        _ => false,
-    }
+pub(crate) fn serves(status: &str) -> bool {
+    status == crate::db::APPROVED
 }
 
-fn visible_to(member: &IndexedModel, viewer: Option<i64>) -> bool {
-    serves(member.owner_user_id, &member.status, viewer)
+fn visible_to(member: &IndexedModel) -> bool {
+    serves(&member.status)
 }
 
 impl Router {
@@ -157,9 +157,9 @@ impl Router {
         *self.provider_limits.write().unwrap() = limits;
     }
 
-    pub(crate) fn may_serve(&self, slug: &str, viewer: Option<i64>) -> bool {
+    pub(crate) fn may_serve(&self, slug: &str) -> bool {
         match self.provider_access.read().unwrap().get(slug) {
-            Some((owner, status)) => serves(*owner, status, viewer),
+            Some((_, status)) => serves(status),
             None => true,
         }
     }
@@ -231,7 +231,7 @@ impl Router {
         }
     }
 
-    async fn pool_members(&self, model: &str, viewer: Option<i64>) -> Vec<(IndexedModel, Arc<dyn Provider>)> {
+    async fn pool_members(&self, model: &str) -> Vec<(IndexedModel, Arc<dyn Provider>)> {
         self.ensure_index_for(model).await;
         let key = model.to_lowercase();
         let indexed = self.full_names.read().await.models.get(&key).cloned().unwrap_or_default();
@@ -250,13 +250,13 @@ impl Router {
         indexed
             .into_iter()
             .filter(|m| m.owner_user_id.is_none() || priced.contains(&m.provider_id))
-            .filter(|m| visible_to(m, viewer))
+            .filter(|m| visible_to(m))
             .filter_map(|m| providers.get(&m.slug).cloned().map(|p| (m, p)))
             .collect()
     }
 
     pub(crate) async fn full_name_backends(&self, model: &str) -> Vec<(Arc<dyn Provider>, String)> {
-        self.pool_members(model, None).await.into_iter().map(|(m, p)| (p, m.model_id)).collect()
+        self.pool_members(model).await.into_iter().map(|(m, p)| (p, m.model_id)).collect()
     }
 
     pub(crate) async fn rank_full_name(
@@ -266,7 +266,7 @@ impl Router {
         viewer: Option<i64>,
         requested: Option<crate::router::preference::Preference>,
     ) -> Result<Vec<Candidate>, RouterError> {
-        let members = self.pool_members(model, viewer).await;
+        let members = self.pool_members(model).await;
         if members.is_empty() {
             return Ok(vec![]);
         }
@@ -307,6 +307,6 @@ impl Router {
     }
 
     pub async fn full_name_providers(&self, model: &str) -> Vec<(String, i64, Option<i64>)> {
-        self.pool_members(model, None).await.into_iter().map(|(m, _)| (m.slug, m.provider_id, m.owner_user_id)).collect()
+        self.pool_members(model).await.into_iter().map(|(m, _)| (m.slug, m.provider_id, m.owner_user_id)).collect()
     }
 }

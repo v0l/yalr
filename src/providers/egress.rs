@@ -125,16 +125,15 @@ impl Egress {
 pub struct Caller {
     pub user_id: i64,
     pub is_admin: bool,
-    pub verify: bool,
 }
 
 impl Caller {
     pub fn user(user_id: i64, is_admin: bool) -> Self {
-        Self { user_id, is_admin, verify: false }
+        Self { user_id, is_admin }
     }
 
     pub fn verification(owner: i64) -> Self {
-        Self { user_id: owner, is_admin: false, verify: true }
+        Self { user_id: owner, is_admin: false }
     }
 }
 
@@ -148,6 +147,24 @@ pub async fn as_caller<F: Future>(caller: Caller, work: F) -> F::Output {
 
 pub fn caller() -> Option<Caller> {
     CALLER.try_with(|c| *c).ok()
+}
+
+#[cfg(test)]
+pub struct LoopbackLookup;
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl Lookup for LoopbackLookup {
+    async fn lookup(&self, _host: &str) -> std::io::Result<Vec<IpAddr>> {
+        Ok(vec![IpAddr::from([127, 0, 0, 1])])
+    }
+}
+
+#[cfg(test)]
+impl Egress {
+    pub fn loopback_for_tests() -> Self {
+        Self::with_lookup(Arc::new(LoopbackLookup), |ip| ip.is_loopback() || is_public_ip(ip))
+    }
 }
 
 #[cfg(test)]

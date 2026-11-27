@@ -12,6 +12,7 @@ pub(super) struct HealthLoop {
 pub(super) struct HealthProbe {
     router: HealthCheckRouter,
     provider_ids: Arc<std::sync::RwLock<HashMap<String, i64>>>,
+    access: crate::providers::guarded::Access,
     db: Arc<Database>,
     timeout: Duration,
 }
@@ -24,7 +25,14 @@ pub(super) fn health_settings(configs: &[crate::db::RoutingConfig]) -> (Duration
 }
 
 impl HealthProbe {
+    fn held(&self, provider: &Arc<dyn Provider>) -> bool {
+        crate::providers::guarded::GuardedProvider::is_held(&self.access, provider.slug())
+    }
+
     async fn check(self, provider: Arc<dyn Provider>) {
+        if self.held(&provider) {
+            return;
+        }
         let name = provider.name().to_string();
         match tokio::time::timeout(Duration::from_secs(5), provider.fetch_balance()).await {
             Ok(Some(amount)) => self.router.metrics_store.emitter().emit_balance(&name, amount, None),
@@ -102,6 +110,7 @@ impl Router {
         HealthProbe {
             router: HealthCheckRouter { metrics_store: self.metrics_store.clone() },
             provider_ids: self.provider_ids.clone(),
+            access: self.provider_access.clone(),
             db: self.db.clone(),
             timeout,
         }

@@ -16,7 +16,7 @@ use crate::router::ModelRuntimeInfo;
 
 pub type Access = Arc<std::sync::RwLock<HashMap<String, (Option<i64>, String)>>>;
 
-pub const NOT_APPROVED: &str = "provider is not approved yet: only its owner or a verification run may contact it";
+pub const NOT_APPROVED: &str = "provider is not approved yet: it is only contacted when its owner checks or verifies it";
 
 pub struct GuardedProvider {
     inner: Arc<dyn Provider>,
@@ -46,12 +46,19 @@ impl GuardedProvider {
             .unwrap_or(false)
     }
 
+    pub fn is_held(access: &Access, slug: &str) -> bool {
+        access
+            .read()
+            .map(|a| a.get(slug).is_some_and(|(owner, status)| owner.is_some() && status != crate::db::APPROVED))
+            .unwrap_or(true)
+    }
+
     fn permitted(&self) -> Result<(), ProviderError> {
         if self.approved() {
             return Ok(());
         }
         match caller() {
-            Some(c) if c.verify || Some(c.user_id) == self.owner => Ok(()),
+            Some(c) if c.is_admin || Some(c.user_id) == self.owner => Ok(()),
             _ => Err(ProviderError::Unsupported(NOT_APPROVED.to_string())),
         }
     }

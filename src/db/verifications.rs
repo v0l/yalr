@@ -72,6 +72,7 @@ impl Database {
     pub async fn providers_due_for_verification(&self, interval_hours: u64) -> Result<Vec<Provider>, sqlx::Error> {
         sqlx::query_as::<_, Provider>(
             "SELECT p.* FROM providers p WHERE p.owner_user_id IS NOT NULL AND p.is_reference = FALSE \
+             AND p.status = 'approved' \
              AND p.status_locked = FALSE AND EXISTS (SELECT 1 FROM model_pricing mp WHERE mp.provider_id = p.id) \
              AND COALESCE((SELECT MAX(v.created_at) FROM provider_verifications v WHERE v.provider_id = p.id), '1970-01-02') \
                  < DATE_SUB(UTC_TIMESTAMP(3), INTERVAL ? HOUR) ORDER BY p.id",

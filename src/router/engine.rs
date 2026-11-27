@@ -560,7 +560,7 @@ impl Router {
         if let Some((slug_prefix, actual_model)) = model.split_once('/') {
             let exact = self.providers.read().await.get(slug_prefix).cloned();
             if let Some(provider) = exact {
-                if !self.may_serve(provider.slug(), viewer) {
+                if !self.may_serve(provider.slug()) {
                     return Ok(vec![]);
                 }
                 return Ok(vec![self.untracked_candidate(provider, actual_model.to_string())]);
@@ -583,7 +583,7 @@ impl Router {
         };
         let ranked = self.rank_table(&tables, model, model, "", 1).await?;
         let mut candidates = ranked.candidates;
-        candidates.retain(|c| self.may_serve(c.provider.slug(), viewer));
+        candidates.retain(|c| self.may_serve(c.provider.slug()));
         if table.strategy == StrategyKind::RoundRobin {
             self.sticky.move_pinned_first(session, &mut candidates, |c| c.provider.name());
         }
